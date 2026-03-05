@@ -805,18 +805,63 @@ const HEVY_DATA = {"sessions":[{"d":"2024-12-24","t":"Morning workout \u2600\ufe
 // STORAGE & STATE
 // ══════════════════════════════════════════
 const SK = 'alexCutDash_v3';
-function readJSON(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw);
-  } catch (e) {
-    console.warn('Corrupt localStorage for', key);
-    return fallback;
-  }
+const SCHEMA_VERSION = 1;
+const DEFAULT_STATE = {
+  weeks:[],
+  defHeight:null,
+  defAge:null,
+  defAct:1.55,
+  mode:'cut',
+  transition:'none',
+  transitionDismissed:false,
+  targetWeight:null,
+  bulkVolBaseline:null,
+  countingMethod:'all',
+  schemaVersion:SCHEMA_VERSION
+};
+const DEFAULT_LIFT = {name:'', weight:null, reps:null, rpe:null};
+const DEFAULT_WEEK = {
+  date:'', weight:null, waist:null, hrv:null, rhr:null, sleep:null,
+  steps:null, bikeMin:null, stepTarget:null,
+  calories:null, calorieTarget:null,
+  protein:null, proteinTarget:null,
+  fat:null, carbs:null, fiber:null,
+  lifts:Array.from({length:6}, ()=>({...DEFAULT_LIFT})),
+  notes:'', refeed:false, deload:false, tags:[],
+  mode:null, transition:null,
+  daysTracked:null, eventDays:null,
+  photo:null, sessions:null, hevySessions:null,
+};
+
+function migrateWeek(w){
+  if(!w || typeof w !== 'object') return null;
+  if(typeof w.date !== 'string' || !w.date.trim()) return null;
+  const week = {...DEFAULT_WEEK, ...w};
+  week.tags = Array.isArray(w.tags) ? [...w.tags] : [];
+  if(w.refeed === true && !week.tags.includes('refeed')) week.tags.push('refeed');
+  if(w.deload === true && !week.tags.includes('deload')) week.tags.push('deload');
+  week.lifts = Array.isArray(w.lifts) ? w.lifts.map(l=>({...DEFAULT_LIFT, ...(l||{})})) : [];
+  while(week.lifts.length < 6) week.lifts.push({...DEFAULT_LIFT});
+  if(!Array.isArray(w.lifts)) week.lifts = week.lifts.slice(0, 6);
+  return week;
 }
-let D = {weeks:[], defHeight:null, defAge:null, defAct:1.55, mode:'cut', transition:'none', transitionDismissed:false, targetWeight:null, bulkVolBaseline:null, countingMethod:'all'};
-D = readJSON(SK, D);
+
+function migrateState(raw){
+  if(!raw || typeof raw !== 'object') return {...DEFAULT_STATE, weeks:[]};
+  const migrated = {...DEFAULT_STATE, ...raw};
+  migrated.schemaVersion = raw.schemaVersion ?? SCHEMA_VERSION;
+  const rawWeeks = Array.isArray(raw.weeks) ? raw.weeks : [];
+  migrated.weeks = rawWeeks.map(migrateWeek).filter(Boolean);
+  return migrated;
+}
+
+let D = {...DEFAULT_STATE, weeks:[]};
+try {
+  const s = localStorage.getItem(SK);
+  D = migrateState(s ? JSON.parse(s) : null);
+} catch(e) {
+  D = migrateState(null);
+}
 function save(){try{localStorage.setItem(SK,JSON.stringify(D));}catch(e){}}
 
 // ══════════════════════════════════════════
@@ -2959,11 +3004,11 @@ function importData(e){
   const reader = new FileReader();
   reader.onload = ev => {
     try {
-      const imported = JSON.parse(ev.target.result);
-      if(!imported.weeks || !Array.isArray(imported.weeks)){
+      const parsed = JSON.parse(ev.target.result);
+      if(!parsed.weeks || !Array.isArray(parsed.weeks)){
         showBackupStatus('✗ Invalid backup file — no weeks array found', 'var(--a3)'); return;
       }
-      const existing = new Set(D.weeks.map(w => w.date));
+      const imported = migrateState(parsed);
       let added = 0, updated = 0, skipped = 0;
       imported.weeks.forEach(iw => {
         if(!iw.date){ skipped++; return; }
