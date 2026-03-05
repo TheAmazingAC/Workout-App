@@ -1047,6 +1047,114 @@ function setActiveTags(tags){
 // Returns {action, actionCode, priority, suppressed, note}
 // Priority order: RECOVERY > ADHERENCE > RATE > PERFORMANCE > NONE
 // ══════════════════════════════════════════
+/* =========================
+   ENGINE (PURE CALCS)
+   - No DOM access
+   - No localStorage writes
+   ========================= */
+
+function calcCutVelocity(currentWeight, savedWeeks){
+  // savedWeeks: array of {weight, waist, calories, calorieTarget, protein, steps, bikeMin, stepTarget, sleep}
+  // Returns full velocity object used by updLoss, updVelocity, renderDecisionLadder, genSummary
+  const wks = savedWeeks.filter(w=>w.weight); // weight-only weeks for velocity
+  const W0 = currentWeight;
+  const W1 = wks.length>=1 ? wks[wks.length-1].weight : null;
+  const W2 = wks.length>=2 ? wks[wks.length-2].weight : null;
+  const W3 = wks.length>=3 ? wks[wks.length-3].weight : null;
+
+  // 2-week rolling rate (primary metric)
+  let rollingRate = null;
+  if(W0!=null && W1!=null && W2!=null && W3!=null){
+    const recentAvg = (W0 + W1) / 2;
+    const priorAvg  = (W2 + W3) / 2;
+    rollingRate = ((recentAvg - priorAvg) / priorAvg) * 100 / 2; // positive = loss
+  }
+
+  // Short-term (week-over-week, display only — not decision driver)
+  const shortTermRate = (W0!=null && W1!=null) ? ((W1-W0)/W1)*100 : null;
+
+  // Velocity zone
+  let zone, zoneCls;
+  if(rollingRate==null){ zone='Insufficient data'; zoneCls='vel-gray'; }
+  else if(rollingRate<0){ zone='Gaining'; zoneCls='vel-red'; }
+  else if(rollingRate<0.5){ zone='Slow — monitor'; zoneCls='vel-red'; }
+  else if(rollingRate<=1.0){ zone='Ideal ✓'; zoneCls='vel-green'; }
+  else if(rollingRate<=1.25){ zone='Aggressive — acceptable short-term'; zoneCls='vel-yellow'; }
+  else { zone='Too Fast — muscle risk'; zoneCls='vel-red'; }
+
+  // 3-week waist trend
+  const allWaist = savedWeeks.filter(w=>w.waist);
+  const Wst0 = currentWeight!=null ? (savedWeeks[savedWeeks.length]?.waist ?? null) : null; // will be passed separately
+  // (waist passed in separately — see calcStallStatus)
+
+  return { W0, W1, W2, W3, rollingRate, shortTermRate, zone, zoneCls };
+}
+
+function calcStallStatus(cv, currentWaist, savedWeeks){
+  // Returns {stalled, stallReasons, waistTrend, waistFlat, adherenceOk, adhPct}
+  const wks = savedWeeks.filter(w=>w.weight);
+
+  // ── Waist 3-week rolling average ──
+  const waistWks = savedWeeks.filter(w=>w.waist);
+  const Waist0 = currentWaist;
+  const Waist1 = waistWks.length>=1 ? waistWks[waistWks.length-1].waist : null;
+  const Waist2 = waistWks.length>=2 ? waistWks[waistWks.length-2].waist : null;
+  const waistTrend = (Waist0!=null&&Waist1!=null&&Waist2!=null) ? (Waist0+Waist1+Waist2)/3 : null;
+  const waistPrev  = (Waist1!=null&&Waist2!=null) ? (Waist1+Waist2)/2 : null; // prior 2-wk avg
+  // Flat = no downward movement >0.15in over 2-3 weeks
+  const waistFlat  = (waistTrend!=null && waistPrev!=null) ? (waistPrev - waistTrend) < 0.15 : null;
+
+  // ── Adherence checks (last 2 saved weeks avg) ──
+  const recent2 = wks.slice(-2);
+  const calAdh = recent2.filter(w=>w.calories&&w.calorieTarget).map(w=>w.calories/w.calorieTarget*100);
+  const calAdhPct  = calAdh.length ? calAdh.reduce((s,v)=>s+v,0)/calAdh.length : null;
+
+  const protWks = savedWeeks.filter(w=>w.protein&&w.weight).slice(-2);
+  const protAdh = protWks.map(w=>w.protein/w.weight*100); // 1g/lb = 100%
+  const protAdhPct = protAdh.length ? protAdh.reduce((s,v)=>s+v,0)/protAdh.length : null;
+
+  const stpWks = savedWeeks.filter(w=>w.steps!=null).slice(-2);
+  const stpAdh = stpWks.map(w=>{
+    const neat = calcNEAT(w.steps, w.bikeMin);
+    const tgt  = w.stepTarget||15000;
+    return neat.totalEq/tgt*100;
+  });
+  const stpAdhPct = stpAdh.length ? stpAdh.reduce((s,v)=>s+v,0)/stpAdh.length : null;
+
+  // ── Recovery gate ──
+  // calcRecoveryStatus reads live form fields; when called from historical context
+  // (genSummary) this is acceptable — summary always reflects currently loaded week.
+  const rs = calcRecoveryStatus();
+  const recoveryGreen = !rs.watchActive;
+
+  // ── Consecutive slow weeks (rolling rate) ──
+  const slowThisWk  = cv.rollingRate!=null && cv.rollingRate < 0.5;
+  // Check previous rolling: need W1,W2,W3,W4
+  const W4 = wks.length>=4 ? wks[wks.length-4].weight : null;
+  let prevRolling = null;
+  if(cv.W1!=null&&cv.W2!=null&&cv.W3!=null&&W4!=null){
+    const rA=(cv.W1+cv.W2)/2, rB=(cv.W3+W4)/2;
+    prevRolling = ((rA-rB)/rB)*100/2;
+  }
+  const slowPrevWk = prevRolling!=null && prevRolling < 0.5;
+  const twoConsecSlow = slowThisWk && slowPrevWk;
+
+  // ── Strict stall: ALL conditions ──
+  const stallReasons = [];
+  if(!twoConsecSlow)       stallReasons.push('Need 2 consecutive slow weeks (rolling <0.5%/wk)');
+  if(waistFlat===false)    stallReasons.push('Waist is still trending down — not stalled');
+  if(calAdhPct!=null&&calAdhPct<80)  stallReasons.push(`Calorie adherence ${calAdhPct.toFixed(0)}% < 80% — track more consistently first`);
+  if(protAdhPct!=null&&protAdhPct<90) stallReasons.push(`Protein adherence ${protAdhPct.toFixed(0)}% < 90% — hit protein target first`);
+  if(stpAdhPct!=null&&stpAdhPct<80)  stallReasons.push(`NEAT adherence ${stpAdhPct.toFixed(0)}% < 80% — hit step target first`);
+  if(!recoveryGreen)       stallReasons.push('Recovery not green — address recovery before cutting');
+
+  const stalled = stallReasons.length === 0;
+
+  return { stalled, stallReasons, waistTrend, waistFlat, waistPrev,
+           calAdhPct, protAdhPct, stpAdhPct, recoveryGreen,
+           twoConsecSlow, slowThisWk, prevRolling };
+}
+
 function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks){
   const cfg = MODE_CONFIG[mode];
   const tagList = tags || [];
@@ -1198,6 +1306,595 @@ function checkPerformanceDrop(mode){
   }
   return {flag:false};
 }
+
+function calcNEAT(steps, bikeMinutes){
+  const stepEq  = (steps     || 0);
+  const bikeEq  = (bikeMinutes || 0) * BIKE_STEP_EQ;
+  const totalEq = stepEq + bikeEq;
+  const bikeKcal = Math.round((bikeMinutes || 0) * BIKE_KCAL_MIN);
+  return { stepEq, bikeEq, totalEq, bikeKcal };
+}
+
+function calcAdherenceStreak(){
+  // Walk backwards through saved weeks counting consecutive on-target weeks
+  const mode = D.mode || 'cut';
+  const cfg  = MODE_CONFIG[mode];
+  const saved = D.weeks.filter(w=>w.weight);
+  if(!saved.length) return {streak:0, broken:null};
+
+  let streak = 0;
+  let brokenReason = null;
+
+  for(let i=saved.length-1; i>=0; i--){
+    const w = saved[i];
+    // Need enough history for rolling rate — use this week vs prior
+    const prior = saved.slice(0,i);
+    if(!prior.length) break;
+
+    const cv = calcCutVelocity(w.weight, prior);
+    const rr = cv.rollingRate;
+
+    // Check velocity in mode band
+    let velOk = false;
+    if(rr!=null){
+      if(mode==='cut') velOk = rr>=cfg.rateTargetLow && rr<=cfg.rateTargetHigh;
+      else if(mode==='bulk') velOk = (-rr)>=cfg.rateTargetLow && (-rr)<=cfg.rateTargetHigh;
+      else velOk = Math.abs(rr)<=cfg.rateTargetHigh;
+    }
+
+    // Recovery not red (check vs 14-day baseline for this week)
+    const base2 = saved.slice(Math.max(0,i-2),i);
+    const baseHRV = base2.filter(x=>x.hrv).length ? base2.filter(x=>x.hrv).reduce((s,x)=>s+x.hrv,0)/base2.filter(x=>x.hrv).length : null;
+    const baseRHR = base2.filter(x=>x.rhr).length ? base2.filter(x=>x.rhr).reduce((s,x)=>s+x.rhr,0)/base2.filter(x=>x.rhr).length : null;
+    let recOk = true;
+    if(baseHRV&&w.hrv&&(baseHRV-w.hrv)/baseHRV>0.20) recOk=false;
+    if(baseRHR&&w.rhr&&(w.rhr-baseRHR)>5) recOk=false;
+
+    // Adherence
+    const calAdh  = (w.calories&&w.calorieTarget) ? w.calories/w.calorieTarget*100 : null;
+    const protAdh = (w.protein&&w.weight) ? w.protein/w.weight*100 : null;
+    const neatAdh = w.steps!=null ? calcNEAT(w.steps,w.bikeMin).totalEq/(w.stepTarget||15000)*100 : null;
+    const calOk  = calAdh==null  || calAdh>=90;
+    const protOk = protAdh==null || protAdh>=90;
+    const neatOk = neatAdh==null || neatAdh>=80;
+
+    if(velOk && recOk && calOk && protOk && neatOk){
+      streak++;
+    } else {
+      brokenReason = !velOk?'velocity off target':!recOk?'recovery red flag':!calOk?'calorie adherence <90%':!protOk?'protein adherence <90%':'NEAT adherence <80%';
+      break;
+    }
+  }
+  return {streak, brokenReason};
+}
+
+function calcWaterFluctuation(){
+  // Returns {show:bool, reason:string}
+  const saved = D.weeks.filter(w=>w.weight);
+  if(saved.length<2) return {show:false};
+  const latest = saved[saved.length-1];
+  const prev   = saved[saved.length-2];
+  const tags   = latest.tags||[];
+
+  // Trigger 1: high-sodium tag
+  if(tags.includes('sodium')) return {show:true, reason:'High-sodium tag active — expect 1–3 lb scale increase from water retention'};
+
+  // Trigger 2: weight up ≥2 lb but waist barely changed
+  if(latest.weight&&prev.weight&&latest.waist&&prev.waist){
+    const wtDelta    = latest.weight - prev.weight;
+    const waistDelta = Math.abs(latest.waist - prev.waist);
+    if(wtDelta>=2 && waistDelta<0.15) return {show:true, reason:'Scale up '+wtDelta.toFixed(1)+' lbs but waist unchanged (<0.15") — likely water, not fat'};
+  }
+
+  // Trigger 3: W:W ratio unchanged but scale jumped
+  if(latest.weight&&prev.weight&&latest.waist&&prev.waist){
+    const ratioCurr = latest.waist/latest.weight;
+    const ratioPrev = prev.waist/prev.weight;
+    const ratioDelta = Math.abs(ratioCurr-ratioPrev);
+    const wtDelta = latest.weight - prev.weight;
+    if(wtDelta>=1.5 && ratioDelta<0.0005) return {show:true, reason:'Waist:Weight ratio unchanged but weight up '+wtDelta.toFixed(1)+' lbs — consistent with water fluctuation'};
+  }
+
+  return {show:false};
+}
+
+function calcRecoveryBaselineConfidence(weeksArray, currentIdx){
+  // Eligible = not illness, not deload, has HRV or RHR data
+  const eligible = weeksArray.slice(0, currentIdx)
+    .filter(w => !(w.tags||[]).includes('illness') && !(w.tags||[]).includes('deload') && !w.deload)
+    .filter(w => w.hrv || w.rhr)
+    .slice(-4);
+  const n = eligible.length;
+  const conf = n >= 4 ? 'HIGH' : n >= 3 ? 'MED' : 'LOW';
+  const label = n >= 3
+    ? `~${n}-week baseline (weekly inputs)`
+    : 'Baseline: insufficient data';
+  return { conf, label, n, eligible, suppressed: n < 3 };
+}
+
+function calcPhaseWeeks(weeksArray, currentIdx){
+  // [Rule 1] Count consecutive prior weeks with same week.mode as selected week,
+  // contiguous by week-ending dates (gap ≤8 days), ignoring weeks missing weight.
+  if(!weeksArray.length || currentIdx < 0) return 0;
+  const ref = weeksArray[currentIdx];
+  if(!ref) return 0;
+  const currentMode = ref.mode || 'cut';
+
+  // Build the chain walking backwards from currentIdx (inclusive)
+  let count = 0;
+  let prevDate = null;
+  for(let i = currentIdx; i >= 0; i--){
+    const w = weeksArray[i];
+    if(!w) continue;
+    // Must have weight
+    if(!w.weight) continue;
+    // Must be same mode
+    const wm = w.mode || 'cut';
+    if(wm !== currentMode) break;
+    // Must be contiguous — gap ≤8 days from last counted week (allow 1-day slop)
+    if(prevDate !== null){
+      const gap = (new Date(prevDate) - new Date(w.date)) / 86400000;
+      if(gap > 8) break;
+    }
+    count++;
+    prevDate = w.date;
+  }
+  return count;
+}
+
+function calcStallConfidence(phaseWeeks, recBaseConf, adhConf){
+  // [Rule 2] Stall confidence capped by data quality.
+  // Cannot be HIGH if recovery baseline is LOW/insufficient,
+  // adherence confidence is NONE/LOW, or phase < 4 weeks.
+  const recConf  = (recBaseConf && recBaseConf.conf) ? recBaseConf.conf : 'NONE';
+  const adhLevel = (adhConf && adhConf.conf) ? adhConf.conf : 'NONE';
+  const dataQualityBlocked = recConf === 'LOW' || recConf === 'NONE' || adhLevel === 'NONE' || adhLevel === 'LOW';
+
+  if(phaseWeeks < 4) return 'LOW';
+  if(dataQualityBlocked) return 'MED'; // cap at MED when data quality insufficient
+  if(phaseWeeks >= 6) return 'HIGH';
+  return 'MED';
+}
+
+function applyTiebreakers(baseResult, cv, st, rs, savedWeeks, mode){
+  const rr = cv.rollingRate;
+  const latest = savedWeeks.slice(-1)[0] || {};
+  const prev   = savedWeeks.slice(-2)[0] || {};
+  let tiebreakerApplied = null;
+
+  // [D1] Velocity slow/stalled BUT waist improving ≥0.20" over last 2 weeks → HOLD
+  if(mode === 'cut' && (baseResult.actionCode === 'RATE') &&
+     (rr != null && rr < 0.5) &&
+     latest.waist != null && prev.waist != null &&
+     (prev.waist - latest.waist) >= 0.20){
+    tiebreakerApplied = 'Tie-break D1: waist improvement overrides slow weight rate.';
+    return {
+      ...baseResult,
+      action: 'HOLD — Waist down ≥0.20" despite slow scale. This is fat loss — do not cut harder. Continue current plan and reassess next week.',
+      actionCode: 'NONE',
+      note: tiebreakerApplied,
+      tiebreakerApplied
+    };
+  }
+
+  // [D2] Rate on-target/fast BUT waist flat AND performance down → REFEED
+  if((mode === 'cut' || mode === 'maint') &&
+     rr != null && rr >= 0.5 &&
+     latest.waist != null && prev.waist != null &&
+     Math.abs(prev.waist - latest.waist) < 0.15){
+    const perfDrop = checkPerformanceDrop(mode);
+    if(perfDrop.flag){
+      tiebreakerApplied = 'Tie-break D2: performance + waist signals override scale rate.';
+      return {
+        ...baseResult,
+        action: 'REFEED / EASE DEFICIT: Scale moving but waist flat + strength dropping. Likely losing muscle. Add 1–2 refeed days at maintenance calories (carbs up). Reduce deficit 100–150 kcal. Address recovery before resuming cut pace.',
+        actionCode: 'PERFORMANCE',
+        note: tiebreakerApplied,
+        tiebreakerApplied
+      };
+    }
+  }
+
+  // [D3] Aggressive deficit or rate > cap → block step increase recommendations
+  if(baseResult.action && (baseResult.action.includes('step-eq') || baseResult.action.includes('bike')) &&
+     (baseResult.actionCode === 'RATE' || baseResult.actionCode === 'NONE')){
+    // Check deficit level
+    const wks = savedWeeks.filter(w=>w.weight&&w.calories);
+    let isAggressiveDeficit = false;
+    if(wks.length >= 3){
+      const i = wks.length-1;
+      const trio = wks.slice(Math.max(0,i-2), i+1);
+      const avgCal = trio.reduce((s,w)=>s+w.calories,0)/trio.length;
+      const wkLoss = (wks[i-1]?.weight - wks[i]?.weight)||0;
+      const wkLoss2 = (wks[Math.max(0,i-2)]?.weight - wks[i-1]?.weight)||0;
+      const avgWkLoss = (wkLoss+wkLoss2)/2;
+      const tdee = avgCal + (avgWkLoss * 3500/7);
+      const deficit = tdee - avgCal;
+      isAggressiveDeficit = deficit > 700;
+    }
+    // Also flag if rolling rate > cap for 2 consecutive weeks
+    const tooFastTwoWks = rr != null && rr > 1.25 && cv.W1 != null && cv.W2 != null && cv.W3 != null &&
+      ((cv.W1+cv.W2)/2 - (cv.W2+cv.W3)/2) / ((cv.W2+cv.W3)/2) * 100 / 2 > 1.25;
+
+    if(isAggressiveDeficit || tooFastTwoWks){
+      tiebreakerApplied = 'Tie-break D3: aggressive deficit — step increase blocked.';
+      return {
+        ...baseResult,
+        action: 'HOLD NEAT — DO NOT INCREASE STEPS/BIKE: Deficit is aggressive' + (tooFastTwoWks?' and rate has been too fast for 2 weeks':'') + '. Adding cardio would compound the over-dieting risk. Hold current activity. Adjust calories or training load instead.',
+        actionCode: 'RATE',
+        note: tiebreakerApplied,
+        tiebreakerApplied
+      };
+    }
+  }
+
+  return {...baseResult, tiebreakerApplied: null};
+}
+
+function calcAdherenceConfidence(week){
+  const dt = week?.daysTracked;
+  if(dt == null) return {conf:'NONE', label:'Not reported', low: false};
+  if(dt >= 7)  return {conf:'HIGH', label:'7 days tracked', low: false};
+  if(dt >= 5)  return {conf:'MED',  label:dt+' days tracked', low: false};
+  return {conf:'LOW', label:dt+' days tracked — low confidence', low: true};
+}
+
+function getDeficitLevel(){
+  const wks = D.weeks.filter(w=>w.weight&&w.calories);
+  if(wks.length < 3) return null;
+  const i = wks.length-1;
+  const trio = wks.slice(i-2, i+1);
+  const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
+  const wkLoss  = wks[i-1].weight - wks[i].weight;
+  const wkLoss2 = wks[i-2].weight - wks[i-1].weight;
+  const avgWkLoss = (wkLoss+wkLoss2)/2;
+  const tdee = avgCal + (avgWkLoss*3500/7);
+  const def = Math.round(tdee - avgCal);
+  if(def <= 0) return null;
+  if(def <= 500) return 'conservative';
+  if(def <= 700) return 'moderate';
+  return 'aggressive';
+}
+
+function getPrevDeficitLevel(){
+  const wks = D.weeks.filter(w=>w.weight&&w.calories);
+  if(wks.length < 4) return null;
+  const i = wks.length-2;
+  const trio = wks.slice(i-2, i+1);
+  const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
+  const wkLoss  = wks[i-1].weight - wks[i].weight;
+  const wkLoss2 = wks[i-2].weight - wks[i-1].weight;
+  const avgWkLoss = (wkLoss+wkLoss2)/2;
+  const tdee = avgCal + (avgWkLoss*3500/7);
+  const def = Math.round(tdee - avgCal);
+  if(def <= 0) return null;
+  if(def <= 500) return 'conservative';
+  if(def <= 700) return 'moderate';
+  return 'aggressive';
+}
+
+function isKneeGateActive(){
+  const saved = D.weeks.filter(w=>w.weight);
+  if(!saved.length) return false;
+  const notes = (saved[saved.length-1].notes||'').toLowerCase();
+  return notes.includes('knee');
+}
+
+function calcNextWeekTargets(){
+  const saved = D.weeks.filter(w=>w.weight);
+  if(!saved.length) return null;
+
+  const latest  = saved[saved.length-1];
+  const wkMode  = latest.mode || D.mode || 'cut';
+  const tags    = latest.tags || [];
+  const suppressed = tags.includes('illness') || tags.includes('deload');
+
+  // ── Baseline targets ──
+  const bw        = latest.weight || 0;
+  const baseCals  = latest.calorieTarget || latest.calories || 2300;
+  const baseStepEq = latest.stepTarget || calcNEAT(latest.steps, latest.bikeMin).totalEq || 15000;
+  const baseBike  = latest.bikeMin || 0;
+  // [Fix 3] Protein: exact 1g/lb (no rounding) — label explicitly
+  const exactProt = wkMode === 'cut' ? Math.round(bw * 1.0) : Math.round(bw * 0.8);
+  const baseProt  = exactProt;
+
+  // [Fix 2] Basis description — make clear what the starting point is
+  const calSrc    = latest.calorieTarget ? 'calorie target' : 'last actual';
+  const stepSrc   = latest.stepTarget    ? 'step target'    : 'last actual NEAT';
+  const basisLine = 'HOLD ('+calSrc+' '+baseCals+' kcal · '+stepSrc+' '+Math.round(baseStepEq).toLocaleString()+' step-eq · protein '+exactProt+'g exact)'
+
+  // ── Existing computed statuses ──
+  const cv  = calcCutVelocity(latest.weight, saved.slice(0,-1));
+  const st  = calcStallStatus(cv, latest.waist, saved.slice(0,-1));
+  const rs  = calcRecoveryStatus();
+  const rr  = cv.rollingRate;
+  const adhConf = calcAdherenceConfidence(latest);
+  const recBaseNWT = calcRecoveryBaselineConfidence(saved, saved.length-1);
+  const baseActionResult = calcWeeklyAction(wkMode, cv, st, rs, tags, saved);
+  const actionResult = applyTiebreakers(baseActionResult, cv, st, rs, saved, wkMode);
+  const actionCode = actionResult.actionCode;
+  // Low recovery baseline also triggers compliance mode (Rule 7)
+  const lowBaselineConf = recBaseNWT.conf === 'LOW' || recBaseNWT.conf === 'NONE';
+
+  const defLvl     = getDeficitLevel();
+  const prevDefLvl = getPrevDeficitLevel();
+  const aggressiveConsec = defLvl === 'aggressive' && prevDefLvl === 'aggressive';
+  const kneeGate   = isKneeGateActive();
+  const directionMismatch = wkMode === 'cut' && rr != null && rr < 0; // gaining while cutting
+
+  // ── Build output object (defaults = hold everything) ──
+  let out = {
+    cals:    baseCals,
+    protein: baseProt,
+    stepEq:  baseStepEq,
+    bikeMin: baseBike,
+    basis:   basisLine,
+    rationale: 'Hold targets — no change indicated.',
+    suppressed: false,
+    wouldHaveRule: null
+  };
+
+  // ── GLOBAL GUARDRAIL: suppression ──
+  if(suppressed){
+    const wouldHave = _calcNWTInner(wkMode, rs, actionCode, rr, adhConf,
+                                     baseCals, baseStepEq, baseBike, baseProt,
+                                     kneeGate, aggressiveConsec, directionMismatch, false, basisLine);
+    out.suppressed = true;
+    out.wouldHaveRule = wouldHave.rationale;
+    out.rationale = 'Targets unchanged (suppressed — ' + (tags.includes('illness')?'illness':'deload') + ' week). Would have: ' + wouldHave.rationale;
+    return out;
+  }
+
+  // ── Direction mismatch guardrail ──
+  if(directionMismatch){
+    out.rationale = 'Direction mismatch — gaining while in cut mode. Focus on adherence consistency before changing targets.';
+    return out;
+  }
+
+  // ── Aggressive deficit guardrail blocks NEAT increases ──
+  const blockNEAT = aggressiveConsec || defLvl === 'aggressive';
+
+  return _calcNWTInner(wkMode, rs, actionCode, rr, adhConf,
+                        baseCals, baseStepEq, baseBike, baseProt,
+                        kneeGate, blockNEAT, false, lowBaselineConf, basisLine);
+}
+
+function _calcNWTInner(wkMode, rs, actionCode, rr, adhConf,
+                        baseCals, baseStepEq, baseBike, baseProt,
+                        kneeGate, blockNEAT, dirMismatch, lowBaselineConf, basisLine){
+
+  const NEATstepBump = 2000;
+  const bikeBump     = 20; // minutes
+  const calBumpUp    = 150;
+  const calBumpDown  = 125;
+
+  // Rule 1 — Recovery INTERVENTION
+  if(rs.anyRed){
+    return {
+      cals:    baseCals + calBumpUp,
+      protein: baseProt,
+      stepEq:  baseStepEq, // hold — don't add
+      bikeMin: baseBike,   // hold
+      basis: basisLine,
+      rationale: 'Recovery intervention — reduce total stress load. Calories bumped +' + calBumpUp + ' kcal; NEAT held.'
+    };
+  }
+
+  // Rule 2 — Recovery WATCH
+  if(rs.watchActive){
+    return {
+      cals:    baseCals,
+      protein: baseProt,
+      stepEq:  baseStepEq,
+      bikeMin: baseBike,
+      basis: basisLine,
+      rationale: "Recovery watch — hold plan; don't push deficit lever."
+    };
+  }
+
+  // [Rule 7] Rule 3 — ADHERENCE or low tracking / low baseline confidence
+  // Numeric targets UNCHANGED; add compliance goal flag
+  if(actionCode === 'ADHERENCE' || adhConf.low || lowBaselineConf){
+    return {
+      cals:        baseCals,
+      protein:     baseProt,
+      stepEq:      baseStepEq,
+      bikeMin:     baseBike,
+      complianceMode: true,   // triggers compliance goal in export/UI
+      rationale:   'Tracking/adherence week — numeric targets unchanged. Focus on consistency: log ≥5 days + hit protein target (1g/lb rule).'
+    };
+  }
+
+  // Rule 4 — RATE slow (cut mode)
+  if(wkMode === 'cut' && actionCode === 'RATE' && rr != null && rr < 0.5 && rr >= 0){
+    if(blockNEAT){
+      return {
+        cals:    baseCals - calBumpDown,
+        protein: baseProt,
+        stepEq:  baseStepEq,
+        bikeMin: baseBike,
+        basis: basisLine,
+        rationale: 'Rate slow but deficit already aggressive — use calories as lever instead of adding NEAT.'
+      };
+    }
+    if(kneeGate){
+      return {
+        cals:    baseCals,
+        protein: baseProt,
+        stepEq:  baseStepEq + NEATstepBump,
+        bikeMin: baseBike + bikeBump,
+        rationale: 'Rate slow — increase NEAT via bike (+' + bikeBump + ' min/day) — knee-safe preference.'
+      };
+    }
+    return {
+      cals:    baseCals,
+      protein: baseProt,
+      stepEq:  baseStepEq + NEATstepBump,
+      bikeMin: baseBike,
+      basis: basisLine,
+      rationale: 'Rate slow — increase step-equivalents target by +' + NEATstepBump.toLocaleString() + '/day (NEAT first).'
+    };
+  }
+
+  // Rule 5 — RATE too fast / aggressive deficit
+  if(wkMode === 'cut' && actionCode === 'RATE' && rr != null && rr > 1.0){
+    return {
+      cals:    baseCals + calBumpUp,
+      protein: baseProt,
+      stepEq:  baseStepEq,
+      bikeMin: baseBike,
+      basis: basisLine,
+      rationale: 'Rate too fast — bring deficit back into safe band. Calories +' + calBumpUp + ' kcal; hold NEAT.'
+    };
+  }
+
+  // Rule 6 — PERFORMANCE drop
+  if(actionCode === 'PERFORMANCE'){
+    return {
+      cals:    baseCals + calBumpUp,
+      protein: baseProt,
+      stepEq:  baseStepEq, // don't add steps
+      bikeMin: baseBike,
+      basis: basisLine,
+      rationale: 'Performance retention priority — support training quality with +' + calBumpUp + ' kcal on training days (bias carbs). No step increase.'
+    };
+  }
+
+  // Rule 7 — NONE / on track
+  return {
+    cals:    baseCals,
+    protein: baseProt,
+    stepEq:  baseStepEq,
+    bikeMin: baseBike,
+    basis: basisLine,
+    rationale: 'On track — keep plan unchanged.'
+  };
+}
+
+function calcDietBreakCandidate(){
+  const mode = D.mode || 'cut';
+  if(mode !== 'cut') return {candidate: false};
+
+  const saved = D.weeks.filter(w=>w.weight);
+  if(!saved.length) return {candidate: false};
+
+  // Count consecutive clean cut weeks (ignore illness/deload)
+  const cutWeeks = [];
+  for(let i = saved.length-1; i >= 0; i--){
+    const w = saved[i];
+    const wm = w.mode || 'cut';
+    if(wm !== 'cut') break;
+    const tags = w.tags || [];
+    if(tags.includes('illness') || tags.includes('deload')) continue; // skip, don't break
+    cutWeeks.unshift(w); // add to front to keep chronological order
+    if(cutWeeks.length >= 8) break; // don't need more than 8
+  }
+
+  if(cutWeeks.length < 6) return {candidate: false, insufficientData: true, insufficientReason: 'Fewer than 6 clean cut weeks (' + cutWeeks.length + ' found)', cleanWeeks: cutWeeks.length};
+
+  // [Rule 3] Additional data gates: adherence confidence ≥MED and recovery baseline ≥MED
+  const latestForDBC = saved[saved.length-1];
+  const adhConfDBC = calcAdherenceConfidence(latestForDBC);
+  const recBaseDBC = calcRecoveryBaselineConfidence(saved, saved.length-1);
+  if(adhConfDBC.conf === 'NONE' || adhConfDBC.conf === 'LOW'){
+    return {candidate: false, insufficientData: true, insufficientReason: 'Adherence confidence too low (' + adhConfDBC.conf + ') — need ≥5 tracked days/week', cleanWeeks: cutWeeks.length};
+  }
+  if(recBaseDBC.conf === 'NONE' || recBaseDBC.conf === 'LOW'){
+    return {candidate: false, insufficientData: true, insufficientReason: 'Recovery baseline confidence too low (' + recBaseDBC.conf + ') — need ≥3 eligible weeks of HRV/RHR data', cleanWeeks: cutWeeks.length};
+  }
+
+  // Evaluate last 2 clean weeks for triggers
+  const last2 = cutWeeks.slice(-2);
+  if(last2.length < 2) return {candidate: false, cleanWeeks: cutWeeks.length};
+
+  let reason = null;
+
+  // Trigger 1: Recovery INTERVENTION 2 clean weeks in a row
+  // We check stored HRV/RHR/sleep against their own prior weeks
+  const recFlag = (w, prev) => {
+    if(!prev) return false;
+    const eligPrev = saved.filter(x =>
+      !(x.tags||[]).includes('illness') && !(x.tags||[]).includes('deload') && x.date < w.date
+    );
+    const base2 = eligPrev.slice(-2);
+    const baseHRV = base2.filter(x=>x.hrv).length
+      ? base2.filter(x=>x.hrv).reduce((s,x)=>s+x.hrv,0)/base2.filter(x=>x.hrv).length : null;
+    const baseRHR = base2.filter(x=>x.rhr).length
+      ? base2.filter(x=>x.rhr).reduce((s,x)=>s+x.rhr,0)/base2.filter(x=>x.rhr).length : null;
+    const slp = w.sleep;
+    const prevSlp = prev.sleep;
+    let anyRed = false;
+    if(slp != null && (slp < 6.5 || (prevSlp != null && prevSlp - slp >= 1.0))) anyRed = true;
+    if(w.hrv != null && baseHRV && (baseHRV - w.hrv)/baseHRV > 0.20) anyRed = true;
+    if(w.rhr != null && baseRHR && (w.rhr - baseRHR) > 5) anyRed = true;
+    return anyRed;
+  };
+
+  const recFlagW1 = recFlag(last2[0], cutWeeks.slice(-3,-2)[0]||null);
+  const recFlagW2 = recFlag(last2[1], last2[0]);
+  if(recFlagW1 && recFlagW2){
+    reason = 'Recovery intervention flagged 2 consecutive weeks';
+  }
+
+  // Trigger 2: Performance drop 2 clean weeks in a row
+  if(!reason){
+    // checkPerformanceDrop reads D.weeks globally — approximate with e1RM history
+    // We check if performance flag is currently ON (current cut state)
+    const perfNow = checkPerformanceDrop('cut');
+    // And check if the prior clean week also would have had performance flag
+    // (proxy: look at last 2 weeks of Hevy data — if 2+ lifts were below 90% in each)
+    // Since we can't re-run per-week, we use current flag + direction as signal
+    if(perfNow.flag){
+      // Also need to confirm it's been persistent — check if 2 consecutive cut weeks had any low perf
+      // Use saved perf data from weekly lifts if available
+      const w1lifts = last2[0].lifts || [];
+      const w2lifts = last2[1].lifts || [];
+      // If both weeks have 2+ lifts with no data (skipped) or very low rpe, treat as candidate
+      const w1LowData = w1lifts.filter(l => l.weight && l.reps && l.rpe && l.rpe >= 7).length < 2;
+      const w2LowData = w2lifts.filter(l => l.weight && l.reps && l.rpe && l.rpe >= 7).length < 2;
+      if(perfNow.flag){
+        reason = 'Performance drop detected (2+ priority lifts <90% peak). Verify 2nd consecutive week manually.';
+      }
+    }
+  }
+
+  // Trigger 3: Recovery watch + rate too fast, 2 clean weeks
+  if(!reason){
+    const rateCheck = (w, prior) => {
+      if(!prior || !prior.weight || !w.weight) return false;
+      const change = ((prior.weight - w.weight) / prior.weight) * 100;
+      return change > 1.0; // fast
+    };
+    const watchCheck = (w, priorW) => {
+      // Simplified: check sleep only since HRV/RHR needs baseline
+      return w.sleep != null && w.sleep < 7.0;
+    };
+    const f1 = rateCheck(last2[0], cutWeeks.slice(-3,-2)[0]) && watchCheck(last2[0], cutWeeks.slice(-3,-2)[0]);
+    const f2 = rateCheck(last2[1], last2[0]) && watchCheck(last2[1], last2[0]);
+    if(f1 && f2) reason = 'Recovery watch + fast loss rate for 2 consecutive weeks';
+  }
+
+  if(!reason) return {candidate: false, cleanWeeks: cutWeeks.length};
+
+  return {
+    candidate: true,
+    cleanWeeks: cutWeeks.length,
+    reason,
+    tdeeEstimate: (() => {
+      const wks = D.weeks.filter(w=>w.weight&&w.calories);
+      if(wks.length < 3) return null;
+      const i = wks.length-1;
+      const trio = wks.slice(i-2,i+1);
+      const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
+      const wkLoss = wks[i-1].weight - wks[i].weight;
+      const wkLoss2 = wks[i-2].weight - wks[i-1].weight;
+      const avgWkLoss = (wkLoss+wkLoss2)/2;
+      return Math.round(avgCal + (avgWkLoss*3500/7));
+    })()
+  };
+}
+
+// NOTE: calcRecoveryStatus remains outside ENGINE because it reads form inputs via nv().
 
 function renderActionSummary(){
   const card = document.getElementById('actionSummaryCard');
@@ -1534,108 +2231,6 @@ function updBodyDeltas(){
 // ══════════════════════════════════════════
 // CUT VELOCITY ENGINE (precise 2-week rolling)
 // ══════════════════════════════════════════
-function calcCutVelocity(currentWeight, savedWeeks){
-  // savedWeeks: array of {weight, waist, calories, calorieTarget, protein, steps, bikeMin, stepTarget, sleep}
-  // Returns full velocity object used by updLoss, updVelocity, renderDecisionLadder, genSummary
-  const wks = savedWeeks.filter(w=>w.weight); // weight-only weeks for velocity
-  const W0 = currentWeight;
-  const W1 = wks.length>=1 ? wks[wks.length-1].weight : null;
-  const W2 = wks.length>=2 ? wks[wks.length-2].weight : null;
-  const W3 = wks.length>=3 ? wks[wks.length-3].weight : null;
-
-  // 2-week rolling rate (primary metric)
-  let rollingRate = null;
-  if(W0!=null && W1!=null && W2!=null && W3!=null){
-    const recentAvg = (W0 + W1) / 2;
-    const priorAvg  = (W2 + W3) / 2;
-    rollingRate = ((recentAvg - priorAvg) / priorAvg) * 100 / 2; // positive = loss
-  }
-
-  // Short-term (week-over-week, display only — not decision driver)
-  const shortTermRate = (W0!=null && W1!=null) ? ((W1-W0)/W1)*100 : null;
-
-  // Velocity zone
-  let zone, zoneCls;
-  if(rollingRate==null){ zone='Insufficient data'; zoneCls='vel-gray'; }
-  else if(rollingRate<0){ zone='Gaining'; zoneCls='vel-red'; }
-  else if(rollingRate<0.5){ zone='Slow — monitor'; zoneCls='vel-red'; }
-  else if(rollingRate<=1.0){ zone='Ideal ✓'; zoneCls='vel-green'; }
-  else if(rollingRate<=1.25){ zone='Aggressive — acceptable short-term'; zoneCls='vel-yellow'; }
-  else { zone='Too Fast — muscle risk'; zoneCls='vel-red'; }
-
-  // 3-week waist trend
-  const allWaist = savedWeeks.filter(w=>w.waist);
-  const Wst0 = currentWeight!=null ? (savedWeeks[savedWeeks.length]?.waist ?? null) : null; // will be passed separately
-  // (waist passed in separately — see calcStallStatus)
-
-  return { W0, W1, W2, W3, rollingRate, shortTermRate, zone, zoneCls };
-}
-
-function calcStallStatus(cv, currentWaist, savedWeeks){
-  // Returns {stalled, stallReasons, waistTrend, waistFlat, adherenceOk, adhPct}
-  const wks = savedWeeks.filter(w=>w.weight);
-
-  // ── Waist 3-week rolling average ──
-  const waistWks = savedWeeks.filter(w=>w.waist);
-  const Waist0 = currentWaist;
-  const Waist1 = waistWks.length>=1 ? waistWks[waistWks.length-1].waist : null;
-  const Waist2 = waistWks.length>=2 ? waistWks[waistWks.length-2].waist : null;
-  const waistTrend = (Waist0!=null&&Waist1!=null&&Waist2!=null) ? (Waist0+Waist1+Waist2)/3 : null;
-  const waistPrev  = (Waist1!=null&&Waist2!=null) ? (Waist1+Waist2)/2 : null; // prior 2-wk avg
-  // Flat = no downward movement >0.15in over 2-3 weeks
-  const waistFlat  = (waistTrend!=null && waistPrev!=null) ? (waistPrev - waistTrend) < 0.15 : null;
-
-  // ── Adherence checks (last 2 saved weeks avg) ──
-  const recent2 = wks.slice(-2);
-  const calAdh = recent2.filter(w=>w.calories&&w.calorieTarget).map(w=>w.calories/w.calorieTarget*100);
-  const calAdhPct  = calAdh.length ? calAdh.reduce((s,v)=>s+v,0)/calAdh.length : null;
-
-  const protWks = savedWeeks.filter(w=>w.protein&&w.weight).slice(-2);
-  const protAdh = protWks.map(w=>w.protein/w.weight*100); // 1g/lb = 100%
-  const protAdhPct = protAdh.length ? protAdh.reduce((s,v)=>s+v,0)/protAdh.length : null;
-
-  const stpWks = savedWeeks.filter(w=>w.steps!=null).slice(-2);
-  const stpAdh = stpWks.map(w=>{
-    const neat = calcNEAT(w.steps, w.bikeMin);
-    const tgt  = w.stepTarget||15000;
-    return neat.totalEq/tgt*100;
-  });
-  const stpAdhPct = stpAdh.length ? stpAdh.reduce((s,v)=>s+v,0)/stpAdh.length : null;
-
-  // ── Recovery gate ──
-  // calcRecoveryStatus reads live form fields; when called from historical context
-  // (genSummary) this is acceptable — summary always reflects currently loaded week.
-  const rs = calcRecoveryStatus();
-  const recoveryGreen = !rs.watchActive;
-
-  // ── Consecutive slow weeks (rolling rate) ──
-  const slowThisWk  = cv.rollingRate!=null && cv.rollingRate < 0.5;
-  // Check previous rolling: need W1,W2,W3,W4
-  const W4 = wks.length>=4 ? wks[wks.length-4].weight : null;
-  let prevRolling = null;
-  if(cv.W1!=null&&cv.W2!=null&&cv.W3!=null&&W4!=null){
-    const rA=(cv.W1+cv.W2)/2, rB=(cv.W3+W4)/2;
-    prevRolling = ((rA-rB)/rB)*100/2;
-  }
-  const slowPrevWk = prevRolling!=null && prevRolling < 0.5;
-  const twoConsecSlow = slowThisWk && slowPrevWk;
-
-  // ── Strict stall: ALL conditions ──
-  const stallReasons = [];
-  if(!twoConsecSlow)       stallReasons.push('Need 2 consecutive slow weeks (rolling <0.5%/wk)');
-  if(waistFlat===false)    stallReasons.push('Waist is still trending down — not stalled');
-  if(calAdhPct!=null&&calAdhPct<80)  stallReasons.push(`Calorie adherence ${calAdhPct.toFixed(0)}% < 80% — track more consistently first`);
-  if(protAdhPct!=null&&protAdhPct<90) stallReasons.push(`Protein adherence ${protAdhPct.toFixed(0)}% < 90% — hit protein target first`);
-  if(stpAdhPct!=null&&stpAdhPct<80)  stallReasons.push(`NEAT adherence ${stpAdhPct.toFixed(0)}% < 80% — hit step target first`);
-  if(!recoveryGreen)       stallReasons.push('Recovery not green — address recovery before cutting');
-
-  const stalled = stallReasons.length === 0;
-
-  return { stalled, stallReasons, waistTrend, waistFlat, waistPrev,
-           calAdhPct, protAdhPct, stpAdhPct, recoveryGreen,
-           twoConsecSlow, slowThisWk, prevRolling };
-}
-
 function updLoss(){
   const cw=nv('wt'), cWaist=nv('waist');
   if(!cw||!D.weeks.length){document.getElementById('lrWrap').style.display='none';return;}
@@ -3148,14 +3743,6 @@ function updVelocity(){
 const BIKE_STEP_EQ  = 100;   // step-equivalents per minute of cycling
 const BIKE_KCAL_MIN = 7;  // kcal/min at ~105 bpm, 185 lb reference
 
-function calcNEAT(steps, bikeMinutes){
-  const stepEq  = (steps     || 0);
-  const bikeEq  = (bikeMinutes || 0) * BIKE_STEP_EQ;
-  const totalEq = stepEq + bikeEq;
-  const bikeKcal = Math.round((bikeMinutes || 0) * BIKE_KCAL_MIN);
-  return { stepEq, bikeEq, totalEq, bikeKcal };
-}
-
 function updStepLever(){
   const stp  = nv('steps');
   const bike = nv('bikeMin');
@@ -3504,59 +4091,6 @@ function renderFatigueScore(){
 // ══════════════════════════════════════════
 // FEATURE 4: ADHERENCE STREAK
 // ══════════════════════════════════════════
-function calcAdherenceStreak(){
-  // Walk backwards through saved weeks counting consecutive on-target weeks
-  const mode = D.mode || 'cut';
-  const cfg  = MODE_CONFIG[mode];
-  const saved = D.weeks.filter(w=>w.weight);
-  if(!saved.length) return {streak:0, broken:null};
-
-  let streak = 0;
-  let brokenReason = null;
-
-  for(let i=saved.length-1; i>=0; i--){
-    const w = saved[i];
-    // Need enough history for rolling rate — use this week vs prior
-    const prior = saved.slice(0,i);
-    if(!prior.length) break;
-
-    const cv = calcCutVelocity(w.weight, prior);
-    const rr = cv.rollingRate;
-
-    // Check velocity in mode band
-    let velOk = false;
-    if(rr!=null){
-      if(mode==='cut') velOk = rr>=cfg.rateTargetLow && rr<=cfg.rateTargetHigh;
-      else if(mode==='bulk') velOk = (-rr)>=cfg.rateTargetLow && (-rr)<=cfg.rateTargetHigh;
-      else velOk = Math.abs(rr)<=cfg.rateTargetHigh;
-    }
-
-    // Recovery not red (check vs 14-day baseline for this week)
-    const base2 = saved.slice(Math.max(0,i-2),i);
-    const baseHRV = base2.filter(x=>x.hrv).length ? base2.filter(x=>x.hrv).reduce((s,x)=>s+x.hrv,0)/base2.filter(x=>x.hrv).length : null;
-    const baseRHR = base2.filter(x=>x.rhr).length ? base2.filter(x=>x.rhr).reduce((s,x)=>s+x.rhr,0)/base2.filter(x=>x.rhr).length : null;
-    let recOk = true;
-    if(baseHRV&&w.hrv&&(baseHRV-w.hrv)/baseHRV>0.20) recOk=false;
-    if(baseRHR&&w.rhr&&(w.rhr-baseRHR)>5) recOk=false;
-
-    // Adherence
-    const calAdh  = (w.calories&&w.calorieTarget) ? w.calories/w.calorieTarget*100 : null;
-    const protAdh = (w.protein&&w.weight) ? w.protein/w.weight*100 : null;
-    const neatAdh = w.steps!=null ? calcNEAT(w.steps,w.bikeMin).totalEq/(w.stepTarget||15000)*100 : null;
-    const calOk  = calAdh==null  || calAdh>=90;
-    const protOk = protAdh==null || protAdh>=90;
-    const neatOk = neatAdh==null || neatAdh>=80;
-
-    if(velOk && recOk && calOk && protOk && neatOk){
-      streak++;
-    } else {
-      brokenReason = !velOk?'velocity off target':!recOk?'recovery red flag':!calOk?'calorie adherence <90%':!protOk?'protein adherence <90%':'NEAT adherence <80%';
-      break;
-    }
-  }
-  return {streak, brokenReason};
-}
-
 function renderAdherenceStreak(){
   const card  = document.getElementById('streakCard');
   const panel = document.getElementById('streakPanel');
@@ -3678,36 +4212,6 @@ function renderVolumeRetention(){
 // ══════════════════════════════════════════
 // FEATURE 6: WATER FLUCTUATION BADGE
 // ══════════════════════════════════════════
-function calcWaterFluctuation(){
-  // Returns {show:bool, reason:string}
-  const saved = D.weeks.filter(w=>w.weight);
-  if(saved.length<2) return {show:false};
-  const latest = saved[saved.length-1];
-  const prev   = saved[saved.length-2];
-  const tags   = latest.tags||[];
-
-  // Trigger 1: high-sodium tag
-  if(tags.includes('sodium')) return {show:true, reason:'High-sodium tag active — expect 1–3 lb scale increase from water retention'};
-
-  // Trigger 2: weight up ≥2 lb but waist barely changed
-  if(latest.weight&&prev.weight&&latest.waist&&prev.waist){
-    const wtDelta    = latest.weight - prev.weight;
-    const waistDelta = Math.abs(latest.waist - prev.waist);
-    if(wtDelta>=2 && waistDelta<0.15) return {show:true, reason:'Scale up '+wtDelta.toFixed(1)+' lbs but waist unchanged (<0.15") — likely water, not fat'};
-  }
-
-  // Trigger 3: W:W ratio unchanged but scale jumped
-  if(latest.weight&&prev.weight&&latest.waist&&prev.waist){
-    const ratioCurr = latest.waist/latest.weight;
-    const ratioPrev = prev.waist/prev.weight;
-    const ratioDelta = Math.abs(ratioCurr-ratioPrev);
-    const wtDelta = latest.weight - prev.weight;
-    if(wtDelta>=1.5 && ratioDelta<0.0005) return {show:true, reason:'Waist:Weight ratio unchanged but weight up '+wtDelta.toFixed(1)+' lbs — consistent with water fluctuation'};
-  }
-
-  return {show:false};
-}
-
 function renderWaterBadge(){
   // Inject into signals summary card header or before it
   const existing = document.getElementById('waterBadge');
@@ -3727,158 +4231,17 @@ function renderWaterBadge(){
 // PATCH B: RECOVERY BASELINE CONFIDENCE
 // Display-layer wrapper — does NOT change calcRecoveryStatus math
 // ══════════════════════════════════════════
-function calcRecoveryBaselineConfidence(weeksArray, currentIdx){
-  // Eligible = not illness, not deload, has HRV or RHR data
-  const eligible = weeksArray.slice(0, currentIdx)
-    .filter(w => !(w.tags||[]).includes('illness') && !(w.tags||[]).includes('deload') && !w.deload)
-    .filter(w => w.hrv || w.rhr)
-    .slice(-4);
-  const n = eligible.length;
-  const conf = n >= 4 ? 'HIGH' : n >= 3 ? 'MED' : 'LOW';
-  const label = n >= 3
-    ? `~${n}-week baseline (weekly inputs)`
-    : 'Baseline: insufficient data';
-  return { conf, label, n, eligible, suppressed: n < 3 };
-}
-
 // ══════════════════════════════════════════
 // PATCH C: PHASE WEEK COUNTER + STALL CONFIDENCE
 // ══════════════════════════════════════════
-function calcPhaseWeeks(weeksArray, currentIdx){
-  // [Rule 1] Count consecutive prior weeks with same week.mode as selected week,
-  // contiguous by week-ending dates (gap ≤8 days), ignoring weeks missing weight.
-  if(!weeksArray.length || currentIdx < 0) return 0;
-  const ref = weeksArray[currentIdx];
-  if(!ref) return 0;
-  const currentMode = ref.mode || 'cut';
-
-  // Build the chain walking backwards from currentIdx (inclusive)
-  let count = 0;
-  let prevDate = null;
-  for(let i = currentIdx; i >= 0; i--){
-    const w = weeksArray[i];
-    if(!w) continue;
-    // Must have weight
-    if(!w.weight) continue;
-    // Must be same mode
-    const wm = w.mode || 'cut';
-    if(wm !== currentMode) break;
-    // Must be contiguous — gap ≤8 days from last counted week (allow 1-day slop)
-    if(prevDate !== null){
-      const gap = (new Date(prevDate) - new Date(w.date)) / 86400000;
-      if(gap > 8) break;
-    }
-    count++;
-    prevDate = w.date;
-  }
-  return count;
-}
-
-function calcStallConfidence(phaseWeeks, recBaseConf, adhConf){
-  // [Rule 2] Stall confidence capped by data quality.
-  // Cannot be HIGH if recovery baseline is LOW/insufficient,
-  // adherence confidence is NONE/LOW, or phase < 4 weeks.
-  const recConf  = (recBaseConf && recBaseConf.conf) ? recBaseConf.conf : 'NONE';
-  const adhLevel = (adhConf && adhConf.conf) ? adhConf.conf : 'NONE';
-  const dataQualityBlocked = recConf === 'LOW' || recConf === 'NONE' || adhLevel === 'NONE' || adhLevel === 'LOW';
-
-  if(phaseWeeks < 4) return 'LOW';
-  if(dataQualityBlocked) return 'MED'; // cap at MED when data quality insufficient
-  if(phaseWeeks >= 6) return 'HIGH';
-  return 'MED';
-}
-
 // ══════════════════════════════════════════
 // PATCH D: TIE-BREAKER RESOLUTION
 // Wraps calcWeeklyAction output — does NOT change math engines
 // Returns {action, actionCode, priority, suppressed, note, tiebreakerApplied}
 // ══════════════════════════════════════════
-function applyTiebreakers(baseResult, cv, st, rs, savedWeeks, mode){
-  const rr = cv.rollingRate;
-  const latest = savedWeeks.slice(-1)[0] || {};
-  const prev   = savedWeeks.slice(-2)[0] || {};
-  let tiebreakerApplied = null;
-
-  // [D1] Velocity slow/stalled BUT waist improving ≥0.20" over last 2 weeks → HOLD
-  if(mode === 'cut' && (baseResult.actionCode === 'RATE') &&
-     (rr != null && rr < 0.5) &&
-     latest.waist != null && prev.waist != null &&
-     (prev.waist - latest.waist) >= 0.20){
-    tiebreakerApplied = 'Tie-break D1: waist improvement overrides slow weight rate.';
-    return {
-      ...baseResult,
-      action: 'HOLD — Waist down ≥0.20" despite slow scale. This is fat loss — do not cut harder. Continue current plan and reassess next week.',
-      actionCode: 'NONE',
-      note: tiebreakerApplied,
-      tiebreakerApplied
-    };
-  }
-
-  // [D2] Rate on-target/fast BUT waist flat AND performance down → REFEED
-  if((mode === 'cut' || mode === 'maint') &&
-     rr != null && rr >= 0.5 &&
-     latest.waist != null && prev.waist != null &&
-     Math.abs(prev.waist - latest.waist) < 0.15){
-    const perfDrop = checkPerformanceDrop(mode);
-    if(perfDrop.flag){
-      tiebreakerApplied = 'Tie-break D2: performance + waist signals override scale rate.';
-      return {
-        ...baseResult,
-        action: 'REFEED / EASE DEFICIT: Scale moving but waist flat + strength dropping. Likely losing muscle. Add 1–2 refeed days at maintenance calories (carbs up). Reduce deficit 100–150 kcal. Address recovery before resuming cut pace.',
-        actionCode: 'PERFORMANCE',
-        note: tiebreakerApplied,
-        tiebreakerApplied
-      };
-    }
-  }
-
-  // [D3] Aggressive deficit or rate > cap → block step increase recommendations
-  if(baseResult.action && (baseResult.action.includes('step-eq') || baseResult.action.includes('bike')) &&
-     (baseResult.actionCode === 'RATE' || baseResult.actionCode === 'NONE')){
-    // Check deficit level
-    const wks = savedWeeks.filter(w=>w.weight&&w.calories);
-    let isAggressiveDeficit = false;
-    if(wks.length >= 3){
-      const i = wks.length-1;
-      const trio = wks.slice(Math.max(0,i-2), i+1);
-      const avgCal = trio.reduce((s,w)=>s+w.calories,0)/trio.length;
-      const wkLoss = (wks[i-1]?.weight - wks[i]?.weight)||0;
-      const wkLoss2 = (wks[Math.max(0,i-2)]?.weight - wks[i-1]?.weight)||0;
-      const avgWkLoss = (wkLoss+wkLoss2)/2;
-      const tdee = avgCal + (avgWkLoss * 3500/7);
-      const deficit = tdee - avgCal;
-      isAggressiveDeficit = deficit > 700;
-    }
-    // Also flag if rolling rate > cap for 2 consecutive weeks
-    const tooFastTwoWks = rr != null && rr > 1.25 && cv.W1 != null && cv.W2 != null && cv.W3 != null &&
-      ((cv.W1+cv.W2)/2 - (cv.W2+cv.W3)/2) / ((cv.W2+cv.W3)/2) * 100 / 2 > 1.25;
-
-    if(isAggressiveDeficit || tooFastTwoWks){
-      tiebreakerApplied = 'Tie-break D3: aggressive deficit — step increase blocked.';
-      return {
-        ...baseResult,
-        action: 'HOLD NEAT — DO NOT INCREASE STEPS/BIKE: Deficit is aggressive' + (tooFastTwoWks?' and rate has been too fast for 2 weeks':'') + '. Adding cardio would compound the over-dieting risk. Hold current activity. Adjust calories or training load instead.',
-        actionCode: 'RATE',
-        note: tiebreakerApplied,
-        tiebreakerApplied
-      };
-    }
-  }
-
-  return {...baseResult, tiebreakerApplied: null};
-}
-
 // ══════════════════════════════════════════
 // PATCH G: ADHERENCE CONFIDENCE
 // ══════════════════════════════════════════
-function calcAdherenceConfidence(week){
-  const dt = week?.daysTracked;
-  if(dt == null) return {conf:'NONE', label:'Not reported', low: false};
-  if(dt >= 7)  return {conf:'HIGH', label:'7 days tracked', low: false};
-  if(dt >= 5)  return {conf:'MED',  label:dt+' days tracked', low: false};
-  return {conf:'LOW', label:dt+' days tracked — low confidence', low: true};
-}
-
 // ══════════════════════════════════════════
 // PATCH A: use week.mode for historical framing (wrapper for genSummary)
 // Applied directly in genSummary — see that function.
@@ -3945,248 +4308,16 @@ function updAdhConfidence(){
 // Returns 'aggressive'|'moderate'|'conservative'|null
 // Does NOT change any math — reads same data as renderDeficitAwareness
 // ══════════════════════════════════════════════════════════════
-function getDeficitLevel(){
-  const wks = D.weeks.filter(w=>w.weight&&w.calories);
-  if(wks.length < 3) return null;
-  const i = wks.length-1;
-  const trio = wks.slice(i-2, i+1);
-  const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
-  const wkLoss  = wks[i-1].weight - wks[i].weight;
-  const wkLoss2 = wks[i-2].weight - wks[i-1].weight;
-  const avgWkLoss = (wkLoss+wkLoss2)/2;
-  const tdee = avgCal + (avgWkLoss*3500/7);
-  const def = Math.round(tdee - avgCal);
-  if(def <= 0) return null;
-  if(def <= 500) return 'conservative';
-  if(def <= 700) return 'moderate';
-  return 'aggressive';
-}
-
-function getPrevDeficitLevel(){
-  const wks = D.weeks.filter(w=>w.weight&&w.calories);
-  if(wks.length < 4) return null;
-  const i = wks.length-2;
-  const trio = wks.slice(i-2, i+1);
-  const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
-  const wkLoss  = wks[i-1].weight - wks[i].weight;
-  const wkLoss2 = wks[i-2].weight - wks[i-1].weight;
-  const avgWkLoss = (wkLoss+wkLoss2)/2;
-  const tdee = avgCal + (avgWkLoss*3500/7);
-  const def = Math.round(tdee - avgCal);
-  if(def <= 0) return null;
-  if(def <= 500) return 'conservative';
-  if(def <= 700) return 'moderate';
-  return 'aggressive';
-}
-
 // ══════════════════════════════════════════════════════════════
 // HELPER: detect knee gate from latest notes field
 // Returns true if 'knee' appears in notes
 // ══════════════════════════════════════════════════════════════
-function isKneeGateActive(){
-  const saved = D.weeks.filter(w=>w.weight);
-  if(!saved.length) return false;
-  const notes = (saved[saved.length-1].notes||'').toLowerCase();
-  return notes.includes('knee');
-}
-
 // ══════════════════════════════════════════════════════════════
 // CORE: calcNextWeekTargets
 // Deterministic. Reads existing outputs only.
 // Returns {cals, protein, stepEq, bikeMin, rationale, suppressed, wouldHaveRule}
 // ══════════════════════════════════════════════════════════════
-function calcNextWeekTargets(){
-  const saved = D.weeks.filter(w=>w.weight);
-  if(!saved.length) return null;
-
-  const latest  = saved[saved.length-1];
-  const wkMode  = latest.mode || D.mode || 'cut';
-  const tags    = latest.tags || [];
-  const suppressed = tags.includes('illness') || tags.includes('deload');
-
-  // ── Baseline targets ──
-  const bw        = latest.weight || 0;
-  const baseCals  = latest.calorieTarget || latest.calories || 2300;
-  const baseStepEq = latest.stepTarget || calcNEAT(latest.steps, latest.bikeMin).totalEq || 15000;
-  const baseBike  = latest.bikeMin || 0;
-  // [Fix 3] Protein: exact 1g/lb (no rounding) — label explicitly
-  const exactProt = wkMode === 'cut' ? Math.round(bw * 1.0) : Math.round(bw * 0.8);
-  const baseProt  = exactProt;
-
-  // [Fix 2] Basis description — make clear what the starting point is
-  const calSrc    = latest.calorieTarget ? 'calorie target' : 'last actual';
-  const stepSrc   = latest.stepTarget    ? 'step target'    : 'last actual NEAT';
-  const basisLine = 'HOLD ('+calSrc+' '+baseCals+' kcal · '+stepSrc+' '+Math.round(baseStepEq).toLocaleString()+' step-eq · protein '+exactProt+'g exact)'
-
-  // ── Existing computed statuses ──
-  const cv  = calcCutVelocity(latest.weight, saved.slice(0,-1));
-  const st  = calcStallStatus(cv, latest.waist, saved.slice(0,-1));
-  const rs  = calcRecoveryStatus();
-  const rr  = cv.rollingRate;
-  const adhConf = calcAdherenceConfidence(latest);
-  const recBaseNWT = calcRecoveryBaselineConfidence(saved, saved.length-1);
-  const baseActionResult = calcWeeklyAction(wkMode, cv, st, rs, tags, saved);
-  const actionResult = applyTiebreakers(baseActionResult, cv, st, rs, saved, wkMode);
-  const actionCode = actionResult.actionCode;
-  // Low recovery baseline also triggers compliance mode (Rule 7)
-  const lowBaselineConf = recBaseNWT.conf === 'LOW' || recBaseNWT.conf === 'NONE';
-
-  const defLvl     = getDeficitLevel();
-  const prevDefLvl = getPrevDeficitLevel();
-  const aggressiveConsec = defLvl === 'aggressive' && prevDefLvl === 'aggressive';
-  const kneeGate   = isKneeGateActive();
-  const directionMismatch = wkMode === 'cut' && rr != null && rr < 0; // gaining while cutting
-
-  // ── Build output object (defaults = hold everything) ──
-  let out = {
-    cals:    baseCals,
-    protein: baseProt,
-    stepEq:  baseStepEq,
-    bikeMin: baseBike,
-    basis:   basisLine,
-    rationale: 'Hold targets — no change indicated.',
-    suppressed: false,
-    wouldHaveRule: null
-  };
-
-  // ── GLOBAL GUARDRAIL: suppression ──
-  if(suppressed){
-    const wouldHave = _calcNWTInner(wkMode, rs, actionCode, rr, adhConf,
-                                     baseCals, baseStepEq, baseBike, baseProt,
-                                     kneeGate, aggressiveConsec, directionMismatch, false, basisLine);
-    out.suppressed = true;
-    out.wouldHaveRule = wouldHave.rationale;
-    out.rationale = 'Targets unchanged (suppressed — ' + (tags.includes('illness')?'illness':'deload') + ' week). Would have: ' + wouldHave.rationale;
-    return out;
-  }
-
-  // ── Direction mismatch guardrail ──
-  if(directionMismatch){
-    out.rationale = 'Direction mismatch — gaining while in cut mode. Focus on adherence consistency before changing targets.';
-    return out;
-  }
-
-  // ── Aggressive deficit guardrail blocks NEAT increases ──
-  const blockNEAT = aggressiveConsec || defLvl === 'aggressive';
-
-  return _calcNWTInner(wkMode, rs, actionCode, rr, adhConf,
-                        baseCals, baseStepEq, baseBike, baseProt,
-                        kneeGate, blockNEAT, false, lowBaselineConf, basisLine);
-}
-
 // Inner deterministic rule ladder (extracted so suppression can preview it)
-function _calcNWTInner(wkMode, rs, actionCode, rr, adhConf,
-                        baseCals, baseStepEq, baseBike, baseProt,
-                        kneeGate, blockNEAT, dirMismatch, lowBaselineConf, basisLine){
-
-  const NEATstepBump = 2000;
-  const bikeBump     = 20; // minutes
-  const calBumpUp    = 150;
-  const calBumpDown  = 125;
-
-  // Rule 1 — Recovery INTERVENTION
-  if(rs.anyRed){
-    return {
-      cals:    baseCals + calBumpUp,
-      protein: baseProt,
-      stepEq:  baseStepEq, // hold — don't add
-      bikeMin: baseBike,   // hold
-      basis: basisLine,
-      rationale: 'Recovery intervention — reduce total stress load. Calories bumped +' + calBumpUp + ' kcal; NEAT held.'
-    };
-  }
-
-  // Rule 2 — Recovery WATCH
-  if(rs.watchActive){
-    return {
-      cals:    baseCals,
-      protein: baseProt,
-      stepEq:  baseStepEq,
-      bikeMin: baseBike,
-      basis: basisLine,
-      rationale: "Recovery watch — hold plan; don't push deficit lever."
-    };
-  }
-
-  // [Rule 7] Rule 3 — ADHERENCE or low tracking / low baseline confidence
-  // Numeric targets UNCHANGED; add compliance goal flag
-  if(actionCode === 'ADHERENCE' || adhConf.low || lowBaselineConf){
-    return {
-      cals:        baseCals,
-      protein:     baseProt,
-      stepEq:      baseStepEq,
-      bikeMin:     baseBike,
-      complianceMode: true,   // triggers compliance goal in export/UI
-      rationale:   'Tracking/adherence week — numeric targets unchanged. Focus on consistency: log ≥5 days + hit protein target (1g/lb rule).'
-    };
-  }
-
-  // Rule 4 — RATE slow (cut mode)
-  if(wkMode === 'cut' && actionCode === 'RATE' && rr != null && rr < 0.5 && rr >= 0){
-    if(blockNEAT){
-      return {
-        cals:    baseCals - calBumpDown,
-        protein: baseProt,
-        stepEq:  baseStepEq,
-        bikeMin: baseBike,
-        basis: basisLine,
-        rationale: 'Rate slow but deficit already aggressive — use calories as lever instead of adding NEAT.'
-      };
-    }
-    if(kneeGate){
-      return {
-        cals:    baseCals,
-        protein: baseProt,
-        stepEq:  baseStepEq + NEATstepBump,
-        bikeMin: baseBike + bikeBump,
-        rationale: 'Rate slow — increase NEAT via bike (+' + bikeBump + ' min/day) — knee-safe preference.'
-      };
-    }
-    return {
-      cals:    baseCals,
-      protein: baseProt,
-      stepEq:  baseStepEq + NEATstepBump,
-      bikeMin: baseBike,
-      basis: basisLine,
-      rationale: 'Rate slow — increase step-equivalents target by +' + NEATstepBump.toLocaleString() + '/day (NEAT first).'
-    };
-  }
-
-  // Rule 5 — RATE too fast / aggressive deficit
-  if(wkMode === 'cut' && actionCode === 'RATE' && rr != null && rr > 1.0){
-    return {
-      cals:    baseCals + calBumpUp,
-      protein: baseProt,
-      stepEq:  baseStepEq,
-      bikeMin: baseBike,
-      basis: basisLine,
-      rationale: 'Rate too fast — bring deficit back into safe band. Calories +' + calBumpUp + ' kcal; hold NEAT.'
-    };
-  }
-
-  // Rule 6 — PERFORMANCE drop
-  if(actionCode === 'PERFORMANCE'){
-    return {
-      cals:    baseCals + calBumpUp,
-      protein: baseProt,
-      stepEq:  baseStepEq, // don't add steps
-      bikeMin: baseBike,
-      basis: basisLine,
-      rationale: 'Performance retention priority — support training quality with +' + calBumpUp + ' kcal on training days (bias carbs). No step increase.'
-    };
-  }
-
-  // Rule 7 — NONE / on track
-  return {
-    cals:    baseCals,
-    protein: baseProt,
-    stepEq:  baseStepEq,
-    bikeMin: baseBike,
-    basis: basisLine,
-    rationale: 'On track — keep plan unchanged.'
-  };
-}
-
 // ══════════════════════════════════════════════════════════════
 // RENDER: Next Week Targets card
 // ══════════════════════════════════════════════════════════════
@@ -4246,129 +4377,6 @@ function renderNextWeekTargets(){
 //    recovery watch + rate too fast 2 weeks in a row)
 // Illness/deload weeks are IGNORED in the consecutive count (option 1)
 // ══════════════════════════════════════════════════════════════
-function calcDietBreakCandidate(){
-  const mode = D.mode || 'cut';
-  if(mode !== 'cut') return {candidate: false};
-
-  const saved = D.weeks.filter(w=>w.weight);
-  if(!saved.length) return {candidate: false};
-
-  // Count consecutive clean cut weeks (ignore illness/deload)
-  const cutWeeks = [];
-  for(let i = saved.length-1; i >= 0; i--){
-    const w = saved[i];
-    const wm = w.mode || 'cut';
-    if(wm !== 'cut') break;
-    const tags = w.tags || [];
-    if(tags.includes('illness') || tags.includes('deload')) continue; // skip, don't break
-    cutWeeks.unshift(w); // add to front to keep chronological order
-    if(cutWeeks.length >= 8) break; // don't need more than 8
-  }
-
-  if(cutWeeks.length < 6) return {candidate: false, insufficientData: true, insufficientReason: 'Fewer than 6 clean cut weeks (' + cutWeeks.length + ' found)', cleanWeeks: cutWeeks.length};
-
-  // [Rule 3] Additional data gates: adherence confidence ≥MED and recovery baseline ≥MED
-  const latestForDBC = saved[saved.length-1];
-  const adhConfDBC = calcAdherenceConfidence(latestForDBC);
-  const recBaseDBC = calcRecoveryBaselineConfidence(saved, saved.length-1);
-  if(adhConfDBC.conf === 'NONE' || adhConfDBC.conf === 'LOW'){
-    return {candidate: false, insufficientData: true, insufficientReason: 'Adherence confidence too low (' + adhConfDBC.conf + ') — need ≥5 tracked days/week', cleanWeeks: cutWeeks.length};
-  }
-  if(recBaseDBC.conf === 'NONE' || recBaseDBC.conf === 'LOW'){
-    return {candidate: false, insufficientData: true, insufficientReason: 'Recovery baseline confidence too low (' + recBaseDBC.conf + ') — need ≥3 eligible weeks of HRV/RHR data', cleanWeeks: cutWeeks.length};
-  }
-
-  // Evaluate last 2 clean weeks for triggers
-  const last2 = cutWeeks.slice(-2);
-  if(last2.length < 2) return {candidate: false, cleanWeeks: cutWeeks.length};
-
-  let reason = null;
-
-  // Trigger 1: Recovery INTERVENTION 2 clean weeks in a row
-  // We check stored HRV/RHR/sleep against their own prior weeks
-  const recFlag = (w, prev) => {
-    if(!prev) return false;
-    const eligPrev = saved.filter(x =>
-      !(x.tags||[]).includes('illness') && !(x.tags||[]).includes('deload') && x.date < w.date
-    );
-    const base2 = eligPrev.slice(-2);
-    const baseHRV = base2.filter(x=>x.hrv).length
-      ? base2.filter(x=>x.hrv).reduce((s,x)=>s+x.hrv,0)/base2.filter(x=>x.hrv).length : null;
-    const baseRHR = base2.filter(x=>x.rhr).length
-      ? base2.filter(x=>x.rhr).reduce((s,x)=>s+x.rhr,0)/base2.filter(x=>x.rhr).length : null;
-    const slp = w.sleep;
-    const prevSlp = prev.sleep;
-    let anyRed = false;
-    if(slp != null && (slp < 6.5 || (prevSlp != null && prevSlp - slp >= 1.0))) anyRed = true;
-    if(w.hrv != null && baseHRV && (baseHRV - w.hrv)/baseHRV > 0.20) anyRed = true;
-    if(w.rhr != null && baseRHR && (w.rhr - baseRHR) > 5) anyRed = true;
-    return anyRed;
-  };
-
-  const recFlagW1 = recFlag(last2[0], cutWeeks.slice(-3,-2)[0]||null);
-  const recFlagW2 = recFlag(last2[1], last2[0]);
-  if(recFlagW1 && recFlagW2){
-    reason = 'Recovery intervention flagged 2 consecutive weeks';
-  }
-
-  // Trigger 2: Performance drop 2 clean weeks in a row
-  if(!reason){
-    // checkPerformanceDrop reads D.weeks globally — approximate with e1RM history
-    // We check if performance flag is currently ON (current cut state)
-    const perfNow = checkPerformanceDrop('cut');
-    // And check if the prior clean week also would have had performance flag
-    // (proxy: look at last 2 weeks of Hevy data — if 2+ lifts were below 90% in each)
-    // Since we can't re-run per-week, we use current flag + direction as signal
-    if(perfNow.flag){
-      // Also need to confirm it's been persistent — check if 2 consecutive cut weeks had any low perf
-      // Use saved perf data from weekly lifts if available
-      const w1lifts = last2[0].lifts || [];
-      const w2lifts = last2[1].lifts || [];
-      // If both weeks have 2+ lifts with no data (skipped) or very low rpe, treat as candidate
-      const w1LowData = w1lifts.filter(l => l.weight && l.reps && l.rpe && l.rpe >= 7).length < 2;
-      const w2LowData = w2lifts.filter(l => l.weight && l.reps && l.rpe && l.rpe >= 7).length < 2;
-      if(perfNow.flag){
-        reason = 'Performance drop detected (2+ priority lifts <90% peak). Verify 2nd consecutive week manually.';
-      }
-    }
-  }
-
-  // Trigger 3: Recovery watch + rate too fast, 2 clean weeks
-  if(!reason){
-    const rateCheck = (w, prior) => {
-      if(!prior || !prior.weight || !w.weight) return false;
-      const change = ((prior.weight - w.weight) / prior.weight) * 100;
-      return change > 1.0; // fast
-    };
-    const watchCheck = (w, priorW) => {
-      // Simplified: check sleep only since HRV/RHR needs baseline
-      return w.sleep != null && w.sleep < 7.0;
-    };
-    const f1 = rateCheck(last2[0], cutWeeks.slice(-3,-2)[0]) && watchCheck(last2[0], cutWeeks.slice(-3,-2)[0]);
-    const f2 = rateCheck(last2[1], last2[0]) && watchCheck(last2[1], last2[0]);
-    if(f1 && f2) reason = 'Recovery watch + fast loss rate for 2 consecutive weeks';
-  }
-
-  if(!reason) return {candidate: false, cleanWeeks: cutWeeks.length};
-
-  return {
-    candidate: true,
-    cleanWeeks: cutWeeks.length,
-    reason,
-    tdeeEstimate: (() => {
-      const wks = D.weeks.filter(w=>w.weight&&w.calories);
-      if(wks.length < 3) return null;
-      const i = wks.length-1;
-      const trio = wks.slice(i-2,i+1);
-      const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
-      const wkLoss = wks[i-1].weight - wks[i].weight;
-      const wkLoss2 = wks[i-2].weight - wks[i-1].weight;
-      const avgWkLoss = (wkLoss+wkLoss2)/2;
-      return Math.round(avgCal + (avgWkLoss*3500/7));
-    })()
-  };
-}
-
 function renderDietBreakBanner(){
   const banner = document.getElementById('dietBreakBanner');
   if(!banner) return;
