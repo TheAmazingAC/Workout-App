@@ -805,8 +805,18 @@ const HEVY_DATA = {"sessions":[{"d":"2024-12-24","t":"Morning workout \u2600\ufe
 // STORAGE & STATE
 // ══════════════════════════════════════════
 const SK = 'alexCutDash_v3';
+function readJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn('Corrupt localStorage for', key);
+    return fallback;
+  }
+}
 let D = {weeks:[], defHeight:null, defAge:null, defAct:1.55, mode:'cut', transition:'none', transitionDismissed:false, targetWeight:null, bulkVolBaseline:null, countingMethod:'all'};
-try{const s=localStorage.getItem(SK);if(s)D=JSON.parse(s);}catch(e){}
+D = readJSON(SK, D);
 function save(){try{localStorage.setItem(SK,JSON.stringify(D));}catch(e){}}
 
 // ══════════════════════════════════════════
@@ -1222,6 +1232,12 @@ const CHART_OPTS = {responsive:true,maintainAspectRatio:false,plugins:{legend:{d
 function chartOpts(extra={}){return {...CHART_OPTS,...extra,plugins:{...CHART_OPTS.plugins,...(extra.plugins||{})}};}
 const charts = {};
 function destroyChart(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
+function replaceChart(key, ctx, cfg) {
+  if (charts[key]) {
+    charts[key].destroy();
+  }
+  charts[key] = new Chart(ctx, cfg);
+}
 
 // ══════════════════════════════════════════
 // INIT
@@ -1709,6 +1725,13 @@ function handlePhoto(e){
   };
   reader.readAsDataURL(file);
 }
+
+// ══════════════════════════════════════════
+// RENDER CONTRACT
+// ══════════════════════════════════════════
+// Primary render entry points are saveWeek() and loadWeek().
+// Tab renderers should not call each other directly.
+// Each render function should operate only on the currently active tab.
 
 // ══════════════════════════════════════════
 // SAVE WEEK
@@ -2377,7 +2400,6 @@ function showTrend(metric, btn){
   document.querySelectorAll('#trendTabs .ctab').forEach(t=>t.classList.remove('active'));
   if(btn)btn.classList.add('active');
   const cfg=MCFG[metric];
-  destroyChart('trend');
   const ctx=document.getElementById('trendChart').getContext('2d');
 
   // Feature 2: Waist:Weight Ratio derived metric
@@ -2385,7 +2407,7 @@ function showTrend(metric, btn){
     const weeks=D.weeks.filter(w=>w.weight&&w.waist);
     const labels=weeks.map(w=>fmtDShort(w.date));
     const vals=weeks.map(w=>+(w.waist/w.weight).toFixed(4));
-    charts['trend']=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Waist:Weight Ratio',data:vals,borderColor:'#ff9f47',backgroundColor:'#ff9f4718',borderWidth:2,pointRadius:3,fill:true,tension:0.3}]},options:chartOpts()});
+    replaceChart('trend',ctx,{type:'line',data:{labels,datasets:[{label:'Waist:Weight Ratio',data:vals,borderColor:'#ff9f47',backgroundColor:'#ff9f4718',borderWidth:2,pointRadius:3,fill:true,tension:0.3}]},options:chartOpts()});
     return;
   }
 
@@ -2397,7 +2419,7 @@ function showTrend(metric, btn){
   const refPts=weeks.map((w,i)=>(w.refeed||(w.tags||[]).includes('refeed'))?{x:i,y:vals[i]}:null).filter(Boolean);
   const ds=[{label:cfg.label,data:vals,borderColor:cfg.color,backgroundColor:cfg.color+'18',borderWidth:2,pointBackgroundColor:weeks.map(w=>(w.refeed||(w.tags||[]).includes('refeed'))?'#b847ff':cfg.color),pointRadius:weeks.map(w=>(w.refeed||(w.tags||[]).includes('refeed'))?6:3),fill:true,tension:0.3}];
   if(cfg.ref)ds.push({label:'Min',data:weeks.map(()=>cfg.ref),borderColor:'#ff4747',borderWidth:1,borderDash:[6,4],pointRadius:0,fill:false});
-  charts['trend']=new Chart(ctx,{type:'line',data:{labels,datasets:ds},options:chartOpts()});
+  replaceChart('trend',ctx,{type:'line',data:{labels,datasets:ds},options:chartOpts()});
 }
 
 function renderSnap(){
@@ -2736,15 +2758,13 @@ function renderVolume(){
   const col=colors[volMetric]||'#e8ff47';
   // Mark cut start
   const cutIdx=weeks.findIndex(w=>w>='2026-02-21');
-  destroyChart('vol');
   const ctx=document.getElementById('volChart').getContext('2d');
   const annotations=cutIdx>=0?[{type:'line',xMin:cutIdx,xMax:cutIdx,borderColor:'#e8ff4780',borderWidth:2,borderDash:[6,4],label:{display:true,content:'Cut Start',color:'#e8ff47',font:{size:9}}}]:[];
-  charts['vol']=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:volMetric+' volume',data:vals,backgroundColor:col+'60',borderColor:col,borderWidth:1,borderRadius:3}]},options:{...chartOpts(),plugins:{...CHART_OPTS.plugins},scales:{x:{ticks:{color:'#6b6b8a',font:{family:'DM Mono',size:9},maxRotation:45},grid:{color:'#1a1a26'}},y:{ticks:{color:'#6b6b8a',font:{family:'DM Mono',size:9},callback:v=>v+'k'},grid:{color:'#2a2a3a'}}}}});
+  replaceChart('vol',ctx,{type:'bar',data:{labels,datasets:[{label:volMetric+' volume',data:vals,backgroundColor:col+'60',borderColor:col,borderWidth:1,borderRadius:3}]},options:{...chartOpts(),plugins:{...CHART_OPTS.plugins},scales:{x:{ticks:{color:'#6b6b8a',font:{family:'DM Mono',size:9},maxRotation:45},grid:{color:'#1a1a26'}},y:{ticks:{color:'#6b6b8a',font:{family:'DM Mono',size:9},callback:v=>v+'k'},grid:{color:'#2a2a3a'}}}}});
   // Sessions count chart
   const sesVals=weeks.map(w=>vol[w].n||0);
-  destroyChart('volSes');
   const ctx2=document.getElementById('volSesChart').getContext('2d');
-  charts['volSes']=new Chart(ctx2,{type:'line',data:{labels,datasets:[{label:'Sessions/week',data:sesVals,borderColor:'#b847ff',backgroundColor:'#b847ff18',borderWidth:2,pointRadius:3,fill:true,tension:0.2}]},options:chartOpts()});
+  replaceChart('volSes',ctx2,{type:'line',data:{labels,datasets:[{label:'Sessions/week',data:sesVals,borderColor:'#b847ff',backgroundColor:'#b847ff18',borderWidth:2,pointRadius:3,fill:true,tension:0.2}]},options:chartOpts()});
 }
 
 // ── Macros ──
