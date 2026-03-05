@@ -850,14 +850,30 @@ function migrateState(raw){
   return migrated;
 }
 
-let D = {...DEFAULT_STATE};
-try {
-  const s = localStorage.getItem(SK);
-  D = migrateState(s ? JSON.parse(s) : null);
-} catch(e) {
-  D = migrateState(null);
+function readJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn("[alex-dashboard] localStorage read failed:", key, e);
+    return fallback;
+  }
 }
-function save(){try{localStorage.setItem(SK,JSON.stringify(D));}catch(e){}}
+
+function writeJSON(key, obj) {
+  try {
+    localStorage.setItem(key, JSON.stringify(obj));
+    return true;
+  } catch (e) {
+    console.warn("[alex-dashboard] localStorage write failed:", key, e);
+    return false;
+  }
+}
+
+let D = {...DEFAULT_STATE};
+D = migrateState(readJSON(SK, null));
+function save(){writeJSON(SK,D);}
 
 // ══════════════════════════════════════════
 // MODE SYSTEM
