@@ -807,6 +807,7 @@ const HEVY_DATA = {"sessions":[{"d":"2024-12-24","t":"Morning workout \u2600\ufe
 const SK = 'alexCutDash_v3';
 const SCHEMA_VERSION = 1;
 const DEFAULT_STATE = {
+  schemaVersion:SCHEMA_VERSION,
   weeks:[],
   defHeight:null,
   defAge:null,
@@ -816,46 +817,40 @@ const DEFAULT_STATE = {
   transitionDismissed:false,
   targetWeight:null,
   bulkVolBaseline:null,
-  countingMethod:'all',
-  schemaVersion:SCHEMA_VERSION
+  countingMethod:'all'
 };
-const DEFAULT_LIFT = {name:'', weight:null, reps:null, rpe:null};
 const DEFAULT_WEEK = {
-  date:'', weight:null, waist:null, hrv:null, rhr:null, sleep:null,
-  steps:null, bikeMin:null, stepTarget:null,
-  calories:null, calorieTarget:null,
-  protein:null, proteinTarget:null,
-  fat:null, carbs:null, fiber:null,
-  lifts:Array.from({length:6}, ()=>({...DEFAULT_LIFT})),
-  notes:'', refeed:false, deload:false, tags:[],
-  mode:null, transition:null,
-  daysTracked:null, eventDays:null,
-  photo:null, sessions:null, hevySessions:null,
+  date:null,
+  tags:[],
+  refeed:false,
+  deload:false,
+  lifts:[],
+  notes:'',
+  photo:null
 };
 
 function migrateWeek(w){
-  if(!w || typeof w !== 'object') return null;
-  if(typeof w.date !== 'string' || !w.date.trim()) return null;
-  const week = {...DEFAULT_WEEK, ...w};
-  week.tags = Array.isArray(w.tags) ? [...w.tags] : [];
-  if(w.refeed === true && !week.tags.includes('refeed')) week.tags.push('refeed');
-  if(w.deload === true && !week.tags.includes('deload')) week.tags.push('deload');
-  week.lifts = Array.isArray(w.lifts) ? w.lifts.map(l=>({...DEFAULT_LIFT, ...(l||{})})) : [];
-  while(week.lifts.length < 6) week.lifts.push({...DEFAULT_LIFT});
-  if(!Array.isArray(w.lifts)) week.lifts = week.lifts.slice(0, 6);
+  const rawWeek = (w && typeof w === 'object') ? w : {};
+  const week = {...DEFAULT_WEEK, ...rawWeek};
+  week.tags = Array.isArray(rawWeek.tags) ? [...rawWeek.tags] : [];
+  if(week.deload === true && !week.tags.includes('deload')) week.tags.push('deload');
+  if(week.refeed === true && !week.tags.includes('refeed')) week.tags.push('refeed');
+  const lifts = Array.isArray(rawWeek.lifts) ? rawWeek.lifts : [];
+  week.lifts = lifts.map(l => (l && typeof l === 'object') ? {...l} : {});
+  while(week.lifts.length < 6) week.lifts.push({});
   return week;
 }
 
 function migrateState(raw){
-  if(!raw || typeof raw !== 'object') return {...DEFAULT_STATE, weeks:[]};
+  if(!raw || typeof raw !== 'object') return {...DEFAULT_STATE};
   const migrated = {...DEFAULT_STATE, ...raw};
   migrated.schemaVersion = raw.schemaVersion ?? SCHEMA_VERSION;
   const rawWeeks = Array.isArray(raw.weeks) ? raw.weeks : [];
-  migrated.weeks = rawWeeks.map(migrateWeek).filter(Boolean);
+  migrated.weeks = rawWeeks.map(migrateWeek);
   return migrated;
 }
 
-let D = {...DEFAULT_STATE, weeks:[]};
+let D = {...DEFAULT_STATE};
 try {
   const s = localStorage.getItem(SK);
   D = migrateState(s ? JSON.parse(s) : null);
