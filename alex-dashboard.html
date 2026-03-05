@@ -1274,9 +1274,10 @@ const charts = {};
 function destroyChart(id){if(charts[id]){charts[id].destroy();delete charts[id];}}
 function replaceChart(key, ctx, cfg) {
   if (charts[key]) {
-    charts[key].destroy();
+    try { charts[key].destroy(); } catch(e) {}
   }
   charts[key] = new Chart(ctx, cfg);
+  return charts[key];
 }
 
 // ══════════════════════════════════════════
@@ -2554,9 +2555,8 @@ function showLiftChart(name){
     if(t.includes('deload')) return 2;
     return 4;
   });
-  destroyChart('lift');
   const ctx=document.getElementById('liftChart').getContext('2d');
-  charts['lift']=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Top Set Weight',data:vals,borderColor:'#47b8ff',backgroundColor:'#47b8ff12',borderWidth:2,pointBackgroundColor:colors,pointRadius:radii,fill:true,tension:0.2}]},options:chartOpts({plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>{const p=pts[ctx.dataIndex];return `${p.w}lbs × ${p.r||'?'} @ RPE${p.rpe||'?'} (${p.src})`;}},backgroundColor:'#1a1a26',borderColor:'#2a2a3a',borderWidth:1,titleColor:'#6b6b8a',bodyColor:'#f0f0f8'}}})});
+  replaceChart('lift',ctx,{type:'line',data:{labels,datasets:[{label:'Top Set Weight',data:vals,borderColor:'#47b8ff',backgroundColor:'#47b8ff12',borderWidth:2,pointBackgroundColor:colors,pointRadius:radii,fill:true,tension:0.2}]},options:chartOpts({plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>{const p=pts[ctx.dataIndex];return `${p.w}lbs × ${p.r||'?'} @ RPE${p.rpe||'?'} (${p.src})`;}},backgroundColor:'#1a1a26',borderColor:'#2a2a3a',borderWidth:1,titleColor:'#6b6b8a',bodyColor:'#f0f0f8'}}})});
   renderLiftTable(name, pts);
 }
 
@@ -2575,9 +2575,8 @@ function showOrmChart(name){
   if(!pts.length){document.getElementById('ormStats').innerHTML='<div class="empty"><div class="empty-icon">💪</div>No RPE ≥7 data for this exercise.</div>';destroyChart('orm');return;}
   const labels=pts.map(p=>fmtDShort(p.date));
   const vals=pts.map(p=>p.e1rm);
-  destroyChart('orm');
   const ctx=document.getElementById('ormChart').getContext('2d');
-  charts['orm']=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'e1RM',data:vals,borderColor:'#47ff8a',backgroundColor:'#47ff8a12',borderWidth:2,pointBackgroundColor:'#47ff8a',pointRadius:4,fill:true,tension:0.3}]},options:chartOpts()});
+  replaceChart('orm',ctx,{type:'line',data:{labels,datasets:[{label:'e1RM',data:vals,borderColor:'#47ff8a',backgroundColor:'#47ff8a12',borderWidth:2,pointBackgroundColor:'#47ff8a',pointRadius:4,fill:true,tension:0.3}]},options:chartOpts()});
   // Stats: peak, current, change from cut start
   const peak=Math.max(...vals);
   const curr=vals[vals.length-1];
@@ -2816,10 +2815,9 @@ function showMacro(metric, btn){
   const weeks=D.weeks.filter(w=>w.protein||w.fat||w.carbs);
   if(!weeks.length){destroyChart('macro');document.getElementById('macroPie').innerHTML='<div class="empty"><div class="empty-icon">🥩</div>No macro data yet.</div>';return;}
   const labels=weeks.map(w=>fmtDShort(w.date));
-  destroyChart('macro');
   const ctx=document.getElementById('macroChart').getContext('2d');
   if(metric==='all'){
-    charts['macro']=new Chart(ctx,{type:'line',data:{labels,datasets:[
+    replaceChart('macro',ctx,{type:'line',data:{labels,datasets:[
       {label:'Protein',data:weeks.map(w=>w.protein),borderColor:'#47b8ff',borderWidth:2,pointRadius:2,fill:false,tension:0.3},
       {label:'Fat',data:weeks.map(w=>w.fat),borderColor:'#ff9f47',borderWidth:2,pointRadius:2,fill:false,tension:0.3},
       {label:'Carbs',data:weeks.map(w=>w.carbs),borderColor:'#ff6b6b',borderWidth:2,pointRadius:2,fill:false,tension:0.3},
@@ -2828,7 +2826,7 @@ function showMacro(metric, btn){
     const cfgs={prot:{key:'protein',color:'#47b8ff',lbl:'Protein (g)'},fat:{key:'fat',color:'#ff9f47',lbl:'Fat (g)'},carbs:{key:'carbs',color:'#ff6b6b',lbl:'Carbs (g)'},fiber:{key:'fiber',color:'#47ffb8',lbl:'Fiber (g)'}};
     const cfg=cfgs[metric];
     const vals=weeks.map(w=>w[cfg.key]);
-    charts['macro']=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:cfg.lbl,data:vals,borderColor:cfg.color,backgroundColor:cfg.color+'18',borderWidth:2,pointRadius:3,fill:true,tension:0.3}]},options:chartOpts()});
+    replaceChart('macro',ctx,{type:'line',data:{labels,datasets:[{label:cfg.lbl,data:vals,borderColor:cfg.color,backgroundColor:cfg.color+'18',borderWidth:2,pointRadius:3,fill:true,tension:0.3}]},options:chartOpts()});
   }
   // Pie breakdown of latest week
   const last=D.weeks.filter(w=>w.protein||w.fat||w.carbs).pop();
@@ -2883,9 +2881,8 @@ function renderDeficitChart(){
     const tdee=Math.round(bmr*act);
     return tdee-w.calories;
   });
-  destroyChart('def');
   const ctx=document.getElementById('defChart').getContext('2d');
-  charts['def']=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:'Daily Deficit',data:deficits,borderColor:'#47ff8a',backgroundColor:'#47ff8a18',borderWidth:2,pointRadius:3,fill:true,tension:0.3},{label:'Zero line',data:weeks.map(()=>0),borderColor:'#6b6b8a',borderWidth:1,borderDash:[4,4],pointRadius:0,fill:false}]},options:{...chartOpts(),plugins:{...CHART_OPTS.plugins,legend:{display:false}}}});
+  replaceChart('def',ctx,{type:'line',data:{labels,datasets:[{label:'Daily Deficit',data:deficits,borderColor:'#47ff8a',backgroundColor:'#47ff8a18',borderWidth:2,pointRadius:3,fill:true,tension:0.3},{label:'Zero line',data:weeks.map(()=>0),borderColor:'#6b6b8a',borderWidth:1,borderDash:[4,4],pointRadius:0,fill:false}]},options:{...chartOpts(),plugins:{...CHART_OPTS.plugins,legend:{display:false}}}});
 }
 
 function renderRefeedLog(){
