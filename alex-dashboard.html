@@ -4665,6 +4665,61 @@ function loadWeek(date){
   document.querySelector('.nt').classList.add('active');
   toast('Loaded '+fmtD(date));
 }
+
+window.__selfTest = function __selfTest() {
+  const out = { pass: true, checks: [] };
+  const add = (ok, name, detail='') => {
+    out.checks.push({ ok, name, detail });
+    if(!ok) out.pass = false;
+  };
+
+  const requiredIds = [
+    'sec-log','sec-summary','sec-trends','sec-training','sec-analytics','sec-history',
+    'trendChart','liftChart','ormChart','volChart','muscChart','macroChart','defChart'
+  ];
+  requiredIds.forEach(id => add(!!document.getElementById(id), `DOM id: ${id}`));
+
+  const requiredFns = [
+    'saveWeek','loadWeek','renderActionSummary','renderTrends','renderAnalytics',
+    'calcCutVelocity','calcRecoveryStatus','calcStallStatus'
+  ];
+  requiredFns.forEach(fn => add(typeof window[fn] === 'function', `Function: ${fn}`));
+
+  add(typeof D === 'object' && D !== null, 'State: D exists');
+  add(Array.isArray(D?.weeks), 'State: D.weeks is array');
+  add(['cut','maint','bulk'].includes(D?.mode), "State: D.mode in ['cut','maint','bulk']");
+
+  const savedWeeks = Array.isArray(D?.weeks) ? D.weeks : [];
+  const last = savedWeeks.length ? savedWeeks[savedWeeks.length-1] : null;
+  if(last){
+    try {
+      const cv = calcCutVelocity(last.weight ?? null, savedWeeks);
+      add(cv && typeof cv === 'object', 'Smoke: calcCutVelocity returns object');
+      const rrOk = cv?.rollingRate == null || Number.isFinite(cv.rollingRate);
+      add(rrOk, 'Smoke: calcCutVelocity.rollingRate finite/null');
+
+      const rs = calcRecoveryStatus();
+      add(rs && typeof rs === 'object', 'Smoke: calcRecoveryStatus returns object');
+      add(typeof rs?.watchActive === 'boolean', 'Smoke: calcRecoveryStatus.watchActive boolean');
+
+      const st = calcStallStatus(cv, last.waist ?? null, savedWeeks);
+      add(st && typeof st === 'object', 'Smoke: calcStallStatus returns object');
+      add(typeof st?.stalled === 'boolean', 'Smoke: calcStallStatus.stalled boolean');
+    } catch (e) {
+      add(false, 'Smoke: calc chain executes', e?.message || String(e));
+    }
+  } else {
+    add(true, 'Smoke: skipped (no saved weeks)');
+  }
+
+  add(typeof charts === 'object' && charts !== null, 'Charts: map exists');
+  add(typeof Chart === 'function', 'Charts: Chart.js loaded');
+
+  const failed = out.checks.filter(c=>!c.ok).length;
+  const passed = out.checks.length - failed;
+  console.log(`[selfTest] ${out.pass ? 'PASS' : 'FAIL'} (${passed}/${out.checks.length})`, out);
+  return out;
+};
 </script>
 </body>
 </html>
