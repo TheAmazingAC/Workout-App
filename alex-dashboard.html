@@ -2384,6 +2384,27 @@ function handlePhoto(e){
 // Primary render entry points are saveWeek() and loadWeek().
 // Tab renderers should not call each other directly.
 // Each render function should operate only on the currently active tab.
+const dirty = { log:false, trends:false, training:false, analytics:false, history:false, summary:false };
+
+function markDirty(keys){
+  (keys||[]).forEach(k=>{ if(Object.prototype.hasOwnProperty.call(dirty, k)) dirty[k] = true; });
+}
+
+function renderApp(activeTabName){
+  if(dirty.summary){ populateSumSel(); dirty.summary = false; }
+  if(dirty.history){ renderHistory(); checkImportBanner(); dirty.history = false; }
+
+  const needsAnalytics = dirty.analytics;
+  if(needsAnalytics){
+    renderActionSummary();
+    renderMetaPanel();
+  }
+
+  if(activeTabName==='trends' && dirty.trends){ renderTrends(); dirty.trends = false; }
+  if(activeTabName==='training' && dirty.training){ renderTraining(); dirty.training = false; }
+  if(activeTabName==='analytics' && needsAnalytics){ renderAnalytics(); }
+  if(needsAnalytics) dirty.analytics = false;
+}
 
 // ══════════════════════════════════════════
 // SAVE WEEK
@@ -2433,20 +2454,12 @@ function saveWeek(){
   save();
   mergeStoredSessions();
   window._pendingPhoto=null;
-  // Always refresh: summary dropdown + history list so new week appears immediately
-  populateSumSel();
-  renderHistory();
-  checkImportBanner();
-  renderActionSummary();
-  renderMetaPanel();
-  // Re-render active chart section if open
-  const activeSec = document.querySelector('.sec.active');
-  if(activeSec){
-    const secId = activeSec.id;
-    if(secId==='sec-trends') renderTrends();
-    if(secId==='sec-training') renderTraining();
-    if(secId==='sec-analytics') renderAnalytics();
-  }
+  const activeSec = document.querySelector('.sec.active')?.id || '';
+  const activeTab = activeSec.replace('sec-','');
+  markDirty(['summary','history','analytics']);
+  if(activeTab==='trends') markDirty(['trends']);
+  if(activeTab==='training') markDirty(['training']);
+  renderApp(activeTab);
   toast('Week saved ✓');
 }
 
@@ -4646,6 +4659,8 @@ function loadWeek(date){
     document.getElementById('photoPreview').style.display='none';
   }
   window._importedSessions = null; window._pendingPhoto = null; updLoss();updVelocity();updProteinDynamic();updStepLever();chkRec();chkRecGate();updPG();updBodyDeltas(); applyModeUI();
+  markDirty(['summary','history','analytics']);
+  renderApp('log');
   showSec('log',document.querySelector('.nt'));
   document.querySelector('.nt').classList.add('active');
   toast('Loaded '+fmtD(date));
