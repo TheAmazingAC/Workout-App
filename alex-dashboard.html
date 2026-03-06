@@ -1109,12 +1109,12 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   const liveWeek = {
     date: v('wDate')||null,
     weight: nv('wt'),
-    calories: v('cals')?parseInt(v('cals')):null,
+    calories: nv('cals'),
     calorieTarget: v('calTgt')||v('calTgtInline') ? parseInt(v('calTgt')||v('calTgtInline')) : null,
-    protein: v('prot')?parseInt(v('prot')):null,
-    steps: v('steps')?parseInt(v('steps')):null,
+    protein: nv('prot'),
+    steps: nv('steps'),
     bikeMin: v('bikeMin')?parseFloat(v('bikeMin')):null,
-    stepTarget: nv('stepTgt')||15000,
+    stepTarget: nv('stepTgt'),
   };
   const hasLiveWeight = liveWeek.weight!=null;
   const weightedWeeks = savedWeeks.filter(w=>w.weight);
@@ -1139,27 +1139,22 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   // Flat = no downward movement >0.15in over 2-3 weeks
   const waistFlat  = (waistTrend!=null && waistPrev!=null) ? (waistPrev - waistTrend) < 0.15 : null;
 
-  // ── Adherence checks (last 2 saved weeks avg) ──
-  const recent2Start = Math.max(0, wks.length-2);
-  const calAdh = wks.slice(recent2Start).map((w,offset)=>{
-    const idx = recent2Start + offset;
-    const target = resolveCalTarget(wks, idx, liveWeek.calorieTarget);
-    if(!(w.calories && target)) return null;
-    return w.calories/target*100;
-  }).filter(v=>v!=null);
-  const calAdhPct  = calAdh.length ? calAdh.reduce((s,v)=>s+v,0)/calAdh.length : null;
+  // ── Adherence checks (current loaded week) ──
+  const currentWeekIdx = liveIdx>=0 ? liveIdx : (wks.length ? wks.length-1 : -1);
+  const currentWeek = currentWeekIdx>=0 ? wks[currentWeekIdx] : null;
 
-  const protWks = wks.filter(w=>w.protein&&w.weight).slice(-2);
-  const protAdh = protWks.map(w=>w.protein/w.weight*100); // 1g/lb = 100%
-  const protAdhPct = protAdh.length ? protAdh.reduce((s,v)=>s+v,0)/protAdh.length : null;
+  const calTarget = currentWeek ? resolveCalTarget(wks, currentWeekIdx, liveWeek.calorieTarget) : null;
+  const calAdhPct = (currentWeek && currentWeek.calories!=null && calTarget!=null && calTarget!==0)
+    ? currentWeek.calories/calTarget*100
+    : null;
 
-  const stpWks = wks.filter(w=>w.steps!=null).slice(-2);
-  const stpAdh = stpWks.map(w=>{
-    const neat = calcNEAT(w.steps, w.bikeMin);
-    const tgt  = w.stepTarget||15000;
-    return neat.totalEq/tgt*100;
-  });
-  const stpAdhPct = stpAdh.length ? stpAdh.reduce((s,v)=>s+v,0)/stpAdh.length : null;
+  const protAdhPct = (currentWeek && currentWeek.protein!=null && currentWeek.weight!=null && currentWeek.weight!==0)
+    ? currentWeek.protein/currentWeek.weight*100 // 1g/lb = 100%
+    : null;
+
+  const stpAdhPct = (currentWeek && currentWeek.steps!=null && currentWeek.stepTarget!=null && currentWeek.stepTarget!==0)
+    ? calcNEAT(currentWeek.steps, currentWeek.bikeMin).totalEq/currentWeek.stepTarget*100
+    : null;
 
   // ── Recovery gate ──
   // calcRecoveryStatus reads live form fields; when called from historical context
@@ -2402,9 +2397,9 @@ function chkRec(){
 function updPG(){
   const p=nv('prot'),pt=nv('protTgt');
   const w=document.getElementById('pgWrap');
-  if(!p||!pt){w.style.display='none';return;}
+  if(p==null||pt==null||pt===0){w.style.display='none';return;}
   w.style.display='block';
-  const pct=Math.min(110,Math.round(p/pt*100));
+  const pct=Math.round(p/pt*100);
   const fill=document.getElementById('pgFill');
   fill.style.width=Math.min(100,pct)+'%';
   fill.style.background=pct>=95?'var(--g)':pct>=80?'var(--a)':'var(--a3)';
@@ -3755,7 +3750,7 @@ function updVelocity(){
   const pct = v => v!=null ? v.toFixed(0)+'%' : '—';
   const adCls = v => v==null?'var(--mu)':v>=90?'var(--g)':v>=80?'var(--a)':'var(--a3)';
   document.getElementById('velAdherence').innerHTML =
-    `<div style="font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">Adherence (2-wk avg) — required for stall diagnosis</div>
+    `<div style="font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">Adherence (current loaded week) — required for stall diagnosis</div>
      <div class="sg" style="gap:6px">
        <div class="sb"><div class="sv" style="font-size:14px;color:${adCls(st.calAdhPct)}">${pct(st.calAdhPct)}</div><div class="sl">Calories ≥80%</div></div>
        <div class="sb"><div class="sv" style="font-size:14px;color:${adCls(st.protAdhPct)}">${pct(st.protAdhPct)}</div><div class="sl">Protein ≥90%</div></div>
