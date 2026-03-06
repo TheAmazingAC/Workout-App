@@ -900,6 +900,8 @@ function loadFixtureData(){
   D = migrateState(JSON.parse(JSON.stringify(FIXTURE_STATE)));
   window._pendingPhoto = null;
   window._importedSessions = null;
+  if(typeof window.metricsSnapshotCache === 'object') window.metricsSnapshotCache = null;
+  if(typeof window._metricsSnapshotCache === 'object') window._metricsSnapshotCache = null;
   if(typeof charts === 'object' && charts){ Object.keys(charts).forEach(destroyChart); }
   if(D.targetWeight) sv('targetWt', D.targetWeight);
   if(D.defHeight) sv('defHt', D.defHeight);
