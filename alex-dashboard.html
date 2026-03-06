@@ -328,6 +328,16 @@ select option{background:var(--s2);}
       <div class="field"><label>Week Ending</label><input type="date" id="wDate"></div>
       <div class="field"><label>Calorie Target</label><input type="number" id="calTgt" placeholder="2300" oninput="syncCalorieTargets('week');updLoss();updVelocity()"></div>
     </div>
+    <div class="fg">
+      <div class="field">
+        <label>Phase</label>
+        <select id="phaseRef">
+          <option value="cut">Cut</option>
+          <option value="maint">Maintenance</option>
+          <option value="bulk">Bulk</option>
+        </select>
+      </div>
+    </div>
         <div style="margin-top:8px;">
       <div style="font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Week Tags</div>
       <div class="tag-row" id="tagRow">
@@ -1085,6 +1095,7 @@ function applyModeUI(){
   });
   // Transition card
   renderTransitionCard();
+  if(!D.weeks.some(w=>w.date===v('wDate'))) sv('phaseRef', m);
   // Re-render command center with mode context
   renderCommandCenter();
 }
@@ -1563,13 +1574,42 @@ function calcRecoveryBaselineConfidence(weeksArray, currentIdx){
   return { conf, label, n, eligible, suppressed: n < 3 };
 }
 
+function getWeekPhaseRef(week){
+  if(week && week.phaseRef) return week.phaseRef;
+  if(week && week.mode) return week.mode;
+  return D.mode || 'cut';
+}
+
+function getCurrentPhaseRef(){
+  if(!Array.isArray(D.weeks) || !D.weeks.length) return D.mode || 'cut';
+  const latest = [...D.weeks].sort((a,b)=>a.date.localeCompare(b.date)).slice(-1)[0];
+  return getWeekPhaseRef(latest);
+}
+
+function getWeeksInCurrentPhase(){
+  const sortedWeeks = [...(D.weeks||[])]
+    .filter(w=>w && w.date)
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  if(!sortedWeeks.length) return 0;
+
+  // phaseRef is per-week manual phase classification, and current phase length counts
+  // consecutive most-recent weeks with the same phaseRef to avoid overcounting old blocks.
+  const latestPhaseRef = getCurrentPhaseRef();
+  let count = 0;
+  for(let i=sortedWeeks.length-1;i>=0;i--){
+    if(getWeekPhaseRef(sortedWeeks[i])!==latestPhaseRef) break;
+    count++;
+  }
+  return count;
+}
+
 function calcPhaseWeeks(weeksArray, currentIdx){
-  // [Rule 1] Count consecutive prior weeks with same week.mode as selected week,
+  // [Rule 1] Count consecutive prior weeks with same effective phase ref as selected week,
   // contiguous by week-ending dates (gap ≤8 days), ignoring weeks missing weight.
   if(!weeksArray.length || currentIdx < 0) return 0;
   const ref = weeksArray[currentIdx];
   if(!ref) return 0;
-  const currentMode = ref.mode || 'cut';
+  const currentPhaseRef = getWeekPhaseRef(ref);
 
   // Build the chain walking backwards from currentIdx (inclusive)
   let count = 0;
@@ -1579,9 +1619,9 @@ function calcPhaseWeeks(weeksArray, currentIdx){
     if(!w) continue;
     // Must have weight
     if(!w.weight) continue;
-    // Must be same mode
-    const wm = w.mode || 'cut';
-    if(wm !== currentMode) break;
+    // Must be same effective phase ref
+    const wm = getWeekPhaseRef(w);
+    if(wm !== currentPhaseRef) break;
     // Must be contiguous — gap ≤8 days from last counted week (allow 1-day slop)
     if(prevDate !== null){
       const gap = (new Date(prevDate) - new Date(w.date)) / 86400000;
@@ -2073,7 +2113,7 @@ function renderActionSummary(){
 
   // [C] Phase gate: suppress stall language if < 4 weeks in phase
   const savedIdx = saved.length - 1;
-  const phaseWksAS = calcPhaseWeeks(saved, savedIdx);
+  const phaseWksAS = getWeeksInCurrentPhase();
   const recBaseAS2 = calcRecoveryBaselineConfidence(saved, savedIdx);
   const stallConfAS = calcStallConfidence(phaseWksAS, recBaseAS2, adhConfAS);
   const stallGatedAS = phaseWksAS < 4 || stallConfAS === 'LOW';
@@ -2179,6 +2219,7 @@ function mergeStoredSessions(){
 window.onload = ()=>{
   mergeStoredSessions();
   sv('wDate', new Date().toISOString().split('T')[0]);
+  sv('phaseRef', D.mode || 'cut');
   if(D.targetWeight) sv('targetWt', D.targetWeight);
   buildPrimaryMuscleMap();
   _countingMethod = D.countingMethod||'all';
@@ -2571,6 +2612,7 @@ function getCurrentFormSnapshot(){
   return {
     date: v('wDate'),
     calorieTarget: v('calTgt') || v('calTgtInline'),
+    phaseRef: v('phaseRef'),
     weight: v('wt'),
     waist: v('waist'),
     targetWeight: v('targetWt'),
@@ -2637,6 +2679,7 @@ function saveWeek(){
     deload: getActiveTags().includes('deload'),
     tags: getActiveTags(),
     mode: D.mode || 'cut',
+    phaseRef: v('phaseRef') || (D.mode || 'cut'),
     transition: D.transition || 'none',
     daysTracked: v('daysTracked')?parseInt(v('daysTracked')):null,
     eventDays: v('eventDays')?parseInt(v('eventDays')):null,
@@ -3053,7 +3096,7 @@ function genSummary(){
   const recBaseSum = calcRecoveryBaselineConfidence(D.weeks, idx);
 
   // ── Patch C: phase weeks + stall confidence (Rule 2 cap applied) ──
-  const phaseWksSum  = calcPhaseWeeks(D.weeks, idx);
+  const phaseWksSum  = getWeeksInCurrentPhase();
   const adhConfSum   = calcAdherenceConfidence(w);  // declare before stallConf (Rule 2 needs it)
   const stallConfSum = calcStallConfidence(phaseWksSum, recBaseSum, adhConfSum);
   const stallGatedSum = phaseWksSum < 4 || stallConfSum === 'LOW';
@@ -4487,7 +4530,7 @@ function renderMetaPanel(){
   // [G] Adherence confidence
   const adhConf = calcAdherenceConfidence(latest);
 
-  const phaseWks = calcPhaseWeeks(saved, idx);
+  const phaseWks = getWeeksInCurrentPhase();
   const stallConf = calcStallConfidence(phaseWks, recBase, adhConf);
   const stallGated = phaseWks < 4;
 
@@ -4842,6 +4885,7 @@ function loadWeek(date, opts={}){
   if(!opts.skipUnsavedWarning && hasUnsavedChanges() && !confirm('You have unsaved changes. Load this week anyway?')) return;
   const w=D.weeks.find(x=>x.date===date);if(!w)return;
   sv('wDate',w.date);sv('calTgt',w.calorieTarget);sv('calTgtInline',w.calorieTarget);
+  sv('phaseRef', getWeekPhaseRef(w));
   sv('wt',w.weight);sv('waist',w.waist);
   if(D.targetWeight) sv('targetWt', D.targetWeight);
   sv('hrv',w.hrv);sv('rhr',w.rhr);sv('slp',w.sleep);
