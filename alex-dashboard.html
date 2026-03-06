@@ -1114,9 +1114,17 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   };
   const hasLiveWeight = liveWeek.weight!=null;
   const weightedWeeks = savedWeeks.filter(w=>w.weight);
-  const lastWeekDate = weightedWeeks.length ? (weightedWeeks[weightedWeeks.length-1].date||null) : null;
-  const shouldAppendLive = hasLiveWeight && (!liveWeek.date || liveWeek.date!==lastWeekDate);
-  const wks = shouldAppendLive ? [...weightedWeeks, liveWeek] : weightedWeeks;
+  const liveIdx = liveWeek.date ? weightedWeeks.findIndex(w=>w.date===liveWeek.date) : -1;
+  let wks = weightedWeeks;
+  if(hasLiveWeight){
+    if(liveIdx>=0){
+      // If the loaded week is being edited, use the live form values so adherence
+      // calculations update immediately instead of sticking to the originally saved values.
+      wks = weightedWeeks.map((w,idx)=>idx===liveIdx?{...w,...liveWeek}:w);
+    } else {
+      wks = [...weightedWeeks, liveWeek];
+    }
+  }
 
   // ── Waist 3-week rolling average ──
   const waistWks = savedWeeks.filter(w=>w.waist);
