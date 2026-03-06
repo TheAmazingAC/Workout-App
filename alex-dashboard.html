@@ -236,6 +236,17 @@ select option{background:var(--s2);}
 .runway-stat:last-child{border-bottom:none;}
 .runway-val{font-family:'Syne',sans-serif;font-weight:700;font-size:14px;color:var(--a2);}
 .runway-note{font-size:9px;color:var(--mu);margin-top:6px;}
+/* ── FEATURE 2: SCENARIO PLANNER ── */
+.scn-inputs{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end;margin-bottom:10px;}
+.scn-table{display:flex;flex-direction:column;gap:8px;}
+.scn-row{background:var(--s2);border:1px solid var(--b);border-radius:8px;padding:10px 12px;}
+.scn-top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:5px;}
+.scn-label{font-family:'Syne',sans-serif;font-size:11px;font-weight:700;}
+.scn-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;font-size:9px;color:var(--mu);margin-bottom:6px;}
+.scn-grid strong{display:block;color:var(--t);font-size:11px;margin-top:2px;}
+.scn-rationale{font-size:10px;color:var(--mu);line-height:1.5;}
+.scn-guardrails{margin-top:10px;padding:8px 10px;border:1px solid var(--w);background:rgba(255,159,71,.1);border-radius:8px;font-size:10px;line-height:1.5;color:var(--w);}
+@media (max-width:560px){.scn-inputs{grid-template-columns:1fr;}.scn-grid{grid-template-columns:1fr 1fr;}}
 /* ── FEATURE 3: FATIGUE SCORE ── */
 .fatigue-badge{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:20px;font-family:'Syne',sans-serif;font-weight:700;font-size:10px;letter-spacing:1px;}
 .fatigue-0{background:rgba(71,255,138,.1);color:var(--g);border:1px solid var(--g);}
@@ -637,6 +648,16 @@ select option{background:var(--s2);}
       <div class="ct">// Runway Projection</div>
       <p class="note" id="runwayNote">Projected weeks to reach target weight at current rolling rate.</p>
       <div id="runwayPanel"></div>
+    </div>
+    <div class="card" id="scenarioCard" style="display:none">
+      <div class="ct">// Scenario Planner</div>
+      <p class="note">Model different paths to your target. Feasibility rated against directive guardrails.</p>
+      <div class="scn-inputs">
+        <div class="field"><label>Target Weight (lbs)</label><input type="number" id="scenarioTargetWt" step="0.5" placeholder="175"></div>
+        <div class="field"><label>Target Date</label><input type="date" id="scenarioTargetDate"></div>
+        <button class="btn btn-s" id="scenarioComputeBtn" type="button" onclick="renderScenario()">Compute</button>
+      </div>
+      <div id="scenarioPanel"><div class="empty" style="padding:14px 8px;font-size:10px">Set a target date and compute scenarios.</div></div>
     </div>
     <!-- Feature 3: Fatigue Score -->
     <div class="card" id="fatigueCard" style="display:none">
@@ -4790,6 +4811,181 @@ function renderDietBreakBanner(){
   </div>`;
 }
 
+
+function getRunwayProjectionDate(targetWeight){
+  const saved = D.weeks.filter(w=>w.weight);
+  if(!saved.length || !targetWeight) return null;
+  const latest = saved[saved.length-1];
+  const cw = latest.weight;
+  const cv = calcCutVelocity(cw, saved.slice(0,-1));
+  const rr = cv.rollingRate;
+  if(rr==null || rr<=0 || targetWeight>=cw) return null;
+  const weeklyLbs = cw*(rr/100);
+  if(!weeklyLbs) return null;
+  const weeks = (cw-targetWeight)/weeklyLbs;
+  if(!Number.isFinite(weeks) || weeks<=0) return null;
+  const d = new Date();
+  d.setDate(d.getDate() + Math.round(weeks)*7);
+  return d;
+}
+
+function calcScenarios(targetWeight, targetDate){
+  const scenarios = [];
+  const saved = D.weeks.filter(w=>w.weight);
+  if(!saved.length) return scenarios;
+  const latest = saved[saved.length-1];
+  const currentWeight = latest.weight;
+  if(!currentWeight || !targetWeight || !targetDate) return scenarios;
+
+  const now = new Date();
+  now.setHours(0,0,0,0);
+  const goalDate = new Date(targetDate+'T00:00:00');
+  const weeksAvailable = (goalDate-now)/(1000*60*60*24*7);
+  if(!Number.isFinite(weeksAvailable) || weeksAvailable<=0) return scenarios;
+
+  const lbsToLose = currentWeight - targetWeight;
+  const requiredWeeklyLoss = lbsToLose/weeksAvailable;
+  const requiredRatePct = (requiredWeeklyLoss/currentWeight)*100;
+
+  const guardrails = [];
+  if(requiredRatePct>1.25) guardrails.push('Exceeds 1.25%/wk guardrail — muscle retention risk');
+  if(weeksAvailable<4) guardrails.push('Very short timeline — results will be unreliable');
+  if(requiredRatePct<0.3) guardrails.push('Very slow — consider whether a formal cut is needed');
+
+  const rollWks = D.weeks.filter(w=>w.weight&&w.calories);
+  let tdeeEstimate = null;
+  if(rollWks.length>=3){
+    const i = rollWks.length-1;
+    const trio = rollWks.slice(i-2,i+1);
+    const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
+    const wkLoss = rollWks[i-1].weight-rollWks[i].weight;
+    const wkLoss2 = rollWks[i-2].weight-rollWks[i-1].weight;
+    const avgWkLoss = (wkLoss+wkLoss2)/2;
+    tdeeEstimate = avgCal + (avgWkLoss*3500/7);
+  }
+
+  const calories = latest.calories || latest.calorieTarget || null;
+  const neat = calcNEAT(latest.steps, latest.bikeMin);
+  const currentStepEq = neat.totalEq || latest.stepTarget || 15000;
+  const currentBike = latest.bikeMin || 0;
+  const currentRate = (calcCutVelocity(currentWeight, saved.slice(0,-1)).rollingRate)||0;
+  const currentDeficitDay = (tdeeEstimate!=null && calories!=null) ? (tdeeEstimate-calories) : ((currentRate/100)*currentWeight*3500/7);
+
+  const rsWeeks = saved.slice(0,-1).filter(w=>w.hrv||w.rhr||w.sleep);
+  const rs = calcRecoveryStatusFromData(latest.hrv, latest.rhr, latest.sleep, rsWeeks);
+  const kneeGate = (latest.notes||'').toLowerCase().includes('knee');
+
+  const projectedWeeksAtCurrent = currentRate>0 ? (lbsToLose/(currentWeight*(currentRate/100))) : Infinity;
+  scenarios.push({
+    label:'Current Pace',
+    ratePct: currentRate,
+    calories,
+    stepEq: currentStepEq,
+    bikeMin: currentBike,
+    feasibility: projectedWeeksAtCurrent<=weeksAvailable ? 'HIGH' : 'LOW',
+    rationale: projectedWeeksAtCurrent<=weeksAvailable
+      ? 'Current rolling pace reaches target by selected date.'
+      : (Number.isFinite(projectedWeeksAtCurrent)
+        ? `Misses target date by about ${Math.max(0,Math.ceil(projectedWeeksAtCurrent-weeksAvailable))} extra week(s).`
+        : 'Current trend is not moving toward target.'),
+  });
+
+  const neededExtraDeficit = Math.max(0,(requiredWeeklyLoss*3500/7)-currentDeficitDay);
+  const addStepsRaw = Math.round((neededExtraDeficit/100)*2000/500)*500;
+  const additionalSteps = Math.min(4000, Math.max(2000, addStepsRaw||2000));
+  const neatDeficitAdd = (additionalSteps/2000)*100;
+  const neatImpliedDefDay = currentDeficitDay + neatDeficitAdd;
+  const neatLossWk = (neatImpliedDefDay*7)/3500;
+  const neatRate = (neatLossWk/currentWeight)*100;
+  const neatTotalStepEq = currentStepEq + additionalSteps;
+  let neatFeas = 'LOW';
+  if(neatTotalStepEq<=18000 && neatRate<=1.0) neatFeas='HIGH';
+  else if(neatTotalStepEq<=22000 && neatRate<=1.25) neatFeas='MEDIUM';
+  scenarios.push({
+    label:'NEAT First',
+    ratePct: neatRate,
+    calories,
+    stepEq: neatTotalStepEq,
+    bikeMin: kneeGate ? currentBike + Math.ceil(additionalSteps/BIKE_STEP_EQ) : currentBike,
+    feasibility: neatFeas,
+    rationale: `Add ~${additionalSteps.toLocaleString()} step-eq/day (~${Math.round(neatDeficitAdd)} kcal/day).` + (kneeGate ? ' Prefer bike over steps.' : '')
+  });
+
+  const calReduction = neededExtraDeficit>150 ? 200 : 100;
+  const newCalories = calories!=null ? calories-calReduction : null;
+  const calImpliedDefDay = currentDeficitDay + calReduction;
+  const calLossWk = (calImpliedDefDay*7)/3500;
+  const calRate = (calLossWk/currentWeight)*100;
+  let calFeas = 'LOW';
+  if((newCalories==null || newCalories>=1800) && calImpliedDefDay<=600 && calRate<=1.0) calFeas='HIGH';
+  else if((newCalories==null || newCalories>=1600) && calImpliedDefDay<=800 && calRate<=1.25) calFeas='MEDIUM';
+  if(newCalories!=null && (newCalories<1600 || calImpliedDefDay>800 || calRate>1.25)) calFeas='LOW';
+  if(rs.calBlocked) calFeas='LOW';
+  scenarios.push({
+    label:'Calorie Reduction',
+    ratePct: calRate,
+    calories: newCalories,
+    stepEq: currentStepEq,
+    bikeMin: currentBike,
+    feasibility: calFeas,
+    rationale: `Reduce intake by ${calReduction} kcal/day while holding NEAT.` + (rs.calBlocked ? ' ⚠ Calorie reduction blocked by recovery status' : '')
+  });
+
+  scenarios.guardrails = guardrails;
+  scenarios.requiredRatePct = requiredRatePct;
+  scenarios.weeksAvailable = weeksAvailable;
+  scenarios.tdeeEstimate = tdeeEstimate;
+  scenarios.approximate = tdeeEstimate==null;
+  return scenarios;
+}
+
+function renderScenario(){
+  const card = document.getElementById('scenarioCard');
+  const panel = document.getElementById('scenarioPanel');
+  const wtInput = document.getElementById('scenarioTargetWt');
+  const dateInput = document.getElementById('scenarioTargetDate');
+  if(!card||!panel||!wtInput||!dateInput) return;
+
+  const defaultTarget = D.targetWeight || nv('targetWt');
+  if(defaultTarget && !wtInput.value) wtInput.value = defaultTarget;
+  if(!dateInput.value){
+    const runwayDate = getRunwayProjectionDate(parseFloat(wtInput.value||defaultTarget));
+    if(runwayDate) dateInput.value = runwayDate.toISOString().slice(0,10);
+  }
+
+  const hasTarget = !!(wtInput.value || defaultTarget);
+  card.style.display = hasTarget ? 'block' : 'none';
+  if(!hasTarget) return;
+
+  const tw = parseFloat(wtInput.value);
+  const td = dateInput.value;
+  if(!tw || !td){
+    panel.innerHTML = '<div class="empty" style="padding:14px 8px;font-size:10px">Set target weight/date and press Compute.</div>';
+    return;
+  }
+
+  const scenarios = calcScenarios(tw, td);
+  if(!scenarios.length){
+    panel.innerHTML = '<div class="empty" style="padding:14px 8px;font-size:10px">Not enough data for scenario modeling yet.</div>';
+    return;
+  }
+
+  const badgeCls = f => f==='HIGH'?'vel-green':f==='MEDIUM'?'vel-yellow':'vel-red';
+  panel.innerHTML = `<div class="scn-table">${scenarios.map(s=>`
+      <div class="scn-row">
+        <div class="scn-top"><div class="scn-label">${s.label}</div><span class="vel-badge ${badgeCls(s.feasibility)}" style="margin:0;padding:4px 10px;font-size:10px">${s.feasibility}</span></div>
+        <div class="scn-grid">
+          <div>Rate<strong>${Number.isFinite(s.ratePct)?s.ratePct.toFixed(2):'—'}%/wk</strong></div>
+          <div>Calories<strong>${s.calories!=null?Math.round(s.calories):'—'}</strong></div>
+          <div>Step-eq<strong>${Math.round(s.stepEq||0).toLocaleString()}</strong></div>
+          <div>Bike<strong>${Math.round(s.bikeMin||0)} min</strong></div>
+        </div>
+        <div class="scn-rationale">${s.rationale}</div>
+      </div>`).join('')}</div>
+      ${(scenarios.guardrails||[]).length?`<div class="scn-guardrails">${scenarios.guardrails.map(g=>'• '+g).join('<br>')}</div>`:''}
+      ${scenarios.approximate?'<div class="note" style="margin-top:8px">TDEE estimate unavailable — scenarios approximate.</div>':''}`;
+}
+
 function renderCommandCenter(){
   renderDecisionLadder();
   renderDeficitAwareness();
@@ -4798,6 +4994,7 @@ function renderCommandCenter(){
   renderNextWeekTargets();
   renderDietBreakBanner();
   renderRunway();
+  renderScenario();
   renderFatigueScore();
   renderAdherenceStreak();
   renderVolumeRetention();
@@ -5054,6 +5251,7 @@ window.__selfTest = function __selfTest() {
   ];
   requiredFns.forEach(fn => add(typeof window[fn] === 'function', `Function: ${fn}`));
   add(typeof window.calcRecoveryStatusFromData === 'function', 'Function: calcRecoveryStatusFromData');
+  add(typeof window.calcScenarios === 'function', 'Function: calcScenarios');
 
   add(typeof D === 'object' && D !== null, 'State: D exists');
   add(Array.isArray(D?.weeks), 'State: D.weeks is array');
