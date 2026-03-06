@@ -1146,11 +1146,11 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   }).filter(v=>v!=null);
   const calAdhPct  = calAdh.length ? calAdh.reduce((s,v)=>s+v,0)/calAdh.length : null;
 
-  const protWks = savedWeeks.filter(w=>w.protein&&w.weight).slice(-2);
+  const protWks = wks.filter(w=>w.protein&&w.weight).slice(-2);
   const protAdh = protWks.map(w=>w.protein/w.weight*100); // 1g/lb = 100%
   const protAdhPct = protAdh.length ? protAdh.reduce((s,v)=>s+v,0)/protAdh.length : null;
 
-  const stpWks = savedWeeks.filter(w=>w.steps!=null).slice(-2);
+  const stpWks = wks.filter(w=>w.steps!=null).slice(-2);
   const stpAdh = stpWks.map(w=>{
     const neat = calcNEAT(w.steps, w.bikeMin);
     const tgt  = w.stepTarget||15000;
