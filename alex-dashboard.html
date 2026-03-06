@@ -3150,7 +3150,7 @@ function genSummary(){
   const lines = [
     '📊 WEEKLY HEALTH SUMMARY — '+wkMode.toUpperCase()+' PHASE'+(flags?' '+flags:''),
     'Week ending: '+fmtD(w.date),
-    'Mode:                '+wkMode.toUpperCase()+(w.transition&&w.transition!=='none'?' [transition: '+w.transition+']':''),
+    'Mode:                '+wkMode.toUpperCase(),
     'Tags:                '+(wTags.length ? wTags.join(', ') : 'none'),
     '',
     '── META ──',
