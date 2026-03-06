@@ -1109,10 +1109,10 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   const liveWeek = {
     date: v('wDate')||null,
     weight: nv('wt'),
-    calories: v('cals')?parseInt(v('cals')):null,
+    calories: nv('cals'),
     calorieTarget: v('calTgt')||v('calTgtInline') ? parseInt(v('calTgt')||v('calTgtInline')) : null,
-    protein: v('prot')?parseInt(v('prot')):null,
-    steps: v('steps')?parseInt(v('steps')):null,
+    protein: nv('prot'),
+    steps: nv('steps'),
     bikeMin: v('bikeMin')?parseFloat(v('bikeMin')):null,
     stepTarget: nv('stepTgt')||15000,
   };
@@ -1144,12 +1144,12 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   const calAdh = wks.slice(recent2Start).map((w,offset)=>{
     const idx = recent2Start + offset;
     const target = resolveCalTarget(wks, idx, liveWeek.calorieTarget);
-    if(!(w.calories && target)) return null;
+    if(w.calories==null || target==null || target===0) return null;
     return w.calories/target*100;
   }).filter(v=>v!=null);
   const calAdhPct  = calAdh.length ? calAdh.reduce((s,v)=>s+v,0)/calAdh.length : null;
 
-  const protWks = wks.filter(w=>w.protein&&w.weight).slice(-2);
+  const protWks = wks.filter(w=>w.protein!=null&&w.weight!=null&&w.weight!==0).slice(-2);
   const protAdh = protWks.map(w=>w.protein/w.weight*100); // 1g/lb = 100%
   const protAdhPct = protAdh.length ? protAdh.reduce((s,v)=>s+v,0)/protAdh.length : null;
 
@@ -2402,9 +2402,9 @@ function chkRec(){
 function updPG(){
   const p=nv('prot'),pt=nv('protTgt');
   const w=document.getElementById('pgWrap');
-  if(!p||!pt){w.style.display='none';return;}
+  if(p==null||pt==null||pt===0){w.style.display='none';return;}
   w.style.display='block';
-  const pct=Math.min(110,Math.round(p/pt*100));
+  const pct=Math.round(p/pt*100);
   const fill=document.getElementById('pgFill');
   fill.style.width=Math.min(100,pct)+'%';
   fill.style.background=pct>=95?'var(--g)':pct>=80?'var(--a)':'var(--a3)';
