@@ -2529,6 +2529,7 @@ function handlePhoto(e){
 // Tab renderers should not call each other directly.
 // Each render function should operate only on the currently active tab.
 const dirty = { log:false, trends:false, training:false, analytics:false, history:false, summary:false };
+let lastLoadedWeekSnapshot = null;
 
 function markDirty(keys){
   (keys||[]).forEach(k=>{ if(Object.prototype.hasOwnProperty.call(dirty, k)) dirty[k] = true; });
@@ -2548,6 +2549,48 @@ function renderApp(activeTabName){
   if(activeTabName==='training' && dirty.training){ renderTraining(); dirty.training = false; }
   if(activeTabName==='analytics' && needsAnalytics){ renderAnalytics(); }
   if(needsAnalytics) dirty.analytics = false;
+}
+
+function getCurrentFormSnapshot(){
+  const preview = document.getElementById('photoPreview');
+  return {
+    date: v('wDate'),
+    calorieTarget: v('calTgt') || v('calTgtInline'),
+    weight: v('wt'),
+    waist: v('waist'),
+    targetWeight: v('targetWt'),
+    hrv: v('hrv'),
+    rhr: v('rhr'),
+    sleep: v('slp'),
+    steps: v('steps'),
+    bikeMin: v('bikeMin'),
+    stepTarget: v('stepTgt'),
+    calories: v('cals'),
+    protein: v('prot'),
+    fat: v('fat'),
+    carbs: v('carbs'),
+    fiber: v('fiber'),
+    daysTracked: v('daysTracked'),
+    eventDays: v('eventDays'),
+    notes: v('notes'),
+    tags: getActiveTags(),
+    lifts: [1,2,3,4,5,6].map(n=>({
+      name: v('l'+n+'n'),
+      weight: v('l'+n+'w'),
+      reps: v('l'+n+'r'),
+      rpe: v('l'+n+'rpe')
+    })),
+    hasPhoto: !!(window._pendingPhoto || (preview && preview.style.display !== 'none' && preview.src))
+  };
+}
+
+function snapshotsEqual(a, b){
+  return JSON.stringify(a || {}) === JSON.stringify(b || {});
+}
+
+function hasUnsavedChanges(){
+  if(!lastLoadedWeekSnapshot) return false;
+  return !snapshotsEqual(getCurrentFormSnapshot(), lastLoadedWeekSnapshot);
 }
 
 // ══════════════════════════════════════════
@@ -2604,6 +2647,7 @@ function saveWeek(){
   if(activeTab==='trends') markDirty(['trends']);
   if(activeTab==='training') markDirty(['training']);
   renderApp(activeTab);
+  lastLoadedWeekSnapshot = getCurrentFormSnapshot();
   toast('Week saved ✓');
 }
 
@@ -4779,7 +4823,8 @@ function renderSignalsSummary(){
     : '<div style="font-size:11px;color:var(--mu)">No signal data yet.</div>';
 }
 
-function loadWeek(date){
+function loadWeek(date, opts={}){
+  if(!opts.skipUnsavedWarning && hasUnsavedChanges() && !confirm('You have unsaved changes. Load this week anyway?')) return;
   const w=D.weeks.find(x=>x.date===date);if(!w)return;
   sv('wDate',w.date);sv('calTgt',w.calorieTarget);sv('calTgtInline',w.calorieTarget);
   sv('wt',w.weight);sv('waist',w.waist);
@@ -4810,6 +4855,7 @@ function loadWeek(date){
   renderApp('log');
   showSec('log',document.querySelector('.nt'));
   document.querySelector('.nt').classList.add('active');
+  lastLoadedWeekSnapshot = getCurrentFormSnapshot();
   toast('Loaded '+fmtD(date));
 }
 
