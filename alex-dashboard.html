@@ -3217,6 +3217,9 @@ function genSummary(){
           : prev ? '' : ' (n/a — first week)'))
       : '—'),
     'Waist (7-day avg):   '+nd(wWaist)+' in'+delt(wWaist, prev&&(num(prev.waist)||null), 2, ' in'),
+    (stSum.waistTrend!=null)
+      ? 'Waist trend (3-wk):  '+nd(Number(stSum.waistTrend).toFixed(2))+'" avg  ·  waistFlat: '+nd(stSum.waistFlat)+'  ·  Δ vs prior 2-wk avg: '+nd(stSum.waistPrev!=null ? (Number(stSum.waistTrend)-Number(stSum.waistPrev)).toFixed(2)+'"' : 'n/a')
+      : 'Waist trend (3-wk):  n/a (need 3 weeks of waist data)',
     '',
     '── PHASE PROGRESS ──',
     'Phase:               '+phaseLabel,
