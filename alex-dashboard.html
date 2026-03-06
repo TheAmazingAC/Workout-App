@@ -1580,6 +1580,41 @@ function getWeekPhaseRef(week){
   return D.mode || 'cut';
 }
 
+function getPhaseBlockForWeek(selectedWeekDate){
+  const sortedWeeks = [...(D.weeks||[])]
+    .filter(w=>w && w.date)
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  if(!sortedWeeks.length || !selectedWeekDate){
+    return { phaseRef: D.mode || 'cut', startWeek:null, endWeek:null, weeksInPhase:0, weightChange:null, avgPacePerWeek:null };
+  }
+
+  const selectedIdx = sortedWeeks.findIndex(w=>w.date===selectedWeekDate);
+  if(selectedIdx < 0){
+    return { phaseRef: D.mode || 'cut', startWeek:null, endWeek:null, weeksInPhase:0, weightChange:null, avgPacePerWeek:null };
+  }
+
+  const endWeek = sortedWeeks[selectedIdx];
+  const phaseRef = getWeekPhaseRef(endWeek);
+  let startIdx = selectedIdx;
+  while(startIdx > 0 && getWeekPhaseRef(sortedWeeks[startIdx - 1]) === phaseRef){
+    startIdx--;
+  }
+
+  const startWeek = sortedWeeks[startIdx];
+  const weeksInPhase = selectedIdx - startIdx + 1;
+  const endWeight = Number(endWeek.weight);
+  const startWeight = Number(startWeek.weight);
+  let weightChange = null;
+  let avgPacePerWeek = null;
+
+  if(Number.isFinite(endWeight) && Number.isFinite(startWeight) && weeksInPhase > 0){
+    weightChange = endWeight - startWeight;
+    avgPacePerWeek = weightChange / weeksInPhase;
+  }
+
+  return { phaseRef, startWeek, endWeek, weeksInPhase, weightChange, avgPacePerWeek };
+}
+
 function getCurrentPhaseRef(){
   if(!Array.isArray(D.weeks) || !D.weeks.length) return D.mode || 'cut';
   const latest = [...D.weeks].sort((a,b)=>a.date.localeCompare(b.date)).slice(-1)[0];
@@ -3089,6 +3124,11 @@ function genSummary(){
     wTags.filter(t=>t!=='refeed'&&t!=='deload').map(t=>'['+t.toUpperCase()+']').join(' ') || null
   ].filter(Boolean).join(' ');
 
+  const phaseInfo = getPhaseBlockForWeek(w.date);
+  const phaseLabelMap = { cut:'Cut', maint:'Maintenance', bulk:'Bulk' };
+  const phaseLabel = phaseLabelMap[str(phaseInfo.phaseRef).toLowerCase()] || (str(phaseInfo.phaseRef) || 'Cut');
+  const signedFixed = n => (n>=0?'+':'') + Number(n).toFixed(1);
+
   // ── Patch A: always week.mode ──
   // wkMode already set above from w.mode
 
@@ -3177,6 +3217,16 @@ function genSummary(){
           : prev ? '' : ' (n/a — first week)'))
       : '—'),
     'Waist (7-day avg):   '+nd(wWaist)+' in'+delt(wWaist, prev&&(num(prev.waist)||null), 2, ' in'),
+    '',
+    '── PHASE PROGRESS ──',
+    'Phase:               '+phaseLabel,
+    'Weeks in current phase: '+(phaseInfo.weeksInPhase || 0),
+    (phaseInfo.weightChange!=null)
+      ? 'Weight change since phase start: '+signedFixed(phaseInfo.weightChange)+' lbs'
+      : null,
+    (phaseInfo.avgPacePerWeek!=null)
+      ? 'Average pace:        '+signedFixed(phaseInfo.avgPacePerWeek)+' lb/week'
+      : null,
     (()=>{
       // [Fix 4] In CUT mode: use 'Est. loss rate' only when actually losing (rr>=0).
       // When gaining in cut mode, 'Est. loss rate' is a contradiction — use 'Est. rate'.
