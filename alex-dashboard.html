@@ -5239,6 +5239,8 @@ window.__selfTest = function __selfTest() {
     if(!ok) out.pass = false;
   };
 
+  let existingCount = 0;
+
   const requiredIds = [
     'sec-log','sec-summary','sec-trends','sec-training','sec-analytics','sec-history',
     'trendChart','liftChart','ormChart','volChart','muscChart','macroChart','defChart'
@@ -5283,9 +5285,93 @@ window.__selfTest = function __selfTest() {
   add(typeof charts === 'object' && charts !== null, 'Charts: map exists');
   add(typeof Chart === 'function', 'Charts: Chart.js loaded');
 
+  existingCount = out.checks.length;
+
+  // Group 1: calcRecoveryStatusFromData
+  const rs1 = calcRecoveryStatusFromData(65, 52, 7.5, []);
+  add(rs1.watchActive === false, 'Recovery: green with no baseline');
+  add(rs1.anyRed === false, 'Recovery: no red with no baseline');
+
+  const rs2 = calcRecoveryStatusFromData(65, 52, 5.5, [
+    {hrv:65, rhr:52, sleep:7.5}, {hrv:63, rhr:53, sleep:7.2}
+  ]);
+  add(rs2.slpLevel === 2, 'Recovery: sleep 5.5h = RED');
+  add(rs2.anyRed === true, 'Recovery: anyRed true when sleep RED');
+  add(rs2.calBlocked === true, 'Recovery: calBlocked when RED');
+
+  const rs3 = calcRecoveryStatusFromData(57, 52, 7.5, [
+    {hrv:65, rhr:52, sleep:7.5}, {hrv:63, rhr:53, sleep:7.2}
+  ]);
+  add(rs3.hrvLevel === 1, 'Recovery: HRV ~12% drop = WATCH');
+
+  const rs4 = calcRecoveryStatusFromData(48, 52, 7.5, [
+    {hrv:65, rhr:52, sleep:7.5}, {hrv:63, rhr:53, sleep:7.2}
+  ]);
+  add(rs4.hrvLevel === 2, 'Recovery: HRV >20% drop = RED');
+
+  const rs5 = calcRecoveryStatusFromData(65, 60, 7.5, [
+    {hrv:65, rhr:52, sleep:7.5}, {hrv:63, rhr:53, sleep:7.2}
+  ]);
+  add(rs5.rhrLevel === 2, 'Recovery: RHR +7.5 bpm = RED');
+
+  // Group 2: calcCutVelocity
+  const cvTest = calcCutVelocity(183, [
+    {weight:185, date:'2026-02-01'},
+    {weight:184.5, date:'2026-02-08'},
+    {weight:184, date:'2026-02-15'}
+  ]);
+  add(cvTest && typeof cvTest === 'object', 'CutVelocity: returns object');
+  add('rollingRate' in cvTest, 'CutVelocity: has rollingRate key');
+  add('shortTermRate' in cvTest, 'CutVelocity: has shortTermRate key');
+
+  const cvNull = calcCutVelocity(null, [{weight:185}]);
+  add(cvNull.rollingRate === null || cvNull.rollingRate == null, 'CutVelocity: null weight = null rate');
+
+  // Group 3: calcStallStatus
+  const stTest1 = calcStallStatus(
+    {rollingRate: 0.3, shortTermRate: 0.3, W1:183, W2:184, W3:null},
+    33.5,
+    [{weight:184, date:'2026-02-08'}]
+  );
+  add(stTest1.stalled === false, 'Stall: cannot stall with <2 weeks rolling data');
+
+  // Group 4: calcNEAT
+  const neat1 = calcNEAT(12000, 30);
+  add(neat1.stepEq === 12000, 'NEAT: stepEq correct');
+  add(neat1.bikeEq === 3000, 'NEAT: bikeEq = 30 × 100');
+  add(neat1.totalEq === 15000, 'NEAT: totalEq = steps + bike');
+  add(neat1.bikeKcal === 210, 'NEAT: bikeKcal = 30 × 7');
+
+  const neat2 = calcNEAT(null, null);
+  add(neat2.totalEq === 0, 'NEAT: null inputs = 0');
+
+  // Group 5: calcAdherenceConfidence
+  add(calcAdherenceConfidence({daysTracked:7}).conf === 'HIGH', 'AdhConf: 7 days = HIGH');
+  add(calcAdherenceConfidence({daysTracked:5}).conf === 'MED', 'AdhConf: 5 days = MED');
+  add(calcAdherenceConfidence({daysTracked:3}).conf === 'LOW', 'AdhConf: 3 days = LOW');
+  add(calcAdherenceConfidence({}).conf === 'NONE', 'AdhConf: missing = NONE');
+
+  // Group 6: MODE_CONFIG validation
+  ['cut','maint','bulk'].forEach(m => {
+    const cfg = MODE_CONFIG[m];
+    add(cfg && typeof cfg === 'object', 'MODE_CONFIG: ' + m + ' exists');
+    add(typeof cfg.rateTargetLow === 'number', 'MODE_CONFIG: ' + m + '.rateTargetLow is number');
+    add(typeof cfg.maxRate === 'number', 'MODE_CONFIG: ' + m + '.maxRate is number');
+    add(cfg.maxRate > cfg.rateTargetHigh, 'MODE_CONFIG: ' + m + '.maxRate > rateTargetHigh');
+  });
+
+  // Group 7: canonical exercise map
+  add(canonicalize('Incline Bench Press') === 'Incline Bench Press (Dumbbell)', 'Canon: Incline Bench maps correctly');
+  add(canonicalize('RDL') === 'Romanian Deadlift (Barbell)', 'Canon: RDL maps correctly');
+  add(canonicalize('Chin-Up') === 'Chin Up', 'Canon: Chin-Up maps correctly');
+  add(
+    canonicalize('Some Random Exercise') === 'Some Random Exercise' || canonicalize('Some Random Exercise') === undefined,
+    'Canon: unknown exercise passes through'
+  );
+
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
-  console.log(`[selfTest] ${out.pass ? 'PASS' : 'FAIL'} (${passed}/${out.checks.length})`, out);
+  console.log(`[selfTest] ${out.pass ? 'PASS' : 'FAIL'} (${passed}/${out.checks.length}) — ${out.checks.length - existingCount} new checks`, out);
   return out;
 };
 </script>
