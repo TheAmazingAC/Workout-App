@@ -1090,7 +1090,7 @@ function calcCutVelocity(currentWeight, savedWeeks){
   return { W0, W1, W2, W3, rollingRate, shortTermRate, zone, zoneCls };
 }
 
-function calcStallStatus(cv, currentWaist, savedWeeks){
+function calcStallStatus(cv, currentWaist, savedWeeks, options={}){
   // Returns {stalled, stallReasons, waistTrend, waistFlat, adherenceOk, adhPct}
   const parsedTgt = v=>{
     const n = Number(v);
@@ -1117,26 +1117,33 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
     bikeMin: v('bikeMin')?parseFloat(v('bikeMin')):null,
     stepTarget: nv('stepTgt'),
   };
-  const hasLiveWeight = liveWeek.weight!=null;
+  const evalWeek = options && options.evalWeek ? options.evalWeek : null;
+  const contextWeek = evalWeek
+    ? {
+        ...evalWeek,
+        waist: currentWaist!=null ? currentWaist : (evalWeek.waist ?? null),
+      }
+    : liveWeek;
+  const hasContextWeight = contextWeek.weight!=null;
   const weightedWeeks = savedWeeks.filter(w=>w.weight);
-  const liveIdx = liveWeek.date ? weightedWeeks.findIndex(w=>w.date===liveWeek.date) : -1;
+  const liveIdx = contextWeek.date ? weightedWeeks.findIndex(w=>w.date===contextWeek.date) : -1;
   let wks = weightedWeeks;
 
   if(liveIdx>=0){
     // If the loaded week is being edited, always merge the live form values
     // (including nulls) so clearing a field does not leave stale adherence values.
-    wks = weightedWeeks.map((w,idx)=>idx===liveIdx?{...w,...liveWeek}:w);
-  } else if(hasLiveWeight){
-    wks = [...weightedWeeks, liveWeek];
+    wks = weightedWeeks.map((w,idx)=>idx===liveIdx?{...w,...contextWeek}:w);
+  } else if(hasContextWeight){
+    wks = [...weightedWeeks, contextWeek];
   }
 
   // ── Waist 3-week rolling average (anchored to currently loaded week) ──
-  const liveIdxAll = liveWeek.date ? savedWeeks.findIndex(w=>w.date===liveWeek.date) : -1;
+  const liveIdxAll = contextWeek.date ? savedWeeks.findIndex(w=>w.date===contextWeek.date) : -1;
   let allWeeks = savedWeeks;
   if(liveIdxAll>=0){
-    allWeeks = savedWeeks.map((w,idx)=>idx===liveIdxAll?{...w,...liveWeek}:w);
-  } else if(hasLiveWeight){
-    allWeeks = [...savedWeeks, liveWeek];
+    allWeeks = savedWeeks.map((w,idx)=>idx===liveIdxAll?{...w,...contextWeek}:w);
+  } else if(hasContextWeight){
+    allWeeks = [...savedWeeks, contextWeek];
   }
 
   const waistAnchor = liveIdxAll>=0 ? liveIdxAll : (allWeeks.length ? allWeeks.length-1 : -1);
@@ -1157,7 +1164,7 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   const currentWeekIdx = liveIdx>=0 ? liveIdx : (wks.length ? wks.length-1 : -1);
   const currentWeek = currentWeekIdx>=0 ? wks[currentWeekIdx] : null;
 
-  const calTarget = currentWeek ? resolveCalTarget(wks, currentWeekIdx, liveWeek.calorieTarget) : null;
+  const calTarget = currentWeek ? resolveCalTarget(wks, currentWeekIdx, contextWeek.calorieTarget) : null;
   const calAdhPct = (currentWeek && currentWeek.calories!=null && calTarget!=null && calTarget!==0)
     ? currentWeek.calories/calTarget*100
     : null;
@@ -1654,7 +1661,7 @@ function calcNextWeekTargets(){
 
   // ── Existing computed statuses ──
   const cv  = calcCutVelocity(latest.weight, saved.slice(0,-1));
-  const st  = calcStallStatus(cv, latest.waist, saved.slice(0,-1));
+  const st  = calcStallStatus(cv, latest.waist, saved.slice(0,-1), { evalWeek: latest });
   const rs  = calcRecoveryStatus();
   const rr  = cv.rollingRate;
   const adhConf = calcAdherenceConfidence(latest);
@@ -1957,7 +1964,7 @@ function renderActionSummary(){
   const latest = saved[saved.length-1];
 
   const cv = calcCutVelocity(latest.weight, saved.slice(0,-1));
-  const st = calcStallStatus(cv, latest.waist, saved.slice(0,-1));
+  const st = calcStallStatus(cv, latest.waist, saved.slice(0,-1), { evalWeek: latest });
   const rs = calcRecoveryStatus();
   const tags = latest.tags || [];
 
@@ -2823,7 +2830,7 @@ function genSummary(){
 
   // ── Velocity ──
   const cvSum = calcCutVelocity(wWeight, D.weeks.slice(0,idx));
-  const stSum = calcStallStatus(cvSum, wWaist, D.weeks.slice(0,idx));
+  const stSum = calcStallStatus(cvSum, wWaist, D.weeks.slice(0,idx), { evalWeek: w });
   const rr    = cvSum.rollingRate;
   const stRate = cvSum.shortTermRate;
   let rateStr = '—';
@@ -2921,7 +2928,7 @@ function genSummary(){
 
   // ── Tiebreakers ──
   const cvTb = calcCutVelocity(wWeight, D.weeks.slice(0,idx));
-  const stTb = calcStallStatus(cvTb, wWaist, D.weeks.slice(0,idx));
+  const stTb = calcStallStatus(cvTb, wWaist, D.weeks.slice(0,idx), { evalWeek: w });
   const rsTb = calcRecoveryStatus();
   const baseTbResult = calcWeeklyAction(wkMode, cvTb, stTb, rsTb, wTags, D.weeks.slice(0,idx+1));
   const tbResult = applyTiebreakers(baseTbResult, cvTb, stTb, rsTb, D.weeks.slice(0,idx+1), wkMode);
@@ -4762,7 +4769,7 @@ window.__selfTest = function __selfTest() {
       add(rs && typeof rs === 'object', 'Smoke: calcRecoveryStatus returns object');
       add(typeof rs?.watchActive === 'boolean', 'Smoke: calcRecoveryStatus.watchActive boolean');
 
-      const st = calcStallStatus(cv, last.waist ?? null, savedWeeks);
+      const st = calcStallStatus(cv, last.waist ?? null, savedWeeks, { evalWeek: last });
       add(st && typeof st === 'object', 'Smoke: calcStallStatus returns object');
       add(typeof st?.stalled === 'boolean', 'Smoke: calcStallStatus.stalled boolean');
     } catch (e) {
