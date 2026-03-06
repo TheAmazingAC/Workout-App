@@ -1111,6 +1111,10 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
     weight: nv('wt'),
     calories: v('cals')?parseInt(v('cals')):null,
     calorieTarget: v('calTgt')||v('calTgtInline') ? parseInt(v('calTgt')||v('calTgtInline')) : null,
+    protein: v('prot')?parseInt(v('prot')):null,
+    steps: v('steps')?parseInt(v('steps')):null,
+    bikeMin: v('bikeMin')?parseFloat(v('bikeMin')):null,
+    stepTarget: nv('stepTgt')||15000,
   };
   const hasLiveWeight = liveWeek.weight!=null;
   const weightedWeeks = savedWeeks.filter(w=>w.weight);
