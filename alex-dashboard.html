@@ -3187,6 +3187,19 @@ function genSummary(){
   // ── Diet break ──
   const dbcSum = calcDietBreakCandidate();
 
+  // ── Computed values (machine-readable) ──
+  const na = v => (v == null || (typeof v==='number' && Number.isNaN(v))) ? 'n/a' : v;
+  const boolStr = v => (v == null ? 'n/a' : (v ? 'true' : 'false'));
+  const rateStrMachine = v => (v == null || Number.isNaN(Number(v))) ? 'n/a' : ((Number(v)>=0?'−':'+')+Math.abs(Number(v)).toFixed(2)+'%/wk');
+  const numMachine = (v, dec=2) => (v == null || Number.isNaN(Number(v))) ? 'n/a' : Number(v).toFixed(dec);
+  const pctMachine = (v, dec=0) => (v == null || Number.isNaN(Number(v))) ? 'n/a' : Number(v).toFixed(dec)+'%';
+  const recoveryStatus = redFlags>0 ? 'RED' : (yelFlags>=2 ? 'WATCH' : 'GREEN');
+  const deficitLevel = na(getDeficitLevel());
+  const waterFluctuation = calcWaterFluctuation();
+  const actionCodeMachine = na(tbResult.actionCode);
+  const tiebreakerMachine = na(tbResult.tiebreakerApplied);
+  const weekTagsMachine = wTags.length ? wTags.join(', ') : 'none';
+
   const lines = [
     '📊 WEEKLY HEALTH SUMMARY — '+wkMode.toUpperCase()+' PHASE'+(flags?' '+flags:''),
     'Week ending: '+fmtD(w.date),
@@ -3312,7 +3325,28 @@ function genSummary(){
     })(),
     '',
     '── NOTES ──',
-    wNotes||'None'
+    wNotes||'None',
+    '',
+    '── COMPUTED VALUES (machine-readable) ──',
+    'rolling_rate:              '+rateStrMachine(rr),
+    'short_term_rate:           '+rateStrMachine(stRate),
+    'signal_conflict:           '+boolStr(signalConflict !== null),
+    'waist_trend_3wk:           '+numMachine(stSum.waistTrend, 2),
+    'waist_flat:                '+boolStr(stSum.waistFlat),
+    'stall_status:              '+boolStr(stSum.stalled),
+    'stall_confidence:          '+na(stallConfSum),
+    'phase_weeks:               '+(phaseWksSum==null || Number.isNaN(Number(phaseWksSum)) ? 'n/a' : String(phaseWksSum)),
+    'adherence_confidence:      '+na(adhConfSum&&adhConfSum.conf),
+    'recovery_baseline_conf:    '+na(recBaseSum&&recBaseSum.conf),
+    'recovery_status:           '+recoveryStatus,
+    'deficit_level:             '+deficitLevel,
+    'calorie_adherence_pct:     '+pctMachine(stSum.calAdhPct, 0),
+    'protein_adherence_pct:     '+pctMachine(stSum.protAdhPct, 0),
+    'neat_adherence_pct:        '+pctMachine(stSum.stpAdhPct, 0),
+    'action_code:               '+actionCodeMachine,
+    'tiebreaker_applied:        '+tiebreakerMachine,
+    'week_tags:                 '+weekTagsMachine,
+    'water_fluctuation:         '+boolStr(waterFluctuation && waterFluctuation.show)
   ].filter(s => s !== null && s !== undefined);
 
   const out=document.getElementById('sumOut');
