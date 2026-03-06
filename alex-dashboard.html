@@ -1092,7 +1092,31 @@ function calcCutVelocity(currentWeight, savedWeeks){
 
 function calcStallStatus(cv, currentWaist, savedWeeks){
   // Returns {stalled, stallReasons, waistTrend, waistFlat, adherenceOk, adhPct}
-  const wks = savedWeeks.filter(w=>w.weight);
+  const parsedTgt = v=>{
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const resolveCalTarget = (weeks, idx, fallbackTarget=null)=>{
+    const explicit = parsedTgt(weeks[idx]?.calorieTarget);
+    if(explicit!=null) return explicit;
+    for(let i=idx-1;i>=0;i--){
+      const prev = parsedTgt(weeks[i]?.calorieTarget);
+      if(prev!=null) return prev;
+    }
+    return parsedTgt(fallbackTarget);
+  };
+
+  const liveWeek = {
+    date: v('wDate')||null,
+    weight: nv('wt'),
+    calories: v('cals')?parseInt(v('cals')):null,
+    calorieTarget: v('calTgt')||v('calTgtInline') ? parseInt(v('calTgt')||v('calTgtInline')) : null,
+  };
+  const hasLiveWeight = liveWeek.weight!=null;
+  const weightedWeeks = savedWeeks.filter(w=>w.weight);
+  const lastWeekDate = weightedWeeks.length ? (weightedWeeks[weightedWeeks.length-1].date||null) : null;
+  const shouldAppendLive = hasLiveWeight && (!liveWeek.date || liveWeek.date!==lastWeekDate);
+  const wks = shouldAppendLive ? [...weightedWeeks, liveWeek] : weightedWeeks;
 
   // ── Waist 3-week rolling average ──
   const waistWks = savedWeeks.filter(w=>w.waist);
@@ -1105,8 +1129,13 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   const waistFlat  = (waistTrend!=null && waistPrev!=null) ? (waistPrev - waistTrend) < 0.15 : null;
 
   // ── Adherence checks (last 2 saved weeks avg) ──
-  const recent2 = wks.slice(-2);
-  const calAdh = recent2.filter(w=>w.calories&&w.calorieTarget).map(w=>w.calories/w.calorieTarget*100);
+  const recent2Start = Math.max(0, wks.length-2);
+  const calAdh = wks.slice(recent2Start).map((w,offset)=>{
+    const idx = recent2Start + offset;
+    const target = resolveCalTarget(wks, idx, liveWeek.calorieTarget);
+    if(!(w.calories && target)) return null;
+    return w.calories/target*100;
+  }).filter(v=>v!=null);
   const calAdhPct  = calAdh.length ? calAdh.reduce((s,v)=>s+v,0)/calAdh.length : null;
 
   const protWks = savedWeeks.filter(w=>w.protein&&w.weight).slice(-2);
