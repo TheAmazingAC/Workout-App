@@ -1109,6 +1109,7 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   const liveWeek = {
     date: v('wDate')||null,
     weight: nv('wt'),
+    waist: currentWaist,
     calories: nv('cals'),
     calorieTarget: v('calTgt')||v('calTgtInline') ? parseInt(v('calTgt')||v('calTgtInline')) : null,
     protein: nv('prot'),
@@ -1129,11 +1130,24 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
     wks = [...weightedWeeks, liveWeek];
   }
 
-  // ── Waist 3-week rolling average ──
-  const waistWks = savedWeeks.filter(w=>w.waist);
-  const Waist0 = currentWaist;
-  const Waist1 = waistWks.length>=1 ? waistWks[waistWks.length-1].waist : null;
-  const Waist2 = waistWks.length>=2 ? waistWks[waistWks.length-2].waist : null;
+  // ── Waist 3-week rolling average (anchored to currently loaded week) ──
+  const liveIdxAll = liveWeek.date ? savedWeeks.findIndex(w=>w.date===liveWeek.date) : -1;
+  let allWeeks = savedWeeks;
+  if(liveIdxAll>=0){
+    allWeeks = savedWeeks.map((w,idx)=>idx===liveIdxAll?{...w,...liveWeek}:w);
+  } else if(hasLiveWeight){
+    allWeeks = [...savedWeeks, liveWeek];
+  }
+
+  const waistAnchor = liveIdxAll>=0 ? liveIdxAll : (allWeeks.length ? allWeeks.length-1 : -1);
+  const waistPts = [];
+  for(let i=waistAnchor;i>=0 && waistPts.length<3;i--){
+    const w = Number(allWeeks[i]?.waist);
+    if(Number.isFinite(w)) waistPts.push(w);
+  }
+  const Waist0 = waistPts.length>=1 ? waistPts[0] : null;
+  const Waist1 = waistPts.length>=2 ? waistPts[1] : null;
+  const Waist2 = waistPts.length>=3 ? waistPts[2] : null;
   const waistTrend = (Waist0!=null&&Waist1!=null&&Waist2!=null) ? (Waist0+Waist1+Waist2)/3 : null;
   const waistPrev  = (Waist1!=null&&Waist2!=null) ? (Waist1+Waist2)/2 : null; // prior 2-wk avg
   // Flat = no downward movement >0.15in over 2-3 weeks
@@ -3749,10 +3763,13 @@ function updVelocity(){
   // ── Adherence panel ──
   const pct = v => v!=null ? v.toFixed(0)+'%' : '—';
   const adCls = v => v==null?'var(--mu)':v>=90?'var(--g)':v>=80?'var(--a)':'var(--a3)';
+  const calAdCls = v => v==null
+    ? 'var(--mu)'
+    : (D.mode==='cut' ? (v<=100 ? 'var(--g)' : 'var(--a3)') : adCls(v));
   document.getElementById('velAdherence').innerHTML =
     `<div style="font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">Adherence (current loaded week) — required for stall diagnosis</div>
      <div class="sg" style="gap:6px">
-       <div class="sb"><div class="sv" style="font-size:14px;color:${adCls(st.calAdhPct)}">${pct(st.calAdhPct)}</div><div class="sl">Calories ≥80%</div></div>
+       <div class="sb"><div class="sv" style="font-size:14px;color:${calAdCls(st.calAdhPct)}">${pct(st.calAdhPct)}</div><div class="sl">Calories ≤100%</div></div>
        <div class="sb"><div class="sv" style="font-size:14px;color:${adCls(st.protAdhPct)}">${pct(st.protAdhPct)}</div><div class="sl">Protein ≥90%</div></div>
        <div class="sb"><div class="sv" style="font-size:14px;color:${adCls(st.stpAdhPct)}">${pct(st.stpAdhPct)}</div><div class="sl">NEAT ≥80%</div></div>
      </div>`;
