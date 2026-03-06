@@ -5166,6 +5166,18 @@ window.__selfTest = function __selfTest() {
     'Canon: unknown exercise passes through'
   );
 
+  // Optional Group 8: calcScenarios (if scenario planner is present)
+  if(typeof window.calcScenarios === 'function'){
+    try {
+      const sc = calcScenarios();
+      add(Array.isArray(sc), 'Scenarios: calcScenarios returns array');
+    } catch (e) {
+      add(false, 'Scenarios: calcScenarios executes', e?.message || String(e));
+    }
+  } else {
+    add(true, 'Scenarios: calcScenarios not present (skipped)');
+  }
+
   add(typeof charts === 'object' && charts !== null, 'Charts: map exists');
   add(typeof Chart === 'function', 'Charts: Chart.js loaded');
 
