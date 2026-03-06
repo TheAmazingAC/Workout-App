@@ -829,6 +829,91 @@ const DEFAULT_WEEK = {
   photo:null
 };
 
+// Developer-only regression fixture data. Manual use only; not part of normal user flow.
+const FIXTURE_STATE = {
+  schemaVersion:SCHEMA_VERSION,
+  mode:'cut',
+  transition:'bulk→cut',
+  transitionDismissed:false,
+  targetWeight:176,
+  bulkVolBaseline:null,
+  defHeight:70,
+  defAge:31,
+  defAct:1.55,
+  countingMethod:'all',
+  weeks:[
+    {
+      date:'2026-01-10',
+      weight:186.8, waist:34.2, hrv:72, rhr:56, sleep:7.4, steps:14750,
+      bikeMin:35, stepTarget:15000, calories:2520, calorieTarget:2500,
+      protein:202, proteinTarget:195, fat:74, carbs:246, fiber:34,
+      daysTracked:7, eventDays:0,
+      tags:[], refeed:false, deload:false, mode:'cut', transition:'none',
+      notes:'Fixture week 1 — baseline after transition.',
+      lifts:[
+        {name:'Incline Bench Press (Dumbbell)',weight:90,reps:9,rpe:8.5},
+        {name:'Shoulder Press (Dumbbell)',weight:55,reps:8,rpe:8.5},
+        {name:'Romanian Deadlift (Barbell)',weight:245,reps:7,rpe:8.5},
+        {name:'Leg Extension (Machine)',weight:250,reps:12,rpe:9},
+        {name:'Chin Up',weight:35,reps:8,rpe:9},
+        {name:'Seated Cable Row - Bar Grip',weight:190,reps:10,rpe:8.5}
+      ]
+    },
+    {
+      date:'2026-01-17',
+      weight:185.6, waist:33.9, hrv:69, rhr:58, sleep:7.0, steps:13920,
+      bikeMin:20, stepTarget:15000, calories:2440, calorieTarget:2450,
+      protein:196, proteinTarget:195, fat:70, carbs:228, fiber:31,
+      daysTracked:6, eventDays:1,
+      tags:['highstep'], refeed:false, deload:false, mode:'cut', transition:'none',
+      notes:'Fixture week 2 — slight fatigue but on-plan.',
+      lifts:[
+        {name:'Incline Bench Press (Dumbbell)',weight:92.5,reps:8,rpe:9},
+        {name:'Shoulder Press (Dumbbell)',weight:55,reps:7,rpe:9},
+        {name:'Romanian Deadlift (Barbell)',weight:250,reps:7,rpe:9},
+        {name:'Leg Extension (Machine)',weight:260,reps:10,rpe:9},
+        {name:'Chin Up',weight:35,reps:9,rpe:9},
+        {name:'Seated Cable Row - Bar Grip',weight:195,reps:9,rpe:8.5}
+      ]
+    },
+    {
+      date:'2026-01-24',
+      weight:184.7, waist:33.6, hrv:71, rhr:57, sleep:7.6, steps:15240,
+      bikeMin:40, stepTarget:15000, calories:2385, calorieTarget:2400,
+      protein:205, proteinTarget:195, fat:66, carbs:220, fiber:36,
+      daysTracked:7, eventDays:0,
+      tags:['refeed'], refeed:true, deload:false, mode:'cut', transition:'none',
+      notes:'Fixture week 3 — controlled loss with refeed marker.',
+      lifts:[
+        {name:'Incline Bench Press (Dumbbell)',weight:95,reps:8,rpe:9},
+        {name:'Shoulder Press (Dumbbell)',weight:57.5,reps:7,rpe:9},
+        {name:'Romanian Deadlift (Barbell)',weight:255,reps:6,rpe:9},
+        {name:'Leg Extension (Machine)',weight:265,reps:10,rpe:9.5},
+        {name:'Chin Up',weight:40,reps:8,rpe:9},
+        {name:'Seated Cable Row - Bar Grip',weight:200,reps:8,rpe:9}
+      ]
+    }
+  ]
+};
+
+function loadFixtureData(){
+  D = migrateState(JSON.parse(JSON.stringify(FIXTURE_STATE)));
+  window._pendingPhoto = null;
+  window._importedSessions = null;
+  if(typeof charts === 'object' && charts){ Object.keys(charts).forEach(destroyChart); }
+  if(D.targetWeight) sv('targetWt', D.targetWeight);
+  if(D.defHeight) sv('defHt', D.defHeight);
+  if(D.defAge) sv('defAge', D.defAge);
+  if(D.defAct) sv('defAct', D.defAct);
+  const latest = D.weeks[D.weeks.length-1];
+  if(latest) loadWeek(latest.date);
+  markDirty(['summary','history','analytics','trends','training']);
+  const activeTab = (document.querySelector('.sec.active')?.id||'sec-log').replace('sec-','');
+  renderApp(activeTab);
+  toast('Fixture data loaded (developer test only)');
+}
+window.loadFixtureData = loadFixtureData;
+
 function migrateWeek(w){
   const rawWeek = (w && typeof w === 'object') ? w : {};
   const week = {...DEFAULT_WEEK, ...rawWeek};
