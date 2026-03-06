@@ -3481,7 +3481,46 @@ function getExerciseData(name){
   });
   // Sort by date, deduplicate within same week preferring manual
   pts.sort((a,b)=>a.date.localeCompare(b.date));
-  return pts;
+
+  const bestByWeek=new Map();
+  const score=(v)=>typeof v==='number'&&Number.isFinite(v)?v:-Infinity;
+
+  pts.forEach(pt=>{
+    const d=new Date(pt.date+'T12:00:00Z');
+    const daysToSat=(6-d.getUTCDay()+7)%7;
+    const sat=new Date(d);
+    sat.setUTCDate(sat.getUTCDate()+daysToSat);
+    const weekKey=sat.toISOString().split('T')[0];
+
+    const prev=bestByWeek.get(weekKey);
+    if(!prev){
+      bestByWeek.set(weekKey, pt);
+      return;
+    }
+
+    if(prev.src==='manual'&&pt.src!=='manual') return;
+    if(pt.src==='manual'&&prev.src!=='manual'){
+      bestByWeek.set(weekKey, pt);
+      return;
+    }
+
+    // Same source in the same week: keep the strongest point.
+    const prevE1=score(prev.e1rm);
+    const nextE1=score(pt.e1rm);
+    if(nextE1>prevE1){
+      bestByWeek.set(weekKey, pt);
+      return;
+    }
+    if(nextE1===prevE1&&score(pt.w)>score(prev.w)){
+      bestByWeek.set(weekKey, pt);
+      return;
+    }
+    if(nextE1===prevE1&&score(pt.w)===score(prev.w)&&pt.date>prev.date){
+      bestByWeek.set(weekKey, pt);
+    }
+  });
+
+  return [...bestByWeek.values()].sort((a,b)=>a.date.localeCompare(b.date));
 }
 
 function showLiftChart(name){
