@@ -829,6 +829,21 @@ const DEFAULT_WEEK = {
   photo:null
 };
 
+function cloneDefaultState(){
+  return {
+    ...DEFAULT_STATE,
+    weeks:[]
+  };
+}
+
+function cloneDefaultWeek(){
+  return {
+    ...DEFAULT_WEEK,
+    tags:[],
+    lifts:[]
+  };
+}
+
 // Developer-only regression fixture data. Manual use only; not part of normal user flow.
 const FIXTURE_STATE = {
   schemaVersion:SCHEMA_VERSION,
@@ -918,7 +933,7 @@ window.loadFixtureData = loadFixtureData;
 
 function migrateWeek(w){
   const rawWeek = (w && typeof w === 'object') ? w : {};
-  const week = {...DEFAULT_WEEK, ...rawWeek};
+  const week = {...cloneDefaultWeek(), ...rawWeek};
   week.tags = Array.isArray(rawWeek.tags) ? [...rawWeek.tags] : [];
   if(week.deload === true && !week.tags.includes('deload')) week.tags.push('deload');
   if(week.refeed === true && !week.tags.includes('refeed')) week.tags.push('refeed');
@@ -929,8 +944,8 @@ function migrateWeek(w){
 }
 
 function migrateState(raw){
-  if(!raw || typeof raw !== 'object') return {...DEFAULT_STATE};
-  const migrated = {...DEFAULT_STATE, ...raw};
+  if(!raw || typeof raw !== 'object') return cloneDefaultState();
+  const migrated = {...cloneDefaultState(), ...raw};
   migrated.schemaVersion = raw.schemaVersion ?? SCHEMA_VERSION;
   const rawWeeks = Array.isArray(raw.weeks) ? raw.weeks : [];
   migrated.weeks = rawWeeks.map(migrateWeek);
@@ -958,7 +973,7 @@ function writeJSON(key, obj) {
   }
 }
 
-let D = {...DEFAULT_STATE};
+let D = cloneDefaultState();
 D = migrateState(readJSON(SK, null));
 function save(){writeJSON(SK,D);}
 
