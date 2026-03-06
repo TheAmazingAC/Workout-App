@@ -1832,7 +1832,8 @@ function calcNextWeekTargets(){
   // ── Existing computed statuses ──
   const cv  = calcCutVelocity(latest.weight, saved.slice(0,-1));
   const st  = calcStallStatus(cv, latest.waist, saved.slice(0,-1));
-  const rs  = calcRecoveryStatus();
+  const rsWeeks = saved.slice(0, -1).filter(w => w.hrv || w.rhr || w.sleep);
+  const rs  = calcRecoveryStatusFromData(latest.hrv, latest.rhr, latest.sleep, rsWeeks);
   const rr  = cv.rollingRate;
   const adhConf = calcAdherenceConfidence(latest);
   const recBaseNWT = calcRecoveryBaselineConfidence(saved, saved.length-1);
@@ -2501,13 +2502,12 @@ function updLoss(){
 // ══════════════════════════════════════════
 // RECOVERY FLAG ENGINE — tiered thresholds
 // ══════════════════════════════════════════
-function calcRecoveryStatus(){
+function calcRecoveryStatusFromData(hrv, rhr, slp, savedWeeks){
   // Returns {slpLevel, hrvLevel, rhrLevel, watchCount, anyRed, statusLabel, calBlocked}
   // Level: 0=ok, 1=yellow, 2=red
-  const hrv = nv('hrv'), rhr = nv('rhr'), slp = nv('slp');
+  const saved  = Array.isArray(savedWeeks) ? savedWeeks : [];
 
   // ── 14-day baseline: last 2 saved weeks ──
-  const saved  = D.weeks.filter(w=>w.hrv||w.rhr||w.sleep);
   const base2  = saved.slice(-2);
   const prevWk = saved.slice(-1)[0] || null;
 
@@ -2551,6 +2551,11 @@ function calcRecoveryStatus(){
 
   return { slpLevel, slpMsg, slpDetail, hrvLevel, hrvMsg, hrvDetail, rhrLevel, rhrMsg, rhrDetail,
            yellowCount, redCount, anyRed, watchActive, statusLabel, calBlocked, baseHRV, baseRHR, prevSlp };
+}
+
+function calcRecoveryStatus() {
+  const saved = D.weeks.filter(w => w.hrv || w.rhr || w.sleep);
+  return calcRecoveryStatusFromData(nv('hrv'), nv('rhr'), nv('slp'), saved);
 }
 
 function chkRec(){
@@ -3016,32 +3021,18 @@ function genSummary(){
     return '  (Δ '+sign+d+(unit||'')+')';
   }
 
-  // ── ~2-week baseline (weekly inputs) ──
-  const base2   = D.weeks.slice(Math.max(0,idx-2), idx);
-  const bHRV_arr = base2.filter(x=>x.hrv);
-  const bRHR_arr = base2.filter(x=>x.rhr);
-  const baseHRV = bHRV_arr.length ? +(bHRV_arr.reduce((s,x)=>s+x.hrv,0)/bHRV_arr.length).toFixed(1) : null;
-  const baseRHR = bRHR_arr.length ? +(bRHR_arr.reduce((s,x)=>s+x.rhr,0)/bRHR_arr.length).toFixed(1) : null;
+  // ── Recovery status (selected week scoped, pure calc) ──
+  const rsWeeks = D.weeks.slice(0, idx).filter(w => w.hrv || w.rhr || w.sleep);
+  const rs = calcRecoveryStatusFromData(wHRV, wRHR, wSleep, rsWeeks);
+  const baseHRV = rs.baseHRV != null ? +rs.baseHRV.toFixed(1) : null;
+  const baseRHR = rs.baseRHR != null ? +rs.baseRHR.toFixed(1) : null;
 
-  // ── Recovery flags (for export display) ──
-  let slpFlag='', hrvFlag='', rhrFlag='', statusLine='';
-  if(wSleep!=null){
-    const drop = prev&&num(prev.sleep) ? num(prev.sleep)-wSleep : 0;
-    if(wSleep<6.5||drop>=1.0) slpFlag=' 🔴 RED';
-    else if(wSleep<7.0||drop>=0.5) slpFlag=' 🟡 WATCH';
-  }
-  if(wHRV!=null&&baseHRV){
-    const drop=(baseHRV-wHRV)/baseHRV;
-    if(drop>0.20) hrvFlag=' 🔴 RED';
-    else if(drop>=0.10) hrvFlag=' 🟡 WATCH';
-  }
-  if(wRHR!=null&&baseRHR){
-    const rise=wRHR-baseRHR;
-    if(rise>5) rhrFlag=' 🔴 RED';
-    else if(rise>=3) rhrFlag=' 🟡 WATCH';
-  }
-  const redFlags=[slpFlag,hrvFlag,rhrFlag].filter(f=>f.includes('RED')).length;
-  const yelFlags=[slpFlag,hrvFlag,rhrFlag].filter(f=>f.includes('WATCH')).length;
+  const slpFlag = rs.slpLevel===2 ? ' 🔴 RED' : (rs.slpLevel===1 ? ' 🟡 WATCH' : '');
+  const hrvFlag = rs.hrvLevel===2 ? ' 🔴 RED' : (rs.hrvLevel===1 ? ' 🟡 WATCH' : '');
+  const rhrFlag = rs.rhrLevel===2 ? ' 🔴 RED' : (rs.rhrLevel===1 ? ' 🟡 WATCH' : '');
+  const redFlags = rs.redCount;
+  const yelFlags = rs.yellowCount;
+  let statusLine='';
   if(redFlags>0) statusLine='⚠ RECOVERY INTERVENTION — calorie reduction blocked';
   else if(yelFlags>=2) statusLine='⚠ RECOVERY WATCH — hold calories, reduce accessory volume';
 
@@ -3151,7 +3142,7 @@ function genSummary(){
   // ── Tiebreakers ──
   const cvTb = calcCutVelocity(wWeight, D.weeks.slice(0,idx));
   const stTb = calcStallStatus(cvTb, wWaist, D.weeks.slice(0,idx));
-  const rsTb = calcRecoveryStatus();
+  const rsTb = calcRecoveryStatusFromData(wHRV, wRHR, wSleep, D.weeks.slice(0,idx).filter(x=>x.hrv||x.rhr||x.sleep));
   const baseTbResult = calcWeeklyAction(wkMode, cvTb, stTb, rsTb, wTags, D.weeks.slice(0,idx+1));
   const tbResult = applyTiebreakers(baseTbResult, cvTb, stTb, rsTb, D.weeks.slice(0,idx+1), wkMode);
 
@@ -5020,9 +5011,10 @@ window.__selfTest = function __selfTest() {
 
   const requiredFns = [
     'saveWeek','loadWeek','renderActionSummary','renderTrends','renderAnalytics',
-    'calcCutVelocity','calcRecoveryStatus','calcStallStatus'
+    'calcCutVelocity','calcRecoveryStatus','calcRecoveryStatusFromData','calcStallStatus'
   ];
   requiredFns.forEach(fn => add(typeof window[fn] === 'function', `Function: ${fn}`));
+  add(typeof window.calcRecoveryStatusFromData === 'function', 'Function: calcRecoveryStatusFromData');
 
   add(typeof D === 'object' && D !== null, 'State: D exists');
   add(Array.isArray(D?.weeks), 'State: D.weeks is array');
