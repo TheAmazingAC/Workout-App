@@ -326,7 +326,7 @@ select option{background:var(--s2);}
     <div class="ct">// Week</div>
     <div class="fg">
       <div class="field"><label>Week Ending</label><input type="date" id="wDate"></div>
-      <div class="field"><label>Calorie Target</label><input type="number" id="calTgt" placeholder="2300" oninput="syncCalorieTargets('week')"></div>
+      <div class="field"><label>Calorie Target</label><input type="number" id="calTgt" placeholder="2300" oninput="syncCalorieTargets('week');updLoss();updVelocity()"></div>
     </div>
         <div style="margin-top:8px;">
       <div style="font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Week Tags</div>
@@ -345,7 +345,7 @@ select option{background:var(--s2);}
     <div class="ct">// Body</div>
     <div class="fg">
       <div class="field"><label>Weight 7-day avg (lbs)</label><input type="number" id="wt" placeholder="184.3" step="0.1" oninput="updLoss();updVelocity();updProteinDynamic();updBodyDeltas();updWTWR()"></div>
-      <div class="field"><label>Waist 7-day avg (in)</label><input type="number" id="waist" placeholder="33.65" step="0.01" oninput="updBodyDeltas();updWTWR()"></div>
+      <div class="field"><label>Waist 7-day avg (in)</label><input type="number" id="waist" placeholder="33.65" step="0.01" oninput="updBodyDeltas();updWTWR();updLoss();updVelocity()"></div>
     </div>
     <div class="fg">
       <div class="field"><label>Target Weight (lbs)</label><input type="number" id="targetWt" placeholder="175" step="0.5" oninput="D.targetWeight=nv('targetWt');save();" title="Used for Runway Projection in Analytics"></div>
@@ -408,17 +408,17 @@ select option{background:var(--s2);}
   <div class="card">
     <div class="ct">// Activity & Nutrition</div>
     <div class="fg fg3">
-      <div class="field"><label>Steps avg/day</label><input type="number" id="steps" placeholder="12500" oninput="updStepLever()"></div>
-      <div class="field"><label>Bike avg (min/day)</label><input type="number" id="bikeMin" placeholder="0" step="5" oninput="updStepLever()"></div>
-      <div class="field"><label>NEAT Target (step-eq)</label><input type="number" id="stepTgt" placeholder="15000" oninput="updStepLever()"></div>
+      <div class="field"><label>Steps avg/day</label><input type="number" id="steps" placeholder="12500" oninput="updStepLever();updLoss();updVelocity()"></div>
+      <div class="field"><label>Bike avg (min/day)</label><input type="number" id="bikeMin" placeholder="0" step="5" oninput="updStepLever();updLoss();updVelocity()"></div>
+      <div class="field"><label>NEAT Target (step-eq)</label><input type="number" id="stepTgt" placeholder="15000" oninput="updStepLever();updLoss();updVelocity()"></div>
     </div>
     <div id="stepLeverWrap" style="display:none;margin-bottom:10px"></div>
     <div class="fg">
-      <div class="field"><label>Calories avg/day</label><input type="number" id="cals" placeholder="2300"></div>
-      <div class="field"><label>Calorie Target</label><input type="number" id="calTgtInline" placeholder="2300" oninput="syncCalorieTargets('activity')"></div>
+      <div class="field"><label>Calories avg/day</label><input type="number" id="cals" placeholder="2300" oninput="updLoss();updVelocity()"></div>
+      <div class="field"><label>Calorie Target</label><input type="number" id="calTgtInline" placeholder="2300" oninput="syncCalorieTargets('activity');updLoss();updVelocity()"></div>
     </div>
     <div class="fg fg4">
-      <div class="field"><label>Protein (g)</label><input type="number" id="prot" placeholder="185" oninput="updPG()"></div>
+      <div class="field"><label>Protein (g)</label><input type="number" id="prot" placeholder="185" oninput="updPG();updLoss();updVelocity()"></div>
       <div class="field"><label>Auto Target (g)</label><input type="number" id="protTgt" placeholder="—" readonly style="color:var(--a2);cursor:default" title="Auto: 1g × current bodyweight"></div>
       <div class="field"><label>Fat avg (g)</label><input type="number" id="fat" placeholder="70" step="0.5"></div>
       <div class="field"><label>Carbs avg (g)</label><input type="number" id="carbs" placeholder="180" step="1"></div>
@@ -426,7 +426,7 @@ select option{background:var(--s2);}
     <div id="protDynWrap" style="display:none;margin-bottom:8px"></div>
     <div class="field" style="margin-bottom:8px"><label>Fiber avg (g)</label><input type="number" id="fiber" placeholder="30" step="0.5"></div>
     <div class="fg" style="margin-top:6px">
-      <div class="field"><label title="Days you tracked nutrition this week (0–7)">Days Tracked (0–7)</label><input type="number" id="daysTracked" placeholder="7" min="0" max="7" step="1" oninput="updAdhConfidence()"></div>
+      <div class="field"><label title="Days you tracked nutrition this week (0–7)">Days Tracked (0–7)</label><input type="number" id="daysTracked" placeholder="7" min="0" max="7" step="1" oninput="updAdhConfidence();updVelocity()"></div>
       <div class="field"><label title="Days with events/travel/eating out (0–7)">Event Days (0–7)</label><input type="number" id="eventDays" placeholder="0" min="0" max="7" step="1"></div>
     </div>
     <div id="adhConfWrap" style="font-size:9px;color:var(--mu);margin-top:4px;display:none"></div>
@@ -1111,12 +1111,23 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
     weight: nv('wt'),
     calories: v('cals')?parseInt(v('cals')):null,
     calorieTarget: v('calTgt')||v('calTgtInline') ? parseInt(v('calTgt')||v('calTgtInline')) : null,
+    protein: v('prot')?parseInt(v('prot')):null,
+    steps: v('steps')?parseInt(v('steps')):null,
+    bikeMin: v('bikeMin')?parseFloat(v('bikeMin')):null,
+    stepTarget: nv('stepTgt')||15000,
   };
   const hasLiveWeight = liveWeek.weight!=null;
   const weightedWeeks = savedWeeks.filter(w=>w.weight);
-  const lastWeekDate = weightedWeeks.length ? (weightedWeeks[weightedWeeks.length-1].date||null) : null;
-  const shouldAppendLive = hasLiveWeight && (!liveWeek.date || liveWeek.date!==lastWeekDate);
-  const wks = shouldAppendLive ? [...weightedWeeks, liveWeek] : weightedWeeks;
+  const liveIdx = liveWeek.date ? weightedWeeks.findIndex(w=>w.date===liveWeek.date) : -1;
+  let wks = weightedWeeks;
+
+  if(liveIdx>=0){
+    // If the loaded week is being edited, always merge the live form values
+    // (including nulls) so clearing a field does not leave stale adherence values.
+    wks = weightedWeeks.map((w,idx)=>idx===liveIdx?{...w,...liveWeek}:w);
+  } else if(hasLiveWeight){
+    wks = [...weightedWeeks, liveWeek];
+  }
 
   // ── Waist 3-week rolling average ──
   const waistWks = savedWeeks.filter(w=>w.waist);
@@ -1138,11 +1149,11 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   }).filter(v=>v!=null);
   const calAdhPct  = calAdh.length ? calAdh.reduce((s,v)=>s+v,0)/calAdh.length : null;
 
-  const protWks = savedWeeks.filter(w=>w.protein&&w.weight).slice(-2);
+  const protWks = wks.filter(w=>w.protein&&w.weight).slice(-2);
   const protAdh = protWks.map(w=>w.protein/w.weight*100); // 1g/lb = 100%
   const protAdhPct = protAdh.length ? protAdh.reduce((s,v)=>s+v,0)/protAdh.length : null;
 
-  const stpWks = savedWeeks.filter(w=>w.steps!=null).slice(-2);
+  const stpWks = wks.filter(w=>w.steps!=null).slice(-2);
   const stpAdh = stpWks.map(w=>{
     const neat = calcNEAT(w.steps, w.bikeMin);
     const tgt  = w.stepTarget||15000;
