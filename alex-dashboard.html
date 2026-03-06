@@ -326,7 +326,7 @@ select option{background:var(--s2);}
     <div class="ct">// Week</div>
     <div class="fg">
       <div class="field"><label>Week Ending</label><input type="date" id="wDate"></div>
-      <div class="field"><label>Calorie Target</label><input type="number" id="calTgt" placeholder="2300"></div>
+      <div class="field"><label>Calorie Target</label><input type="number" id="calTgt" placeholder="2300" oninput="syncCalorieTargets('week')"></div>
     </div>
         <div style="margin-top:8px;">
       <div style="font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Week Tags</div>
@@ -415,7 +415,7 @@ select option{background:var(--s2);}
     <div id="stepLeverWrap" style="display:none;margin-bottom:10px"></div>
     <div class="fg">
       <div class="field"><label>Calories avg/day</label><input type="number" id="cals" placeholder="2300"></div>
-      <div class="field"><label>Calorie Target</label><input type="number" id="calTgtInline" placeholder="2300" style="display:none"></div>
+      <div class="field"><label>Calorie Target</label><input type="number" id="calTgtInline" placeholder="2300" oninput="syncCalorieTargets('activity')"></div>
     </div>
     <div class="fg fg4">
       <div class="field"><label>Protein (g)</label><input type="number" id="prot" placeholder="185" oninput="updPG()"></div>
@@ -1092,7 +1092,31 @@ function calcCutVelocity(currentWeight, savedWeeks){
 
 function calcStallStatus(cv, currentWaist, savedWeeks){
   // Returns {stalled, stallReasons, waistTrend, waistFlat, adherenceOk, adhPct}
-  const wks = savedWeeks.filter(w=>w.weight);
+  const parsedTgt = v=>{
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const resolveCalTarget = (weeks, idx, fallbackTarget=null)=>{
+    const explicit = parsedTgt(weeks[idx]?.calorieTarget);
+    if(explicit!=null) return explicit;
+    for(let i=idx-1;i>=0;i--){
+      const prev = parsedTgt(weeks[i]?.calorieTarget);
+      if(prev!=null) return prev;
+    }
+    return parsedTgt(fallbackTarget);
+  };
+
+  const liveWeek = {
+    date: v('wDate')||null,
+    weight: nv('wt'),
+    calories: v('cals')?parseInt(v('cals')):null,
+    calorieTarget: v('calTgt')||v('calTgtInline') ? parseInt(v('calTgt')||v('calTgtInline')) : null,
+  };
+  const hasLiveWeight = liveWeek.weight!=null;
+  const weightedWeeks = savedWeeks.filter(w=>w.weight);
+  const lastWeekDate = weightedWeeks.length ? (weightedWeeks[weightedWeeks.length-1].date||null) : null;
+  const shouldAppendLive = hasLiveWeight && (!liveWeek.date || liveWeek.date!==lastWeekDate);
+  const wks = shouldAppendLive ? [...weightedWeeks, liveWeek] : weightedWeeks;
 
   // ── Waist 3-week rolling average ──
   const waistWks = savedWeeks.filter(w=>w.waist);
@@ -1105,8 +1129,13 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   const waistFlat  = (waistTrend!=null && waistPrev!=null) ? (waistPrev - waistTrend) < 0.15 : null;
 
   // ── Adherence checks (last 2 saved weeks avg) ──
-  const recent2 = wks.slice(-2);
-  const calAdh = recent2.filter(w=>w.calories&&w.calorieTarget).map(w=>w.calories/w.calorieTarget*100);
+  const recent2Start = Math.max(0, wks.length-2);
+  const calAdh = wks.slice(recent2Start).map((w,offset)=>{
+    const idx = recent2Start + offset;
+    const target = resolveCalTarget(wks, idx, liveWeek.calorieTarget);
+    if(!(w.calories && target)) return null;
+    return w.calories/target*100;
+  }).filter(v=>v!=null);
   const calAdhPct  = calAdh.length ? calAdh.reduce((s,v)=>s+v,0)/calAdh.length : null;
 
   const protWks = savedWeeks.filter(w=>w.protein&&w.weight).slice(-2);
@@ -1978,6 +2007,13 @@ function fmtD(d){if(!d)return'—';return new Date(d+'T00:00:00').toLocaleDateSt
 function fmtDShort(d){if(!d)return'—';return new Date(d+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'});}
 function v(id){return document.getElementById(id)?.value||'';}
 function sv(id,val){const e=document.getElementById(id);if(e)e.value=val??'';}
+function syncCalorieTargets(source){
+  const weekInput = document.getElementById('calTgt');
+  const activityInput = document.getElementById('calTgtInline');
+  if(!weekInput || !activityInput) return;
+  if(source==='activity') weekInput.value = activityInput.value;
+  else activityInput.value = weekInput.value;
+}
 function nv(id){const x=parseFloat(v(id));return isNaN(x)?null:x;}
 function nb(id){return document.getElementById(id)?.checked||false;}
 function sb(id,val){const e=document.getElementById(id);if(e)e.checked=!!val;}
@@ -2032,6 +2068,7 @@ window.onload = ()=>{
   if(D.defHeight) sv('defHt', D.defHeight);
   if(D.defAge) sv('defAge', D.defAge);
   if(D.defAct) sv('defAct', D.defAct);
+  syncCalorieTargets('week');
 };
 
 // ══════════════════════════════════════════
@@ -2425,7 +2462,7 @@ function saveWeek(){
     bikeMin:v('bikeMin')?parseFloat(v('bikeMin')):null,
     stepTarget:nv('stepTgt')||15000,
     calories:v('cals')?parseInt(v('cals')):null,
-    calorieTarget:v('calTgt')?parseInt(v('calTgt')):null,
+    calorieTarget:v('calTgt')||v('calTgtInline')?parseInt(v('calTgt')||v('calTgtInline')):null,
     protein:v('prot')?parseInt(v('prot')):null,
     proteinTarget:v('protTgt')?parseInt(v('protTgt')):null,
     fat:nv('fat'),carbs:nv('carbs') ? parseInt(v('carbs')) : null,
@@ -4634,7 +4671,7 @@ function renderSignalsSummary(){
 
 function loadWeek(date){
   const w=D.weeks.find(x=>x.date===date);if(!w)return;
-  sv('wDate',w.date);sv('calTgt',w.calorieTarget);
+  sv('wDate',w.date);sv('calTgt',w.calorieTarget);sv('calTgtInline',w.calorieTarget);
   sv('wt',w.weight);sv('waist',w.waist);
   if(D.targetWeight) sv('targetWt', D.targetWeight);
   sv('hrv',w.hrv);sv('rhr',w.rhr);sv('slp',w.sleep);
