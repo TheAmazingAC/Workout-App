@@ -2176,6 +2176,9 @@ window.onload = ()=>{
   if(D.defAge) sv('defAge', D.defAge);
   if(D.defAct) sv('defAct', D.defAct);
   syncCalorieTargets('week');
+  // Establish a baseline immediately so first-time week switches
+  // still warn about unsaved in-form edits.
+  lastLoadedWeekSnapshot = getCurrentFormSnapshot();
 };
 
 // ══════════════════════════════════════════
