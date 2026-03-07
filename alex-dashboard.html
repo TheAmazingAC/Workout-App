@@ -651,13 +651,15 @@ select option{background:var(--s2);}
     </div>
     <div class="card" id="scenarioCard" style="display:none">
       <div class="ct">// Scenario Planner</div>
-      <p class="note">Model different paths to your target. Feasibility rated against directive guardrails.</p>
+      <p class="note">Sandbox projection tool. Uses your latest saved week as baseline and does not modify saved data.</p>
       <div class="scn-inputs">
-        <div class="field"><label>Target Weight (lbs)</label><input type="number" id="scenarioTargetWt" step="0.5" placeholder="175"></div>
-        <div class="field"><label>Target Date</label><input type="date" id="scenarioTargetDate"></div>
-        <button class="btn btn-s" id="scenarioComputeBtn" type="button" onclick="renderScenario()">Compute</button>
+        <div class="field"><label>Calories / day</label><input type="number" id="scenarioCalories" step="10" placeholder="2300"></div>
+        <div class="field"><label>Steps / day</label><input type="number" id="scenarioSteps" step="100" placeholder="12000"></div>
+        <div class="field"><label>Bike minutes / day</label><input type="number" id="scenarioBike" step="1" placeholder="20"></div>
+        <div class="field"><label>Weeks to simulate</label><input type="number" id="scenarioWeeks" step="1" min="1" max="52" placeholder="8"></div>
+        <button class="btn btn-s" id="scenarioComputeBtn" type="button" onclick="renderScenario()">Simulate</button>
       </div>
-      <div id="scenarioPanel"><div class="empty" style="padding:14px 8px;font-size:10px">Set a target date and compute scenarios.</div></div>
+      <div id="scenarioPanel"><div class="empty" style="padding:14px 8px;font-size:10px">Adjust inputs and press Simulate.</div></div>
     </div>
     <!-- Feature 3: Fatigue Score -->
     <div class="card" id="fatigueCard" style="display:none">
@@ -4829,161 +4831,152 @@ function getRunwayProjectionDate(targetWeight){
   return d;
 }
 
-function calcScenarios(targetWeight, targetDate){
-  const scenarios = [];
+function estimateTDEEByMifflin(){
+  const ht = D.defHeight || nv('defHt');
+  const age = D.defAge || nv('defAge');
+  const act = parseFloat(D.defAct || v('defAct') || '1.55');
+  const latestW = D.weeks.filter(w=>w.weight).slice(-1)[0];
+  if(!latestW || !ht || !age) return null;
+  const wKg = latestW.weight*0.4536;
+  const htCm = ht*2.54;
+  const bmr = 10*wKg + 6.25*htCm - 5*age + 5;
+  return Math.round(bmr*act);
+}
+
+function calcScenarios(hypo = {}){
+  const result = {};
   const saved = D.weeks.filter(w=>w.weight);
-  if(!saved.length) return scenarios;
+  if(!saved.length) return null;
+
   const latest = saved[saved.length-1];
-  const currentWeight = latest.weight;
-  if(!currentWeight || !targetWeight || !targetDate) return scenarios;
-
-  const now = new Date();
-  now.setHours(0,0,0,0);
-  const goalDate = new Date(targetDate+'T00:00:00');
-  const weeksAvailable = (goalDate-now)/(1000*60*60*24*7);
-  if(!Number.isFinite(weeksAvailable) || weeksAvailable<=0) return scenarios;
-
-  const lbsToLose = currentWeight - targetWeight;
-  const requiredWeeklyLoss = lbsToLose/weeksAvailable;
-  const requiredRatePct = (requiredWeeklyLoss/currentWeight)*100;
-
-  const guardrails = [];
-  if(requiredRatePct>1.25) guardrails.push('Exceeds 1.25%/wk guardrail — muscle retention risk');
-  if(weeksAvailable<4) guardrails.push('Very short timeline — results will be unreliable');
-  if(requiredRatePct<0.3) guardrails.push('Very slow — consider whether a formal cut is needed');
+  const baselineWeight = latest.weight;
+  if(!baselineWeight) return null;
 
   const rollWks = D.weeks.filter(w=>w.weight&&w.calories);
   let tdeeEstimate = null;
   if(rollWks.length>=3){
     const i = rollWks.length-1;
     const trio = rollWks.slice(i-2,i+1);
-    const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
-    const wkLoss = rollWks[i-1].weight-rollWks[i].weight;
+    const avgCal = trio.reduce((sum,w)=>sum+w.calories,0)/3;
+    const wkLoss1 = rollWks[i-1].weight-rollWks[i].weight;
     const wkLoss2 = rollWks[i-2].weight-rollWks[i-1].weight;
-    const avgWkLoss = (wkLoss+wkLoss2)/2;
+    const avgWkLoss = (wkLoss1+wkLoss2)/2;
     tdeeEstimate = avgCal + (avgWkLoss*3500/7);
   }
 
-  const calories = latest.calories || latest.calorieTarget || null;
-  const neat = calcNEAT(latest.steps, latest.bikeMin);
-  const currentStepEq = neat.totalEq || latest.stepTarget || 15000;
-  const currentBike = latest.bikeMin || 0;
-  const currentRate = (calcCutVelocity(currentWeight, saved.slice(0,-1)).rollingRate)||0;
-  const currentDeficitDay = (tdeeEstimate!=null && calories!=null) ? (tdeeEstimate-calories) : ((currentRate/100)*currentWeight*3500/7);
+  const fallbackTdee = estimateTDEEByMifflin();
+  if(tdeeEstimate==null) tdeeEstimate = fallbackTdee;
 
-  const rsWeeks = saved.slice(0,-1).filter(w=>w.hrv||w.rhr||w.sleep);
-  const rs = calcRecoveryStatusFromData(latest.hrv, latest.rhr, latest.sleep, rsWeeks);
-  const kneeGate = (latest.notes||'').toLowerCase().includes('knee');
+  const baseNeat = calcNEAT(latest.steps, latest.bikeMin);
+  const baseStepEq = baseNeat.totalEq || latest.stepTarget || latest.steps || 15000;
 
-  const projectedWeeksAtCurrent = currentRate>0 ? (lbsToLose/(currentWeight*(currentRate/100))) : Infinity;
-  scenarios.push({
-    label:'Current Pace',
-    ratePct: currentRate,
-    calories,
-    stepEq: currentStepEq,
-    bikeMin: currentBike,
-    feasibility: projectedWeeksAtCurrent<=weeksAvailable ? 'HIGH' : 'LOW',
-    rationale: projectedWeeksAtCurrent<=weeksAvailable
-      ? 'Current rolling pace reaches target by selected date.'
-      : (Number.isFinite(projectedWeeksAtCurrent)
-        ? `Misses target date by about ${Math.max(0,Math.ceil(projectedWeeksAtCurrent-weeksAvailable))} extra week(s).`
-        : 'Current trend is not moving toward target.'),
-  });
+  const calories = Number.isFinite(hypo.calories) ? hypo.calories : (latest.calories || latest.calorieTarget || null);
+  const steps = Number.isFinite(hypo.steps) ? hypo.steps : (latest.steps || 0);
+  const bikeMin = Number.isFinite(hypo.bikeMin) ? hypo.bikeMin : (latest.bikeMin || 0);
+  const weeks = Number.isFinite(hypo.weeks) ? Math.max(1, Math.min(52, Math.round(hypo.weeks))) : 8;
 
-  const neededExtraDeficit = Math.max(0,(requiredWeeklyLoss*3500/7)-currentDeficitDay);
-  const addStepsRaw = Math.round((neededExtraDeficit/100)*2000/500)*500;
-  const additionalSteps = Math.min(4000, Math.max(2000, addStepsRaw||2000));
-  const neatDeficitAdd = (additionalSteps/2000)*100;
-  const neatImpliedDefDay = currentDeficitDay + neatDeficitAdd;
-  const neatLossWk = (neatImpliedDefDay*7)/3500;
-  const neatRate = (neatLossWk/currentWeight)*100;
-  const neatTotalStepEq = currentStepEq + additionalSteps;
-  let neatFeas = 'LOW';
-  if(neatTotalStepEq<=18000 && neatRate<=1.0) neatFeas='HIGH';
-  else if(neatTotalStepEq<=22000 && neatRate<=1.25) neatFeas='MEDIUM';
-  scenarios.push({
-    label:'NEAT First',
-    ratePct: neatRate,
-    calories,
-    stepEq: neatTotalStepEq,
-    bikeMin: kneeGate ? currentBike + Math.ceil(additionalSteps/BIKE_STEP_EQ) : currentBike,
-    feasibility: neatFeas,
-    rationale: `Add ~${additionalSteps.toLocaleString()} step-eq/day (~${Math.round(neatDeficitAdd)} kcal/day).` + (kneeGate ? ' Prefer bike over steps.' : '')
-  });
+  if(!calories || tdeeEstimate==null) return null;
 
-  const calReduction = neededExtraDeficit>150 ? 200 : 100;
-  const newCalories = calories!=null ? calories-calReduction : null;
-  const calImpliedDefDay = currentDeficitDay + calReduction;
-  const calLossWk = (calImpliedDefDay*7)/3500;
-  const calRate = (calLossWk/currentWeight)*100;
-  let calFeas = 'LOW';
-  if((newCalories==null || newCalories>=1800) && calImpliedDefDay<=600 && calRate<=1.0) calFeas='HIGH';
-  else if((newCalories==null || newCalories>=1600) && calImpliedDefDay<=800 && calRate<=1.25) calFeas='MEDIUM';
-  if(newCalories!=null && (newCalories<1600 || calImpliedDefDay>800 || calRate>1.25)) calFeas='LOW';
-  if(rs.calBlocked) calFeas='LOW';
-  scenarios.push({
-    label:'Calorie Reduction',
-    ratePct: calRate,
-    calories: newCalories,
-    stepEq: currentStepEq,
-    bikeMin: currentBike,
-    feasibility: calFeas,
-    rationale: `Reduce intake by ${calReduction} kcal/day while holding NEAT.` + (rs.calBlocked ? ' ⚠ Calorie reduction blocked by recovery status' : '')
-  });
+  const hypoNeat = calcNEAT(steps, bikeMin);
+  const hypoStepEq = hypoNeat.totalEq;
+  const stepEqDelta = hypoStepEq - baseStepEq;
+  const neatDeltaKcalDay = (stepEqDelta/2000)*100;
 
-  scenarios.guardrails = guardrails;
-  scenarios.requiredRatePct = requiredRatePct;
-  scenarios.weeksAvailable = weeksAvailable;
-  scenarios.tdeeEstimate = tdeeEstimate;
-  scenarios.approximate = tdeeEstimate==null;
-  return scenarios;
+  const deficitDay = (tdeeEstimate - calories) + neatDeltaKcalDay;
+  const weeklyDeltaLbs = (deficitDay*7)/3500;
+  const weeklyDeltaPct = (weeklyDeltaLbs/baselineWeight)*100;
+  const projectedWeight = baselineWeight - (weeklyDeltaLbs*weeks);
+
+  const target = D.targetWeight || nv('targetWt') || null;
+  let weeksToTarget = null;
+  if(target && weeklyDeltaLbs>0 && target<baselineWeight){
+    weeksToTarget = (baselineWeight-target)/weeklyDeltaLbs;
+    if(!Number.isFinite(weeksToTarget) || weeksToTarget<0) weeksToTarget = null;
+  }
+
+  result.baselineWeight = baselineWeight;
+  result.tdeeEstimate = tdeeEstimate;
+  result.tdeeApproximate = fallbackTdee!=null && tdeeEstimate===fallbackTdee && rollWks.length<3;
+  result.inputs = { calories, steps, bikeMin, weeks };
+  result.weeklyDeltaLbs = weeklyDeltaLbs;
+  result.weeklyDeltaPct = weeklyDeltaPct;
+  result.projectedWeight = projectedWeight;
+  result.weeksToTarget = weeksToTarget;
+  result.targetWeight = target;
+  result.stepEqDelta = stepEqDelta;
+  result.deficitDay = deficitDay;
+  return result;
 }
 
 function renderScenario(){
   const card = document.getElementById('scenarioCard');
   const panel = document.getElementById('scenarioPanel');
-  const wtInput = document.getElementById('scenarioTargetWt');
-  const dateInput = document.getElementById('scenarioTargetDate');
-  if(!card||!panel||!wtInput||!dateInput) return;
+  const caloriesInput = document.getElementById('scenarioCalories');
+  const stepsInput = document.getElementById('scenarioSteps');
+  const bikeInput = document.getElementById('scenarioBike');
+  const weeksInput = document.getElementById('scenarioWeeks');
+  if(!card||!panel||!caloriesInput||!stepsInput||!bikeInput||!weeksInput) return;
 
-  const defaultTarget = D.targetWeight || nv('targetWt');
-  if(defaultTarget && !wtInput.value) wtInput.value = defaultTarget;
-  if(!dateInput.value){
-    const runwayDate = getRunwayProjectionDate(parseFloat(wtInput.value||defaultTarget));
-    if(runwayDate) dateInput.value = runwayDate.toISOString().slice(0,10);
-  }
-
-  const hasTarget = !!(wtInput.value || defaultTarget);
-  card.style.display = hasTarget ? 'block' : 'none';
-  if(!hasTarget) return;
-
-  const tw = parseFloat(wtInput.value);
-  const td = dateInput.value;
-  if(!tw || !td){
-    panel.innerHTML = '<div class="empty" style="padding:14px 8px;font-size:10px">Set target weight/date and press Compute.</div>';
+  const saved = D.weeks.filter(w=>w.weight);
+  if(!saved.length){
+    card.style.display = 'none';
     return;
   }
 
-  const scenarios = calcScenarios(tw, td);
-  if(!scenarios.length){
-    panel.innerHTML = '<div class="empty" style="padding:14px 8px;font-size:10px">Not enough data for scenario modeling yet.</div>';
+  card.style.display = 'block';
+  const latest = saved[saved.length-1];
+  if(!caloriesInput.value) caloriesInput.value = latest.calories || latest.calorieTarget || '';
+  if(!stepsInput.value) stepsInput.value = latest.steps || '';
+  if(!bikeInput.value) bikeInput.value = latest.bikeMin || 0;
+  if(!weeksInput.value) weeksInput.value = 8;
+
+  const hypo = {
+    calories: parseFloat(caloriesInput.value),
+    steps: parseFloat(stepsInput.value),
+    bikeMin: parseFloat(bikeInput.value),
+    weeks: parseFloat(weeksInput.value)
+  };
+
+  if(!hypo.calories || !hypo.weeks){
+    panel.innerHTML = '<div class="empty" style="padding:14px 8px;font-size:10px">Enter calories and weeks to run a scenario.</div>';
     return;
   }
 
-  const badgeCls = f => f==='HIGH'?'vel-green':f==='MEDIUM'?'vel-yellow':'vel-red';
-  panel.innerHTML = `<div class="scn-table">${scenarios.map(s=>`
+  const scenario = calcScenarios(hypo);
+  if(!scenario){
+    panel.innerHTML = '<div class="empty" style="padding:14px 8px;font-size:10px">Need at least one logged week with weight and calorie baseline.</div>';
+    return;
+  }
+
+  const wtDelta = scenario.weeklyDeltaLbs;
+  const wtDeltaSign = wtDelta>=0 ? '−' : '+';
+  const pctSign = scenario.weeklyDeltaPct>=0 ? '−' : '+';
+  panel.innerHTML = `
+    <div class="scn-table">
       <div class="scn-row">
-        <div class="scn-top"><div class="scn-label">${s.label}</div><span class="vel-badge ${badgeCls(s.feasibility)}" style="margin:0;padding:4px 10px;font-size:10px">${s.feasibility}</span></div>
+        <div class="scn-top"><div class="scn-label">Baseline</div></div>
         <div class="scn-grid">
-          <div>Rate<strong>${Number.isFinite(s.ratePct)?s.ratePct.toFixed(2):'—'}%/wk</strong></div>
-          <div>Calories<strong>${s.calories!=null?Math.round(s.calories):'—'}</strong></div>
-          <div>Step-eq<strong>${Math.round(s.stepEq||0).toLocaleString()}</strong></div>
-          <div>Bike<strong>${Math.round(s.bikeMin||0)} min</strong></div>
+          <div>Current Weight<strong>${scenario.baselineWeight.toFixed(1)} lbs</strong></div>
+          <div>Est. TDEE<strong>${Math.round(scenario.tdeeEstimate)} kcal/day</strong></div>
+          <div>Step-eq Δ<strong>${Math.round(scenario.stepEqDelta).toLocaleString()}/day</strong></div>
+          <div>Sim Window<strong>${scenario.inputs.weeks} week(s)</strong></div>
         </div>
-        <div class="scn-rationale">${s.rationale}</div>
-      </div>`).join('')}</div>
-      ${(scenarios.guardrails||[]).length?`<div class="scn-guardrails">${scenarios.guardrails.map(g=>'• '+g).join('<br>')}</div>`:''}
-      ${scenarios.approximate?'<div class="note" style="margin-top:8px">TDEE estimate unavailable — scenarios approximate.</div>':''}`;
+      </div>
+      <div class="scn-row">
+        <div class="scn-top"><div class="scn-label">Projected Outcome</div></div>
+        <div class="scn-grid">
+          <div>Weekly Change<strong>${wtDeltaSign}${Math.abs(wtDelta).toFixed(2)} lbs/wk</strong></div>
+          <div>Weekly Pace<strong>${pctSign}${Math.abs(scenario.weeklyDeltaPct).toFixed(2)}%/wk</strong></div>
+          <div>Weight After ${scenario.inputs.weeks}w<strong>${scenario.projectedWeight.toFixed(1)} lbs</strong></div>
+          <div>Weeks to Target<strong>${scenario.weeksToTarget!=null?Math.ceil(scenario.weeksToTarget):'—'}</strong></div>
+        </div>
+      </div>
+    </div>
+    <div class="runway-note">Sandbox only — no saved week data is changed.</div>
+    <div class="runway-note">[Inference] Uses current TDEE estimate + NEAT step-equivalent deltas for consistency with Command analytics.</div>
+    ${scenario.targetWeight?`<div class="runway-note">Target weight reference: ${scenario.targetWeight} lbs.</div>`:'<div class="runway-note">Set a target weight in LOG → Body to enable weeks-to-target.</div>'}
+    ${scenario.tdeeApproximate?'<div class="note" style="margin-top:6px">TDEE fallback in use (insufficient 3-week calorie+weight history).</div>':''}
+  `;
 }
 
 function renderCommandCenter(){
