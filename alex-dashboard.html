@@ -2565,7 +2565,8 @@ function updBodyDeltas(){
   const cw=nv('wt'), cWaist=nv('waist');
   const wrap=document.getElementById('bodyDeltaWrap');
   if(!cw&&!cWaist){wrap.style.display='none';return;}
-  const prev=D.weeks.filter(w=>w.weight||w.waist).slice(-1)[0];
+  const ctx = getLogWeekContext();
+  const prev=ctx.priorWeeks.filter(w=>w.weight||w.waist).slice(-1)[0];
   wrap.style.display='block';
   // Weight delta
   const wtEl=document.getElementById('wtDelta');
@@ -2597,8 +2598,9 @@ function updLoss(){
   const cw=nv('wt'), cWaist=nv('waist');
   if(!cw||!D.weeks.length){document.getElementById('lrWrap').style.display='none';return;}
 
-  const cv = calcCutVelocity(cw, D.weeks);
-  const st = calcStallStatus(cv, cWaist, D.weeks);
+  const ctx = getLogWeekContext();
+  const cv = calcCutVelocity(cw, ctx.priorWeeks);
+  const st = calcStallStatus(cv, cWaist, ctx.weeksThroughAnchor, {anchorDate: ctx.anchorDate});
 
   document.getElementById('lrWrap').style.display='block';
 
@@ -2679,15 +2681,63 @@ function calcRecoveryStatusFromData(hrv, rhr, slp, savedWeeks){
            yellowCount, redCount, anyRed, watchActive, statusLabel, calBlocked, baseHRV, baseRHR, prevSlp };
 }
 
-function calcRecoveryStatus() {
-  const saved = D.weeks.filter(w => w.hrv || w.rhr || w.sleep);
+function calcRecoveryStatus(opts={}) {
+  const baseWeeks = Array.isArray(opts.savedWeeks) ? opts.savedWeeks : D.weeks;
+  const saved = baseWeeks.filter(w => w.hrv || w.rhr || w.sleep);
   return calcRecoveryStatusFromData(nv('hrv'), nv('rhr'), nv('slp'), saved);
+}
+
+function getLogWeekContext(){
+  // LOG analysis should anchor to the loaded week when reviewing history.
+  // Latest-week anchoring is only for the actual current/latest week workflow.
+  const weeks = Array.isArray(D.weeks) ? D.weeks : [];
+  const formDate = v('wDate') || null;
+  const savedIdx = formDate ? weeks.findIndex(w=>w.date===formDate) : -1;
+  const liveWeek = {
+    date: formDate,
+    weight: nv('wt'),
+    waist: nv('waist'),
+    hrv: nv('hrv'),
+    rhr: nv('rhr'),
+    sleep: nv('slp'),
+    steps: nv('steps'),
+    bikeMin: v('bikeMin')?parseFloat(v('bikeMin')):null,
+    stepTarget: nv('stepTgt'),
+    calories: nv('cals'),
+    calorieTarget: v('calTgt')||v('calTgtInline') ? parseInt(v('calTgt')||v('calTgtInline')) : null,
+    protein: nv('prot'),
+    proteinTarget: nv('protTgt'),
+    daysTracked: v('daysTracked')?parseInt(v('daysTracked')):null,
+    eventDays: v('eventDays')?parseInt(v('eventDays')):null,
+    tags: getActiveTags()
+  };
+
+  if(savedIdx>=0){
+    const currentWeek = {...weeks[savedIdx], ...liveWeek};
+    const weeksThroughAnchor = [...weeks.slice(0, savedIdx), currentWeek];
+    return {
+      anchorDate: currentWeek.date,
+      currentWeek,
+      weeksThroughAnchor,
+      priorWeeks: weeksThroughAnchor.slice(0, -1)
+    };
+  }
+
+  const weeksThroughAnchor = formDate ? [...weeks, liveWeek] : [...weeks];
+  const currentWeek = formDate ? liveWeek : (weeks[weeks.length-1] || null);
+  return {
+    anchorDate: currentWeek?.date || null,
+    currentWeek,
+    weeksThroughAnchor,
+    priorWeeks: [...weeks]
+  };
 }
 
 function chkRec(){
   const hrv=nv('hrv'),rhr=nv('rhr'),slp=nv('slp');
   const flag = document.getElementById('rflag');
-  const rs = calcRecoveryStatus();
+  const ctx = getLogWeekContext();
+  const rs = calcRecoveryStatus({savedWeeks: ctx.priorWeeks});
 
   if(!rs.statusLabel){ flag.classList.remove('show','watch','intervention'); return; }
 
@@ -4275,8 +4325,9 @@ function updVelocity(){
   if(!cw || !D.weeks.length){ card.style.display='none'; return; }
   card.style.display = 'block';
 
-  const cv = calcCutVelocity(cw, D.weeks);
-  const st = calcStallStatus(cv, cWaist, D.weeks);
+  const ctx = getLogWeekContext();
+  const cv = calcCutVelocity(cw, ctx.priorWeeks);
+  const st = calcStallStatus(cv, cWaist, ctx.weeksThroughAnchor, {anchorDate: ctx.anchorDate});
   const rr = cv.rollingRate;
 
   // ── Badge ──
@@ -5215,8 +5266,8 @@ function renderCommandCenter(){
 function renderDecisionLadder(){
   const mode = D.mode || 'cut';
   const mcfg = MODE_CONFIG[mode];
-  const saved = D.weeks.filter(w=>w.weight);
-  const latest = saved[saved.length-1] || {};
+  const ctx = getLogWeekContext();
+  const latest = ctx.currentWeek || {};
 
   const bw = latest.weight;
   const stp = latest.steps, bike = latest.bikeMin, stpTgt = latest.stepTarget||15000;
@@ -5228,12 +5279,12 @@ function renderDecisionLadder(){
   const protOk = prot && protTgt && (prot/bw) >= 0.9;
 
   // Recovery uses calcRecoveryStatus
-  const rs = calcRecoveryStatus();
+  const rs = calcRecoveryStatus({savedWeeks: ctx.priorWeeks});
   const recOk = !rs.watchActive;
 
   // Velocity + stall use precise engine
-  const cv = calcCutVelocity(bw||0, D.weeks);
-  const st = calcStallStatus(cv, latest.waist, D.weeks);
+  const cv = calcCutVelocity(bw||0, ctx.priorWeeks);
+  const st = calcStallStatus(cv, latest.waist, ctx.weeksThroughAnchor, {anchorDate: ctx.anchorDate});
 
   const rungs = [
     {
