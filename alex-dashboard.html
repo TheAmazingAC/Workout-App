@@ -3447,7 +3447,14 @@ function genSummary(){
       : '—'),
     'Waist (7-day avg):   '+nd(wWaist)+' in'+delt(wWaist, prev&&(num(prev.waist)||null), 2, ' in'),
     (stSum.waistTrend!=null)
-      ? 'Waist trend (3-wk):  '+nd(Number(stSum.waistTrend).toFixed(2))+'" avg  ·  waistFlat: '+nd(stSum.waistFlat)+'  ·  Δ vs prior 2-wk avg: '+nd(stSum.waistPrev!=null ? (Number(stSum.waistTrend)-Number(stSum.waistPrev)).toFixed(2)+'"' : 'n/a')
+      ? (()=>{
+          // Waist trend compares the current 3 most recent waist points to the immediately preceding 2 waist points.
+          // Show delta only when both windows are available (waistPrev computed); otherwise keep it blank (—).
+          const waistTrendDelta = (stSum.waistPrev!=null)
+            ? (Number(stSum.waistTrend)-Number(stSum.waistPrev)).toFixed(2)
+            : null;
+          return 'Waist trend (3-wk):  '+nd(Number(stSum.waistTrend).toFixed(2))+'" avg  ·  waistFlat: '+nd(stSum.waistFlat)+'  ·  Δ vs prior 2-wk avg: '+(waistTrendDelta!=null ? waistTrendDelta+'"' : '—');
+        })()
       : 'Waist trend (3-wk):  n/a (need 3 weeks of waist data)',
     '',
     '── PHASE PROGRESS ──',
