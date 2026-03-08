@@ -2280,8 +2280,17 @@ function rebuildHevyVolumeFromSessions(){
 }
 
 function upsertHevySessions(sessions){
-  const byKey = new Map(HEVY_DATA.sessions.map(s=>[s.d+'||'+s.t, s]));
-  (sessions||[]).forEach(s=>{ if(s&&s.d&&s.t) byKey.set(s.d+'||'+s.t, s); });
+  const normalizedExisting = HEVY_DATA.sessions.map(s=>{
+    const d = parseHevyDate(s?.d||'');
+    return d ? {...s, d} : s;
+  });
+  const byKey = new Map(normalizedExisting.map(s=>[s.d+'||'+s.t, s]));
+  (sessions||[]).forEach(s=>{
+    if(!s||!s.t) return;
+    const d = parseHevyDate(s.d||'');
+    if(!d) return;
+    byKey.set(d+'||'+s.t, {...s, d});
+  });
   HEVY_DATA.sessions = [...byKey.values()].sort((a,b)=>a.d.localeCompare(b.d));
   rebuildHevyVolumeFromSessions();
 }
@@ -2878,16 +2887,41 @@ function groupBySessions(rows){
 }
 
 function parseHevyDate(str){
-  // Handles "5 Feb 2026 09:14" and "2026-02-05 09:14"
   if(!str) return '';
-  if(str.match(/^\d{4}-\d{2}/)) return str.split(' ')[0];
-  const months={Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12'};
-  const parts = str.split(' ');
-  if(parts.length>=3){
-    const d=parts[0].padStart(2,'0'), m=months[parts[1]]||'01', y=parts[2];
-    return `${y}-${m}-${d}`;
+  const raw = String(str).trim();
+  if(!raw) return '';
+
+  // Hevy export commonly uses "7 Mar 2026, 08:23"; normalize to canonical YYYY-MM-DD for app-wide parsing/sorting.
+  const months={jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12'};
+
+  // ISO-like: YYYY-MM-DD or YYYY-MM-DD HH:mm:ss
+  let m = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s].*)?$/);
+  if(m){
+    const [,y,mo,d] = m;
+    return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
   }
-  return str;
+
+  // Month name: D Mon YYYY[, HH:mm]
+  m = raw.replace(',', '').match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})(?:\s+.*)?$/);
+  if(m){
+    const [,d,mon,y] = m;
+    const key = mon.slice(0,3).toLowerCase();
+    if(months[key]) return `${y}-${months[key]}-${d.padStart(2,'0')}`;
+  }
+
+  // Numeric slash format: MM/DD/YYYY or DD/MM/YYYY with optional time.
+  m = raw.replace(',', '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+.*)?$/);
+  if(m){
+    let [,a,b,y] = m;
+    let month = a, day = b;
+    const ai = parseInt(a,10), bi = parseInt(b,10);
+    if(ai>12 && bi<=12){ month = b; day = a; }
+    return `${y}-${month.padStart(2,'0')}-${day.padStart(2,'0')}`;
+  }
+
+  const parsed = new Date(raw);
+  if(!Number.isNaN(parsed.getTime())) return parsed.toISOString().split('T')[0];
+  return '';
 }
 
 function getTopSetForExercise(sets, exName){
