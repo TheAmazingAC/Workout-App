@@ -1228,23 +1228,75 @@ function calcCutVelocity(currentWeight, savedWeeks){
   return { W0, W1, W2, W3, rollingRate, shortTermRate, zone, zoneCls };
 }
 
-function calcStallStatus(cv, currentWaist, savedWeeks){
-  // Returns {stalled, stallReasons, waistTrend, waistFlat, adherenceOk, adhPct}
-  const parsedTgt = v=>{
-    const n = Number(v);
-    return Number.isFinite(n) ? n : null;
-  };
-  const resolveCalTarget = (weeks, idx, fallbackTarget=null)=>{
-    const explicit = parsedTgt(weeks[idx]?.calorieTarget);
-    if(explicit!=null) return explicit;
-    for(let i=idx-1;i>=0;i--){
-      const prev = parsedTgt(weeks[i]?.calorieTarget);
-      if(prev!=null) return prev;
-    }
-    return parsedTgt(fallbackTarget);
+function parsedTarget(v){
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function resolveCalTarget(weeks, idx, fallbackTarget=null){
+  const explicit = parsedTarget(weeks[idx]?.calorieTarget);
+  if(explicit!=null) return explicit;
+  for(let i=idx-1;i>=0;i--){
+    const prev = parsedTarget(weeks[i]?.calorieTarget);
+    if(prev!=null) return prev;
+  }
+  return parsedTarget(fallbackTarget);
+}
+
+function calcExportAdherence2Week(weeks, anchorIdx){
+  if(anchorIdx==null || anchorIdx<0 || anchorIdx>=weeks.length) return null;
+  if(anchorIdx===0) return null;
+
+  const pair = [weeks[anchorIdx-1], weeks[anchorIdx]];
+  if(pair.some(w=>!w)) return null;
+
+  const calEntries = pair.map((w, relIdx)=>{
+    const absIdx = anchorIdx - 1 + relIdx;
+    const cal = Number(w?.calories);
+    const calTgt = resolveCalTarget(weeks, absIdx, null);
+    return (Number.isFinite(cal) && calTgt!=null && calTgt!==0) ? {actual:cal, target:calTgt} : null;
+  }).filter(Boolean);
+  const protEntries = pair.map(w=>{
+    const prot = Number(w?.protein);
+    const protTgt = Number(w?.weight); // 1g/lb
+    return (Number.isFinite(prot) && Number.isFinite(protTgt) && protTgt!==0) ? {actual:prot, target:protTgt} : null;
+  }).filter(Boolean);
+  const neatEntries = pair.map(w=>{
+    const steps = Number(w?.steps);
+    const stepTgt = Number(w?.stepTarget);
+    if(!Number.isFinite(steps) || !Number.isFinite(stepTgt) || stepTgt===0) return null;
+    return {actual: calcNEAT(steps, w?.bikeMin).totalEq, target: stepTgt};
+  }).filter(Boolean);
+
+  const aggregate = entries => {
+    if(entries.length!==2) return {pct:null, actual:null, target:null};
+    const actual = entries[0].actual + entries[1].actual;
+    const target = entries[0].target + entries[1].target;
+    return {pct: target!==0 ? actual/target*100 : null, actual, target};
   };
 
-  const liveWeek = {
+  const cal = aggregate(calEntries);
+  const prot = aggregate(protEntries);
+  const neat = aggregate(neatEntries);
+  return {
+    window: {anchorDate: weeks[anchorIdx]?.date ?? null, previousDate: weeks[anchorIdx-1]?.date ?? null},
+    caloriePct: cal.pct,
+    proteinPct: prot.pct,
+    neatPct: neat.pct,
+    calActual: cal.actual,
+    calTarget: cal.target,
+    protActual: prot.actual,
+    protTarget: prot.target,
+    neatActual: neat.actual,
+    stepTarget: neat.target
+  };
+}
+
+function calcStallStatus(cv, currentWaist, savedWeeks, opts={}){
+  // Returns {stalled, stallReasons, waistTrend, waistFlat, adherenceOk, adhPct}
+
+  const useLiveInputs = opts.useLiveInputs !== false;
+  const liveWeek = useLiveInputs ? {
     date: v('wDate')||null,
     weight: nv('wt'),
     waist: currentWaist,
@@ -1254,10 +1306,12 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
     steps: nv('steps'),
     bikeMin: v('bikeMin')?parseFloat(v('bikeMin')):null,
     stepTarget: nv('stepTgt'),
-  };
-  const hasLiveWeight = liveWeek.weight!=null;
+  } : null;
+  const hasLiveWeight = !!(useLiveInputs && liveWeek && liveWeek.weight!=null);
   const weightedWeeks = savedWeeks.filter(w=>w.weight);
-  const liveIdx = liveWeek.date ? weightedWeeks.findIndex(w=>w.date===liveWeek.date) : -1;
+  const anchorDate = opts.anchorDate || null;
+  const liveIdx = useLiveInputs && liveWeek?.date ? weightedWeeks.findIndex(w=>w.date===liveWeek.date) : -1;
+  const anchorIdx = anchorDate ? weightedWeeks.findIndex(w=>w.date===anchorDate) : -1;
   let wks = weightedWeeks;
 
   if(liveIdx>=0){
@@ -1269,7 +1323,8 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   }
 
   // ── Waist 3-week rolling average (anchored to currently loaded week) ──
-  const liveIdxAll = liveWeek.date ? savedWeeks.findIndex(w=>w.date===liveWeek.date) : -1;
+  const liveIdxAll = useLiveInputs && liveWeek?.date ? savedWeeks.findIndex(w=>w.date===liveWeek.date) : -1;
+  const anchorIdxAll = anchorDate ? savedWeeks.findIndex(w=>w.date===anchorDate) : -1;
   let allWeeks = savedWeeks;
   if(liveIdxAll>=0){
     allWeeks = savedWeeks.map((w,idx)=>idx===liveIdxAll?{...w,...liveWeek}:w);
@@ -1277,25 +1332,27 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
     allWeeks = [...savedWeeks, liveWeek];
   }
 
-  const waistAnchor = liveIdxAll>=0 ? liveIdxAll : (allWeeks.length ? allWeeks.length-1 : -1);
+  const waistAnchor = anchorIdxAll>=0 ? anchorIdxAll : (liveIdxAll>=0 ? liveIdxAll : (allWeeks.length ? allWeeks.length-1 : -1));
   const waistPts = [];
-  for(let i=waistAnchor;i>=0 && waistPts.length<3;i--){
+  for(let i=waistAnchor;i>=0 && waistPts.length<5;i--){
     const w = Number(allWeeks[i]?.waist);
     if(Number.isFinite(w)) waistPts.push(w);
   }
   const Waist0 = waistPts.length>=1 ? waistPts[0] : null;
   const Waist1 = waistPts.length>=2 ? waistPts[1] : null;
   const Waist2 = waistPts.length>=3 ? waistPts[2] : null;
+  const Waist3 = waistPts.length>=4 ? waistPts[3] : null;
+  const Waist4 = waistPts.length>=5 ? waistPts[4] : null;
   const waistTrend = (Waist0!=null&&Waist1!=null&&Waist2!=null) ? (Waist0+Waist1+Waist2)/3 : null;
-  const waistPrev  = (Waist1!=null&&Waist2!=null) ? (Waist1+Waist2)/2 : null; // prior 2-wk avg
+  const waistPrev  = (Waist3!=null&&Waist4!=null) ? (Waist3+Waist4)/2 : null; // prior 2-wk avg before current 3-wk trend window
   // Flat = no downward movement >0.15in over 2-3 weeks
-  const waistFlat  = (waistTrend!=null && waistPrev!=null) ? (waistPrev - waistTrend) < 0.15 : null;
+  const waistFlat  = (waistTrend!=null && Waist1!=null && Waist2!=null) ? (((Waist1+Waist2)/2) - waistTrend) < 0.15 : null;
 
   // ── Adherence checks (current loaded week) ──
-  const currentWeekIdx = liveIdx>=0 ? liveIdx : (wks.length ? wks.length-1 : -1);
+  const currentWeekIdx = anchorIdx>=0 ? anchorIdx : (liveIdx>=0 ? liveIdx : (wks.length ? wks.length-1 : -1));
   const currentWeek = currentWeekIdx>=0 ? wks[currentWeekIdx] : null;
 
-  const calTarget = currentWeek ? resolveCalTarget(wks, currentWeekIdx, liveWeek.calorieTarget) : null;
+  const calTarget = currentWeek ? resolveCalTarget(wks, currentWeekIdx, useLiveInputs ? liveWeek.calorieTarget : null) : null;
   const calAdhPct = (currentWeek && currentWeek.calories!=null && calTarget!=null && calTarget!==0)
     ? currentWeek.calories/calTarget*100
     : null;
@@ -1314,7 +1371,7 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   // ── Recovery gate ──
   // calcRecoveryStatus reads live form fields; when called from historical context
   // (genSummary) this is acceptable — summary always reflects currently loaded week.
-  const rs = calcRecoveryStatus();
+  const rs = useLiveInputs ? calcRecoveryStatus() : {watchActive:false};
   const recoveryGreen = !rs.watchActive;
 
   // ── Consecutive slow weeks (rolling rate) ──
@@ -3182,7 +3239,7 @@ function genSummary(){
 
   // ── Velocity ──
   const cvSum = calcCutVelocity(wWeight, D.weeks.slice(0,idx));
-  const stSum = calcStallStatus(cvSum, wWaist, D.weeks.slice(0,idx));
+  const stSum = calcStallStatus(cvSum, wWaist, D.weeks, {anchorDate:w.date, useLiveInputs:false});
   const rr    = cvSum.rollingRate;
   const stRate = cvSum.shortTermRate;
   let rateStr = '—';
@@ -3280,7 +3337,7 @@ function genSummary(){
 
   // ── Tiebreakers ──
   const cvTb = calcCutVelocity(wWeight, D.weeks.slice(0,idx));
-  const stTb = calcStallStatus(cvTb, wWaist, D.weeks.slice(0,idx));
+  const stTb = calcStallStatus(cvTb, wWaist, D.weeks, {anchorDate:w.date, useLiveInputs:false});
   const rsTb = calcRecoveryStatusFromData(wHRV, wRHR, wSleep, D.weeks.slice(0,idx).filter(x=>x.hrv||x.rhr||x.sleep));
   const baseTbResult = calcWeeklyAction(wkMode, cvTb, stTb, rsTb, wTags, D.weeks.slice(0,idx+1));
   const tbResult = applyTiebreakers(baseTbResult, cvTb, stTb, rsTb, D.weeks.slice(0,idx+1), wkMode);
@@ -3330,21 +3387,25 @@ function genSummary(){
   const tiebreakerMachine = na(tbResult.tiebreakerApplied);
   const weekTagsMachine = wTags.length ? wTags.join(', ') : 'none';
 
-  // Single source of truth for adherence + phase progress in both human/machine export blocks.
+  // Single source of truth for export adherence: selected week + immediately previous saved week.
+  // Nutrition section intentionally remains current-week values; adherence section is always 2-week window.
+  const weightedWeeksForExport = D.weeks.filter(x=>x.weight);
+  const selectedWeightedIdx = weightedWeeksForExport.findIndex(x=>x.date===w.date);
+  const adherenceWindow = calcExportAdherence2Week(weightedWeeksForExport, selectedWeightedIdx);
   const adherenceComputed = {
-    caloriePct: stSum.calAdhPct,
-    proteinPct: stSum.protAdhPct,
-    neatPct: stSum.stpAdhPct
+    caloriePct: adherenceWindow?.caloriePct ?? null,
+    proteinPct: adherenceWindow?.proteinPct ?? null,
+    neatPct: adherenceWindow?.neatPct ?? null
   };
   const adherenceText = {
-    calories: (adherenceComputed.caloriePct!=null)
-      ? pct(adherenceComputed.caloriePct)+' ('+nd(stSum.calActual)+' / '+nd(stSum.calTarget)+' kcal target)'
-      : (wCals!=null ? nd(wCals)+' kcal [no calorie target — n/a for adherence]' : 'n/a'),
-    protein: (adherenceComputed.proteinPct!=null && stSum.protTarget!=null)
-      ? pct(adherenceComputed.proteinPct)+' ('+nd(stSum.protActual)+'g / '+Math.round(stSum.protTarget)+' g (1g/lb rule)) [rule-based target]'
-      : (wProt!=null ? nd(wProt)+'g [no weight logged — n/a for adherence]' : 'n/a'),
-    neat: (adherenceComputed.neatPct!=null && stSum.stepTarget!=null)
-      ? pct(adherenceComputed.neatPct)+' ('+Number(stSum.neatTotalEq).toLocaleString()+' / '+Number(stSum.stepTarget).toLocaleString()+' step-eq target)'
+    calories: (adherenceComputed.caloriePct!=null && adherenceWindow?.calTarget!=null)
+      ? pct(adherenceComputed.caloriePct)+' ('+nd(Math.round(adherenceWindow.calActual))+' / '+nd(Math.round(adherenceWindow.calTarget))+' kcal target)'
+      : (wCals!=null ? nd(wCals)+' kcal [need selected + previous week with calorie targets]' : 'n/a'),
+    protein: (adherenceComputed.proteinPct!=null && adherenceWindow?.protTarget!=null)
+      ? pct(adherenceComputed.proteinPct)+' ('+nd(Math.round(adherenceWindow.protActual))+'g / '+Math.round(adherenceWindow.protTarget)+' g (1g/lb rule)) [rule-based target]'
+      : (wProt!=null ? nd(wProt)+'g [need selected + previous week with bodyweight]' : 'n/a'),
+    neat: (adherenceComputed.neatPct!=null && adherenceWindow?.stepTarget!=null)
+      ? pct(adherenceComputed.neatPct)+' ('+Number(adherenceWindow.neatActual).toLocaleString()+' / '+Math.round(adherenceWindow.stepTarget).toLocaleString()+' step-eq target)'
       : 'n/a'
   };
   const phaseComputed = {
