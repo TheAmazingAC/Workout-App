@@ -3446,6 +3446,8 @@ function genSummary(){
   const dbcSum = calcDietBreakCandidate();
 
   // ── Computed values (machine-readable) ──
+  // Labels now include explicit time horizon/context suffixes to reduce parsing ambiguity;
+  // underlying calculations and values are intentionally unchanged.
   const na = v => (v == null || (typeof v==='number' && Number.isNaN(v))) ? 'n/a' : v;
   const boolStr = v => (v == null ? 'n/a' : (v ? 'true' : 'false'));
   const rateStrMachine = v => (v == null || Number.isNaN(Number(v))) ? 'n/a' : ((Number(v)>=0?'−':'+')+Math.abs(Number(v)).toFixed(2)+'%/wk');
@@ -3622,23 +3624,24 @@ function genSummary(){
     wNotes||'None',
     '',
     '── COMPUTED VALUES (machine-readable) ──',
-    'rolling_rate:              '+rateStrMachine(phaseComputed.rollingRate),
-    'short_term_rate:           '+rateStrMachine(phaseComputed.shortTermRate),
+    'analysis_anchor_week:      '+(w?.date || 'n/a'),
+    'rolling_rate_pct_per_week_2wk: '+rateStrMachine(phaseComputed.rollingRate),
+    'short_term_rate_pct_per_week_2wk: '+rateStrMachine(phaseComputed.shortTermRate),
     'signal_conflict:           '+boolStr(signalConflict !== null),
-    'waist_trend_3wk:           '+numMachine(stSum.waistTrend, 2),
-    'waist_flat:                '+boolStr(stSum.waistFlat),
+    'waist_avg_in_3wk:          '+numMachine(stSum.waistTrend, 2),
+    'waist_flat_3wk:            '+boolStr(stSum.waistFlat),
     'stall_status:              '+boolStr(stSum.stalled),
     'stall_confidence:          '+na(stallConfSum),
-    'phase_weeks:               '+(phaseWksSum==null || Number.isNaN(Number(phaseWksSum)) ? 'n/a' : String(phaseWksSum)),
+    'phase_weeks_to_anchor:     '+(phaseWksSum==null || Number.isNaN(Number(phaseWksSum)) ? 'n/a' : String(phaseWksSum)),
     'adherence_confidence:      '+na(adhConfSum&&adhConfSum.conf),
     'recovery_baseline_conf:    '+na(recBaseSum&&recBaseSum.conf),
     'recovery_status:           '+recoveryStatus,
     'deficit_level:             '+deficitLevel,
-    'calorie_adherence_pct:     '+pctMachine(adherenceComputed.caloriePct, 0),
-    'protein_adherence_pct:     '+pctMachine(adherenceComputed.proteinPct, 0),
-    'neat_adherence_pct:        '+pctMachine(adherenceComputed.neatPct, 0),
-    'phase_weight_change_lbs:   '+numMachine(phaseComputed.weightChange, 2),
-    'phase_avg_pace_lbs_per_wk: '+numMachine(phaseComputed.avgPacePerWeek, 4),
+    'calorie_adherence_pct_2wk: '+pctMachine(adherenceComputed.caloriePct, 0),
+    'protein_adherence_pct_2wk: '+pctMachine(adherenceComputed.proteinPct, 0),
+    'neat_adherence_pct_2wk:    '+pctMachine(adherenceComputed.neatPct, 0),
+    'phase_weight_change_lbs_to_anchor:   '+numMachine(phaseComputed.weightChange, 2),
+    'phase_avg_pace_lbs_per_wk_to_anchor: '+numMachine(phaseComputed.avgPacePerWeek, 4),
     'action_code:               '+actionCodeMachine,
     'tiebreaker_applied:        '+tiebreakerMachine,
     'week_tags:                 '+weekTagsMachine,
