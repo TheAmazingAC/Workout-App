@@ -2788,17 +2788,53 @@ function classifySession(title){
 }
 
 function parseHevyCsvRows(text){
-  const lines = text.split('\n');
-  const hdrs = lines[0].split(',').map(h=>h.replace(/"/g,'').trim());
-  return lines.slice(1).filter(l=>l.trim()).map(line=>{
-    const cols = line.match(/(".*?"|[^,\n]+)/g)||[];
-    const obj = {}; hdrs.forEach((h,i)=>obj[h]=(cols[i]||'').replace(/"/g,'').trim()); return obj;
+  const rows = [];
+  let cur = '', row = [], inQuotes = false;
+  for(let i=0;i<text.length;i++){
+    const ch = text[i];
+    if(ch==='"'){
+      if(inQuotes && text[i+1]==='"'){ cur+='"'; i++; }
+      else inQuotes = !inQuotes;
+    }else if(ch===',' && !inQuotes){
+      row.push(cur); cur='';
+    }else if((ch==='\n' || ch==='\r') && !inQuotes){
+      if(ch==='\r' && text[i+1]==='\n') i++;
+      row.push(cur); cur='';
+      if(row.some(c=>String(c).trim()!=='')) rows.push(row);
+      row=[];
+    }else{
+      cur += ch;
+    }
+  }
+  if(cur.length || row.length){
+    row.push(cur);
+    if(row.some(c=>String(c).trim()!=='')) rows.push(row);
+  }
+  if(!rows.length) return [];
+  const hdrs = rows[0].map(h=>String(h).replace(/"/g,'').trim());
+  return rows.slice(1).map(cols=>{
+    const obj = {};
+    hdrs.forEach((h,i)=>obj[h]=String(cols[i]||'').replace(/"/g,'').trim());
+    return obj;
   });
+}
+
+function isValidExerciseName(name){
+  if(name==null) return false;
+  const n = String(name).trim();
+  if(!n) return false;
+  if(/^\d+$/.test(n)) return false; // set index / row index contamination
+  if(!/[A-Za-z]/.test(n)) return false;
+  if(n.length > 80) return false;
+  // Import notes/comments can leak into the exercise field; keep selector options exercise-only.
+  if(/^(note|notes|comment|comments|description)$/i.test(n)) return false;
+  if(/\b(feel|felt|today|because|reflected|combine|combining|both sides)\b/i.test(n) && n.split(/\s+/).length>=5) return false;
+  return true;
 }
 
 function groupBySessions(rows){
   const sessions = {};
-  rows.filter(r=>r.set_type!=='warmup'&&r.exercise_title).forEach(r=>{
+  rows.filter(r=>r.set_type!=='warmup'&&isValidExerciseName(r.exercise_title)).forEach(r=>{
     // Extract date from start_time (e.g. "5 Feb 2026 09:14" or "2026-02-05 09:14")
     const key = r.title + '||' + (r.start_time||'').split(' ').slice(0,3).join(' ');
     if(!sessions[key]){
@@ -2941,7 +2977,7 @@ function confirmHevyImport(){
   // Store full session data (HEVY_DATA format) for merging on save
   window._importedSessions = _importSessions.filter(s=>s.included).map(s=>{
     const ts = {};
-    const exNames = [...new Set(s.sets.map(r=>r.exercise_title).filter(Boolean))];
+    const exNames = [...new Set(s.sets.map(r=>r.exercise_title).filter(isValidExerciseName))];
     exNames.forEach(ex=>{
       const top = getTopSetForExercise(s.sets, ex);
       if(top){
@@ -3464,8 +3500,10 @@ function renderSnap(){
 function buildExSelectors(){
   // Collect all exercise names from HEVY_DATA sessions + weekly lifts
   const exSet=new Set();
-  HEVY_DATA.sessions.forEach(s=>Object.keys(s.ts).forEach(ex=>exSet.add(canonicalize(ex)||ex)));
-  D.weeks.forEach(w=>(w.lifts||[]).forEach(l=>{if(l.name)exSet.add(l.name);}));
+  HEVY_DATA.sessions.forEach(s=>Object.keys(s.ts).forEach(ex=>{
+    if(isValidExerciseName(ex)) exSet.add(canonicalize(ex)||ex);
+  }));
+  D.weeks.forEach(w=>(w.lifts||[]).forEach(l=>{if(isValidExerciseName(l.name))exSet.add(l.name);}));
   const names=[...exSet].sort();
   ['liftSel','ormSel'].forEach(id=>{
     const sel=document.getElementById(id);
@@ -3487,6 +3525,7 @@ function showTrainView(view, btn){
 
 // Get all top-set data for an exercise across HEVY sessions + weekly manual logs
 function getExerciseData(name){
+  if(!isValidExerciseName(name)) return [];
   const pts=[];
   // From Hevy sessions
   HEVY_DATA.sessions.forEach(s=>{
