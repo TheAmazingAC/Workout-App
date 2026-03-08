@@ -2252,6 +2252,40 @@ function replaceChart(key, ctx, cfg) {
   return charts[key];
 }
 
+function getWeekEndingFromDate(dateStr){
+  if(!dateStr) return '';
+  const d = new Date(dateStr+'T12:00:00Z');
+  if(Number.isNaN(d.getTime())) return '';
+  const daysToSat = (6-d.getUTCDay()+7)%7;
+  d.setUTCDate(d.getUTCDate()+daysToSat);
+  return d.toISOString().split('T')[0];
+}
+
+function rebuildHevyVolumeFromSessions(){
+  // HEVY_DATA.sessions is the source of truth for imported+saved session volume analytics.
+  const vol = {};
+  HEVY_DATA.sessions.forEach(s=>{
+    const weekKey = s.we || getWeekEndingFromDate(s.d);
+    if(!weekKey) return;
+    if(!vol[weekKey]) vol[weekKey] = {tot:0,p:0,pu:0,l:0,n:0};
+    const row = vol[weekKey];
+    const sesVol = Number.isFinite(s.vol) ? s.vol : Object.values(s.ts||{}).reduce((sum,ts)=>sum+((ts.w||0)*(ts.r||0)),0);
+    row.tot += sesVol;
+    row.n += 1;
+    if(s.m==='push') row.p += sesVol;
+    else if(s.m==='pull') row.pu += sesVol;
+    else if(s.m==='legs') row.l += sesVol;
+  });
+  HEVY_DATA.vol = vol;
+}
+
+function upsertHevySessions(sessions){
+  const byKey = new Map(HEVY_DATA.sessions.map(s=>[s.d+'||'+s.t, s]));
+  (sessions||[]).forEach(s=>{ if(s&&s.d&&s.t) byKey.set(s.d+'||'+s.t, s); });
+  HEVY_DATA.sessions = [...byKey.values()].sort((a,b)=>a.d.localeCompare(b.d));
+  rebuildHevyVolumeFromSessions();
+}
+
 // ══════════════════════════════════════════
 // INIT
 // ══════════════════════════════════════════
@@ -2261,20 +2295,12 @@ function replaceChart(key, ctx, cfg) {
 // Called on init and after saveWeek so that D.weeks[].hevySessions
 // are visible in the session log and lift charts.
 function mergeStoredSessions(){
-  // Build a set of existing session keys (date + title) to avoid duplicates
-  const existing = new Set(HEVY_DATA.sessions.map(s=>s.d+'||'+s.t));
+  const merged = [...HEVY_DATA.sessions];
   D.weeks.forEach(w=>{
     if(!w.hevySessions||!Array.isArray(w.hevySessions)) return;
-    w.hevySessions.forEach(s=>{
-      const key = s.d+'||'+s.t;
-      if(!existing.has(key)){
-        HEVY_DATA.sessions.push(s);
-        existing.add(key);
-      }
-    });
+    merged.push(...w.hevySessions);
   });
-  // Re-sort sessions by date ascending
-  HEVY_DATA.sessions.sort((a,b)=>a.d.localeCompare(b.d));
+  upsertHevySessions(merged);
 }
 
 window.onload = ()=>{
@@ -3012,6 +3038,19 @@ function confirmHevyImport(){
       vol: Math.round(vol),
     };
   });
+
+  upsertHevySessions(window._importedSessions);
+  // Imported sessions are staged in _importedSessions for saveWeek, but analytics reads HEVY_DATA now.
+  // Re-render here so volume charts update immediately after confirm instead of waiting for a later save.
+  if(document.getElementById('sec-training')?.classList.contains('active')) renderTraining();
+  if(document.getElementById('sec-analytics')?.classList.contains('active')){
+    if(document.getElementById('av-volume')?.style.display!=='none'){
+      renderVolume();
+      renderMuscleChart();
+    } else {
+      renderAnalytics();
+    }
+  }
 
   closeImportModal();
   const gymCount = gymSessions.length;
