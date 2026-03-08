@@ -1307,6 +1307,9 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   const stpAdhPct = (currentWeek && currentWeek.steps!=null && currentWeek.stepTarget!=null && currentWeek.stepTarget!==0)
     ? calcNEAT(currentWeek.steps, currentWeek.bikeMin).totalEq/currentWeek.stepTarget*100
     : null;
+  const neatTotalEq = (currentWeek && currentWeek.steps!=null)
+    ? calcNEAT(currentWeek.steps, currentWeek.bikeMin).totalEq
+    : null;
 
   // ── Recovery gate ──
   // calcRecoveryStatus reads live form fields; when called from historical context
@@ -1338,7 +1341,13 @@ function calcStallStatus(cv, currentWaist, savedWeeks){
   const stalled = stallReasons.length === 0;
 
   return { stalled, stallReasons, waistTrend, waistFlat, waistPrev,
-           calAdhPct, protAdhPct, stpAdhPct, recoveryGreen,
+           calAdhPct, protAdhPct, stpAdhPct,
+           calTarget, protTarget: currentWeek?.weight ?? null,
+           stepTarget: currentWeek?.stepTarget ?? null,
+           calActual: currentWeek?.calories ?? null,
+           protActual: currentWeek?.protein ?? null,
+           neatTotalEq,
+           recoveryGreen,
            twoConsecSlow, slowThisWk, prevRolling };
 }
 
@@ -3202,20 +3211,7 @@ function genSummary(){
   }
   const zoneStr = cvSum.zone || '—';
 
-  // [Rule 6] Adherence lines — show n/a when target missing, never trigger from missing target
-  const calAdhStr  = (wCals!=null && wCalTgt!=null)
-    ? pct(wCals/wCalTgt*100) + ' ('+wCals+' / '+wCalTgt+' kcal target)'
-    : (wCals!=null ? nd(wCals)+' kcal [no calorie target — n/a for adherence]' : 'n/a');
-  const protTargetStr = wWeight!=null
-    ? Math.round(wWeight)+' g (1g/lb rule)'
-    : null;
-  const protAdhStr = (wProt!=null && wWeight!=null)
-    ? pct(wProt/wWeight*100) + ' ('+wProt+'g / '+protTargetStr+') [rule-based target]'
-    : (wProt!=null ? nd(wProt)+'g [no weight logged — n/a for adherence]' : 'n/a');
   const neatObj   = calcNEAT(wSteps, wBike);
-  const neatAdhStr = (neatObj.totalEq > 0 && wStepTgt)
-    ? pct(neatObj.totalEq/wStepTgt*100) + ' ('+neatObj.totalEq.toLocaleString()+' / '+wStepTgt.toLocaleString()+' step-eq target)'
-    : 'n/a';
 
   // ── Nutrition lines ──
   const calLine = (wCals&&wCalTgt)
@@ -3253,7 +3249,15 @@ function genSummary(){
   const phaseInfo = getPhaseBlockForWeek(w.date);
   const phaseLabelMap = { cut:'Cut', maint:'Maintenance', bulk:'Bulk' };
   const phaseLabel = phaseLabelMap[str(phaseInfo.phaseRef).toLowerCase()] || (str(phaseInfo.phaseRef) || 'Cut');
-  const signedFixed = n => (n>=0?'+':'') + Number(n).toFixed(1);
+  const signedDynamic = (n, primaryDec=1, fallbackDec=2)=>{
+    if(n==null || Number.isNaN(Number(n))) return 'n/a';
+    const num = Number(n);
+    const p = Number(num.toFixed(primaryDec));
+    if(p!==0 || num===0) return (p>=0?'+':'') + p.toFixed(primaryDec);
+    const f = Number(num.toFixed(fallbackDec));
+    const normalized = Object.is(f,-0) ? 0 : f;
+    return (normalized>=0?'+':'') + normalized.toFixed(fallbackDec);
+  };
 
   // ── Patch A: always week.mode ──
   // wkMode already set above from w.mode
@@ -3326,6 +3330,31 @@ function genSummary(){
   const tiebreakerMachine = na(tbResult.tiebreakerApplied);
   const weekTagsMachine = wTags.length ? wTags.join(', ') : 'none';
 
+  // Single source of truth for adherence + phase progress in both human/machine export blocks.
+  const adherenceComputed = {
+    caloriePct: stSum.calAdhPct,
+    proteinPct: stSum.protAdhPct,
+    neatPct: stSum.stpAdhPct
+  };
+  const adherenceText = {
+    calories: (adherenceComputed.caloriePct!=null)
+      ? pct(adherenceComputed.caloriePct)+' ('+nd(stSum.calActual)+' / '+nd(stSum.calTarget)+' kcal target)'
+      : (wCals!=null ? nd(wCals)+' kcal [no calorie target — n/a for adherence]' : 'n/a'),
+    protein: (adherenceComputed.proteinPct!=null && stSum.protTarget!=null)
+      ? pct(adherenceComputed.proteinPct)+' ('+nd(stSum.protActual)+'g / '+Math.round(stSum.protTarget)+' g (1g/lb rule)) [rule-based target]'
+      : (wProt!=null ? nd(wProt)+'g [no weight logged — n/a for adherence]' : 'n/a'),
+    neat: (adherenceComputed.neatPct!=null && stSum.stepTarget!=null)
+      ? pct(adherenceComputed.neatPct)+' ('+Number(stSum.neatTotalEq).toLocaleString()+' / '+Number(stSum.stepTarget).toLocaleString()+' step-eq target)'
+      : 'n/a'
+  };
+  const phaseComputed = {
+    weeksInPhase: phaseInfo.weeksInPhase || 0,
+    weightChange: phaseInfo.weightChange,
+    avgPacePerWeek: phaseInfo.avgPacePerWeek,
+    rollingRate: rr,
+    shortTermRate: stRate
+  };
+
   const lines = [
     '📊 WEEKLY HEALTH SUMMARY — '+wkMode.toUpperCase()+' PHASE'+(flags?' '+flags:''),
     'Week ending: '+fmtD(w.date),
@@ -3362,12 +3391,12 @@ function genSummary(){
     '',
     '── PHASE PROGRESS ──',
     'Phase:               '+phaseLabel,
-    'Weeks in current phase: '+(phaseInfo.weeksInPhase || 0),
-    (phaseInfo.weightChange!=null)
-      ? 'Weight change since phase start: '+signedFixed(phaseInfo.weightChange)+' lbs'
+    'Weeks in current phase: '+phaseComputed.weeksInPhase,
+    (phaseComputed.weightChange!=null)
+      ? 'Weight change since phase start: '+signedDynamic(phaseComputed.weightChange)+' lbs'
       : null,
-    (phaseInfo.avgPacePerWeek!=null)
-      ? 'Average pace:        '+signedFixed(phaseInfo.avgPacePerWeek)+' lb/week'
+    (phaseComputed.avgPacePerWeek!=null)
+      ? 'Average pace:        '+signedDynamic(phaseComputed.avgPacePerWeek)+' lb/week [phase-total]'
       : null,
     (()=>{
       // [Fix 4] In CUT mode: use 'Est. loss rate' only when actually losing (rr>=0).
@@ -3381,9 +3410,9 @@ function genSummary(){
     'Stall status:        '+stallStr,
     '',
     '── ADHERENCE (2-wk avg) ──',
-    'Calories:   '+calAdhStr,
-    'Protein:    '+protAdhStr,
-    'NEAT:       '+neatAdhStr,
+    'Calories:   '+adherenceText.calories,
+    'Protein:    '+adherenceText.protein,
+    'NEAT:       '+adherenceText.neat,
     '',
     '── RECOVERY ──',
     'HRV (7-day avg):     '+nd(wHRV)+' ms'+delt(wHRV, prev&&(num(prev.hrv)||null), 1, ' ms')+hrvFlag+(baseHRV?' [~'+recBaseSum.n+'-wk baseline (weekly inputs): '+baseHRV+' ms — '+recBaseSum.conf+' confidence]':' [no baseline]')+(recBaseSum.suppressed?' [flags LOW confidence]':''),
@@ -3454,8 +3483,8 @@ function genSummary(){
     wNotes||'None',
     '',
     '── COMPUTED VALUES (machine-readable) ──',
-    'rolling_rate:              '+rateStrMachine(rr),
-    'short_term_rate:           '+rateStrMachine(stRate),
+    'rolling_rate:              '+rateStrMachine(phaseComputed.rollingRate),
+    'short_term_rate:           '+rateStrMachine(phaseComputed.shortTermRate),
     'signal_conflict:           '+boolStr(signalConflict !== null),
     'waist_trend_3wk:           '+numMachine(stSum.waistTrend, 2),
     'waist_flat:                '+boolStr(stSum.waistFlat),
@@ -3466,9 +3495,11 @@ function genSummary(){
     'recovery_baseline_conf:    '+na(recBaseSum&&recBaseSum.conf),
     'recovery_status:           '+recoveryStatus,
     'deficit_level:             '+deficitLevel,
-    'calorie_adherence_pct:     '+pctMachine(stSum.calAdhPct, 0),
-    'protein_adherence_pct:     '+pctMachine(stSum.protAdhPct, 0),
-    'neat_adherence_pct:        '+pctMachine(stSum.stpAdhPct, 0),
+    'calorie_adherence_pct:     '+pctMachine(adherenceComputed.caloriePct, 0),
+    'protein_adherence_pct:     '+pctMachine(adherenceComputed.proteinPct, 0),
+    'neat_adherence_pct:        '+pctMachine(adherenceComputed.neatPct, 0),
+    'phase_weight_change_lbs:   '+numMachine(phaseComputed.weightChange, 2),
+    'phase_avg_pace_lbs_per_wk: '+numMachine(phaseComputed.avgPacePerWeek, 4),
     'action_code:               '+actionCodeMachine,
     'tiebreaker_applied:        '+tiebreakerMachine,
     'week_tags:                 '+weekTagsMachine,
