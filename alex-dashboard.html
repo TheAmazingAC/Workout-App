@@ -4306,6 +4306,9 @@ function updVelocity(){
   // ── Adherence panel ──
   const pct = v => v!=null ? v.toFixed(0)+'%' : '—';
   const adCls = v => v==null?'var(--mu)':v>=90?'var(--g)':v>=80?'var(--a)':'var(--a3)';
+  // UI shows an orange warning when NEAT adherence is close to target (90–99%).
+  // The stall engine itself still uses the ≥80% rule for diagnostic eligibility.
+  const neatAdCls = v => v==null ? 'var(--mu)' : v>=100 ? 'var(--g)' : v>=90 ? 'var(--a)' : 'var(--a3)';
   const calAdCls = v => v==null
     ? 'var(--mu)'
     : (D.mode==='cut' ? (v<=100 ? 'var(--g)' : 'var(--a3)') : adCls(v));
@@ -4314,7 +4317,7 @@ function updVelocity(){
      <div class="sg" style="gap:6px">
        <div class="sb"><div class="sv" style="font-size:14px;color:${calAdCls(st.calAdhPct)}">${pct(st.calAdhPct)}</div><div class="sl">Calories ≤100%</div></div>
        <div class="sb"><div class="sv" style="font-size:14px;color:${adCls(st.protAdhPct)}">${pct(st.protAdhPct)}</div><div class="sl">Protein ≥90%</div></div>
-       <div class="sb"><div class="sv" style="font-size:14px;color:${adCls(st.stpAdhPct)}">${pct(st.stpAdhPct)}</div><div class="sl">NEAT ≥80%</div></div>
+       <div class="sb"><div class="sv" style="font-size:14px;color:${neatAdCls(st.stpAdhPct)}">${pct(st.stpAdhPct)}</div><div class="sl">NEAT ≥80%</div></div>
      </div>`;
 
   // ── Stall diagnostic ──
