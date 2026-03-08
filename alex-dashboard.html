@@ -1203,7 +1203,9 @@ function calcCutVelocity(currentWeight, savedWeeks){
   if(W0!=null && W1!=null && W2!=null && W3!=null){
     const recentAvg = (W0 + W1) / 2;
     const priorAvg  = (W2 + W3) / 2;
-    rollingRate = ((recentAvg - priorAvg) / priorAvg) * 100 / 2; // positive = loss
+    // Internal convention: positive = losing (recent avg lower than prior avg), negative = gaining.
+    // UI mapping then uses rr>0 as losing pace and rr<0 as "Gaining".
+    rollingRate = ((priorAvg - recentAvg) / priorAvg) * 100 / 2;
   }
 
   // Short-term (week-over-week, display only — not decision driver)
