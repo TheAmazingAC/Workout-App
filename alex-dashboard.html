@@ -3282,6 +3282,26 @@ function genSummary(){
   const wSteps  = num(w.steps) || null;
   const wBike   = num(w.bikeMin) || null;
   const wStepTgt= num(w.stepTarget) || 15000;
+  const MODE_DEFAULT_CAL_TARGET = {cut:2300, maint:2300, bulk:2300};
+  const modeDefaultCalTarget = MODE_DEFAULT_CAL_TARGET[wkMode] ?? 2300;
+
+  const explicitCalTarget = parsedTarget(w.calorieTarget);
+  let carriedForwardCalTarget = null;
+  if(explicitCalTarget==null){
+    for(let i=idx-1;i>=0;i--){
+      const prevTarget = parsedTarget(D.weeks[i]?.calorieTarget);
+      if(prevTarget!=null){
+        carriedForwardCalTarget = prevTarget;
+        break;
+      }
+    }
+  }
+  const exportCalTarget = explicitCalTarget ?? carriedForwardCalTarget ?? modeDefaultCalTarget;
+  const calorieTargetSource = explicitCalTarget!=null
+    ? {human:'manual', machine:'manual'}
+    : carriedForwardCalTarget!=null
+      ? {human:'carried forward', machine:'carried_forward'}
+      : {human:'mode default', machine:'mode_default'};
 
   // [Rule 8] Safe delta — 'n/a' for first week, '' if data missing
   function delt(cur, prv, dec, unit){
@@ -3350,6 +3370,13 @@ function genSummary(){
 
   // ── NEAT ──
   const neatPrev = prev ? calcNEAT(num(prev.steps)||null, num(prev.bikeMin)||null) : null;
+  const neatGapStepEq = neatObj.totalEq - wStepTgt;
+  const neatGapLabel = neatGapStepEq > 0 ? 'NEAT overage' : 'NEAT gap';
+  const neatGapValue = neatGapStepEq > 0
+    ? ('+'+Math.round(neatGapStepEq).toLocaleString())
+    : (neatGapStepEq < 0
+      ? ('−'+Math.abs(Math.round(neatGapStepEq)).toLocaleString())
+      : '0');
   const neatLine = (wSteps||wBike)
     ? 'Steps: '+(wSteps||0).toLocaleString()+delt(wSteps, prev&&(num(prev.steps)||null), 0, ' steps')
       +' + Bike: '+(wBike||0)+'min'+delt(wBike, prev&&(num(prev.bikeMin)||null), 0, ' min')
@@ -3500,6 +3527,7 @@ function genSummary(){
     'Stall confidence:    '+stallConfSum,
     'Recovery baseline:   '+recBaseSum.label+' ['+recBaseSum.conf+' confidence]',
     'Adherence confidence:'+adhConfSum.label+' ['+adhConfSum.conf+']',
+    'Calorie target source: '+calorieTargetSource.human+' ('+Math.round(exportCalTarget)+' kcal)',
     'Primary action:      '+primaryAction,
     'Modifiers:           '+(modifiers.length ? modifiers.join(' | ') : 'none'),
     'Water fluctuation:   '+(wfSum.show?'ON — '+wfSum.reason:'OFF'),
@@ -3563,6 +3591,7 @@ function genSummary(){
     '',
     '── ACTIVITY ──',
     'NEAT:  '+neatLine,
+    neatGapLabel+': '+neatGapValue+' step-eq/day',
     '',
     '── NUTRITION ──',
     'Calories:  '+calLine+delt(wCals, prev&&(num(prev.calories)||null), 0, ' kcal'),
@@ -3637,9 +3666,11 @@ function genSummary(){
     'recovery_baseline_conf:    '+na(recBaseSum&&recBaseSum.conf),
     'recovery_status:           '+recoveryStatus,
     'deficit_level:             '+deficitLevel,
+    'calorie_target_source:     '+calorieTargetSource.machine,
     'calorie_adherence_pct_2wk: '+pctMachine(adherenceComputed.caloriePct, 0),
     'protein_adherence_pct_2wk: '+pctMachine(adherenceComputed.proteinPct, 0),
     'neat_adherence_pct_2wk:    '+pctMachine(adherenceComputed.neatPct, 0),
+    'neat_gap_step_eq:          '+String(Math.round(neatGapStepEq)),
     'phase_weight_change_lbs_to_anchor:   '+numMachine(phaseComputed.weightChange, 2),
     'phase_avg_pace_lbs_per_wk_to_anchor: '+numMachine(phaseComputed.avgPacePerWeek, 4),
     'action_code:               '+actionCodeMachine,
