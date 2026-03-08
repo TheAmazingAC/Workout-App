@@ -1712,18 +1712,23 @@ function getCurrentPhaseRef(){
   return getWeekPhaseRef(latest);
 }
 
-function getWeeksInCurrentPhase(){
+function getWeeksInCurrentPhase(anchorDate=null){
   const sortedWeeks = [...(D.weeks||[])]
     .filter(w=>w && w.date)
     .sort((a,b)=>a.date.localeCompare(b.date));
   if(!sortedWeeks.length) return 0;
 
-  // phaseRef is per-week manual phase classification, and current phase length counts
-  // consecutive most-recent weeks with the same phaseRef to avoid overcounting old blocks.
-  const latestPhaseRef = getCurrentPhaseRef();
+  const anchorIdx = anchorDate
+    ? sortedWeeks.findIndex(w=>w.date===anchorDate)
+    : (sortedWeeks.length-1);
+  if(anchorIdx < 0) return 0;
+
+  // phaseRef is per-week manual phase classification, and phase length must be anchored
+  // to the selected/exported week so future rows never affect historical exports.
+  const anchorPhaseRef = getWeekPhaseRef(sortedWeeks[anchorIdx]);
   let count = 0;
-  for(let i=sortedWeeks.length-1;i>=0;i--){
-    if(getWeekPhaseRef(sortedWeeks[i])!==latestPhaseRef) break;
+  for(let i=anchorIdx;i>=0;i--){
+    if(getWeekPhaseRef(sortedWeeks[i])!==anchorPhaseRef) break;
     count++;
   }
   return count;
@@ -1856,14 +1861,18 @@ function calcAdherenceConfidence(week){
   return {conf:'LOW', label:dt+' days tracked — low confidence', low: true};
 }
 
-function getDeficitLevel(){
-  const wks = D.weeks.filter(w=>w.weight&&w.calories);
-  if(wks.length < 3) return null;
-  const i = wks.length-1;
-  const trio = wks.slice(i-2, i+1);
+function getDeficitLevel(anchorDate=null){
+  const wks = [...D.weeks]
+    .filter(w=>w.weight&&w.calories)
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  const endIdx = anchorDate ? wks.findIndex(w=>w.date===anchorDate) : (wks.length-1);
+  const scoped = endIdx >= 0 ? wks.slice(0, endIdx+1) : [];
+  if(scoped.length < 3) return null;
+  const i = scoped.length-1;
+  const trio = scoped.slice(i-2, i+1);
   const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
-  const wkLoss  = wks[i-1].weight - wks[i].weight;
-  const wkLoss2 = wks[i-2].weight - wks[i-1].weight;
+  const wkLoss  = scoped[i-1].weight - scoped[i].weight;
+  const wkLoss2 = scoped[i-2].weight - scoped[i-1].weight;
   const avgWkLoss = (wkLoss+wkLoss2)/2;
   const tdee = avgCal + (avgWkLoss*3500/7);
   const def = Math.round(tdee - avgCal);
@@ -1873,14 +1882,18 @@ function getDeficitLevel(){
   return 'aggressive';
 }
 
-function getPrevDeficitLevel(){
-  const wks = D.weeks.filter(w=>w.weight&&w.calories);
-  if(wks.length < 4) return null;
-  const i = wks.length-2;
-  const trio = wks.slice(i-2, i+1);
+function getPrevDeficitLevel(anchorDate=null){
+  const wks = [...D.weeks]
+    .filter(w=>w.weight&&w.calories)
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  const endIdx = anchorDate ? wks.findIndex(w=>w.date===anchorDate) : (wks.length-1);
+  const scoped = endIdx >= 0 ? wks.slice(0, endIdx+1) : [];
+  if(scoped.length < 4) return null;
+  const i = scoped.length-2;
+  const trio = scoped.slice(i-2, i+1);
   const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
-  const wkLoss  = wks[i-1].weight - wks[i].weight;
-  const wkLoss2 = wks[i-2].weight - wks[i-1].weight;
+  const wkLoss  = scoped[i-1].weight - scoped[i].weight;
+  const wkLoss2 = scoped[i-2].weight - scoped[i-1].weight;
   const avgWkLoss = (wkLoss+wkLoss2)/2;
   const tdee = avgCal + (avgWkLoss*3500/7);
   const def = Math.round(tdee - avgCal);
@@ -1890,18 +1903,25 @@ function getPrevDeficitLevel(){
   return 'aggressive';
 }
 
-function isKneeGateActive(){
-  const saved = D.weeks.filter(w=>w.weight);
-  if(!saved.length) return false;
-  const notes = (saved[saved.length-1].notes||'').toLowerCase();
+function isKneeGateActive(anchorDate=null){
+  const saved = [...D.weeks]
+    .filter(w=>w.weight)
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  const endIdx = anchorDate ? saved.findIndex(w=>w.date===anchorDate) : (saved.length-1);
+  if(endIdx < 0) return false;
+  const notes = (saved[endIdx].notes||'').toLowerCase();
   return notes.includes('knee');
 }
 
-function calcNextWeekTargets(){
-  const saved = D.weeks.filter(w=>w.weight);
-  if(!saved.length) return null;
+function calcNextWeekTargets(anchorDate=null){
+  const saved = [...D.weeks]
+    .filter(w=>w.weight)
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  const anchorIdx = anchorDate ? saved.findIndex(w=>w.date===anchorDate) : (saved.length-1);
+  const scoped = anchorIdx >= 0 ? saved.slice(0, anchorIdx+1) : [];
+  if(!scoped.length) return null;
 
-  const latest  = saved[saved.length-1];
+  const latest  = scoped[scoped.length-1];
   const wkMode  = latest.mode || D.mode || 'cut';
   const tags    = latest.tags || [];
   const suppressed = tags.includes('illness') || tags.includes('deload');
@@ -1921,23 +1941,23 @@ function calcNextWeekTargets(){
   const basisLine = 'HOLD ('+calSrc+' '+baseCals+' kcal · '+stepSrc+' '+Math.round(baseStepEq).toLocaleString()+' step-eq · protein '+exactProt+'g exact)'
 
   // ── Existing computed statuses ──
-  const cv  = calcCutVelocity(latest.weight, saved.slice(0,-1));
-  const st  = calcStallStatus(cv, latest.waist, saved.slice(0,-1));
-  const rsWeeks = saved.slice(0, -1).filter(w => w.hrv || w.rhr || w.sleep);
+  const cv  = calcCutVelocity(latest.weight, scoped.slice(0,-1));
+  const st  = calcStallStatus(cv, latest.waist, scoped.slice(0,-1));
+  const rsWeeks = scoped.slice(0, -1).filter(w => w.hrv || w.rhr || w.sleep);
   const rs  = calcRecoveryStatusFromData(latest.hrv, latest.rhr, latest.sleep, rsWeeks);
   const rr  = cv.rollingRate;
   const adhConf = calcAdherenceConfidence(latest);
-  const recBaseNWT = calcRecoveryBaselineConfidence(saved, saved.length-1);
-  const baseActionResult = calcWeeklyAction(wkMode, cv, st, rs, tags, saved);
-  const actionResult = applyTiebreakers(baseActionResult, cv, st, rs, saved, wkMode);
+  const recBaseNWT = calcRecoveryBaselineConfidence(scoped, scoped.length-1);
+  const baseActionResult = calcWeeklyAction(wkMode, cv, st, rs, tags, scoped);
+  const actionResult = applyTiebreakers(baseActionResult, cv, st, rs, scoped, wkMode);
   const actionCode = actionResult.actionCode;
   // Low recovery baseline also triggers compliance mode (Rule 7)
   const lowBaselineConf = recBaseNWT.conf === 'LOW' || recBaseNWT.conf === 'NONE';
 
-  const defLvl     = getDeficitLevel();
-  const prevDefLvl = getPrevDeficitLevel();
+  const defLvl     = getDeficitLevel(anchorDate);
+  const prevDefLvl = getPrevDeficitLevel(anchorDate);
   const aggressiveConsec = defLvl === 'aggressive' && prevDefLvl === 'aggressive';
-  const kneeGate   = isKneeGateActive();
+  const kneeGate   = isKneeGateActive(anchorDate);
   const directionMismatch = wkMode === 'cut' && rr != null && rr < 0; // gaining while cutting
 
   // ── Build output object (defaults = hold everything) ──
@@ -3373,7 +3393,8 @@ function genSummary(){
   const recBaseSum = calcRecoveryBaselineConfidence(D.weeks, idx);
 
   // ── Patch C: phase weeks + stall confidence (Rule 2 cap applied) ──
-  const phaseWksSum  = getWeeksInCurrentPhase();
+  // Export calculations must stay anchored to the selected week; future rows must not affect historical exports.
+  const phaseWksSum  = getWeeksInCurrentPhase(w.date);
   const adhConfSum   = calcAdherenceConfidence(w);  // declare before stallConf (Rule 2 needs it)
   const stallConfSum = calcStallConfidence(phaseWksSum, recBaseSum, adhConfSum);
   const stallGatedSum = phaseWksSum < 4 || stallConfSum === 'LOW';
@@ -3575,7 +3596,7 @@ function genSummary(){
     '',
     '── NEXT WEEK TARGETS ──',
     (()=>{
-      const nwtExp = calcNextWeekTargets();
+      const nwtExp = calcNextWeekTargets(w.date);
       if(!nwtExp) return '  Insufficient data (need ≥2 weeks)';
       const suppTag = nwtExp.suppressed ? ' [SUPPRESSED — held]' : '';
       // [Rule 7] Protein label: always rule-based
