@@ -2999,17 +2999,31 @@ function isValidExerciseName(name){
   if(!n) return false;
   if(/^\d+$/.test(n)) return false; // set index / row index contamination
   if(!/[A-Za-z]/.test(n)) return false;
-  if(n.length > 80) return false;
-  // Import notes/comments can leak into the exercise field; keep selector options exercise-only.
-  if(/^(note|notes|comment|comments|description)$/i.test(n)) return false;
-  if(/\b(feel|felt|today|because|reflected|combine|combining|both sides)\b/i.test(n) && n.split(/\s+/).length>=5) return false;
+  if(!isLikelyExerciseName(n)) return false;
+  return true;
+}
+
+function isLikelyExerciseName(name){
+  const s = String(name || '').trim();
+  if(!s) return false;
+  if(s.length > 80) return false;
+
+  // Reject obvious note/comment rows from Hevy exports.
+  if(/^(note|notes|comment|comments|description)\s*[:\-]?/i.test(s)) return false;
+  if(/^at gym\b/i.test(s)) return false;
+
+  // Reject rows that read like commentary/full sentences.
+  if(/[.!?]/.test(s)) return false;
+  if(/\bwith\b.*\bthan\b/i.test(s)) return false;
+  if(/\b(feel|felt|today|because|reflected|combine|combining|both sides)\b/i.test(s) && s.split(/\s+/).length>=5) return false;
+
   return true;
 }
 
 function groupBySessions(rows){
   const sessions = {};
   // Keep base imported rows intact for volume/session analytics; selector filtering happens later.
-  rows.filter(r=>r.set_type!=='warmup'&&r.exercise_title).forEach(r=>{
+  rows.filter(r=>r.set_type!=='warmup'&&isValidExerciseName(r.exercise_title)).forEach(r=>{
     // Extract date from start_time (e.g. "5 Feb 2026 09:14" or "2026-02-05 09:14")
     const key = r.title + '||' + (r.start_time||'').split(' ').slice(0,3).join(' ');
     if(!sessions[key]){
@@ -3064,6 +3078,7 @@ function parseHevyDate(str){
 }
 
 function getTopSetForExercise(sets, exName){
+  if(!isValidExerciseName(exName)) return null;
   const matching = sets.filter(r=>r.exercise_title===exName&&r.set_type!=='warmup');
   if(!matching.length) return null;
   return matching.reduce((best,r)=>{
@@ -3177,7 +3192,7 @@ function confirmHevyImport(){
   // Store full session data (HEVY_DATA format) for merging on save
   window._importedSessions = _importSessions.filter(s=>s.included).map(s=>{
     const ts = {};
-    const exNames = [...new Set(s.sets.map(r=>r.exercise_title).filter(Boolean))];
+    const exNames = [...new Set(s.sets.map(r=>r.exercise_title).filter(isValidExerciseName))];
     exNames.forEach(ex=>{
       const top = getTopSetForExercise(s.sets, ex);
       if(top){
