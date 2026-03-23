@@ -110,6 +110,9 @@ select option{background:var(--s2);}
 .hi{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--b);cursor:pointer;transition:opacity .2s;}
 .hi:hover{opacity:.7;}.hi:last-child{border-bottom:none;}
 .hm{display:flex;gap:12px;font-size:10px;}
+.hact{display:flex;align-items:center;gap:10px;}
+.hdel{background:none;border:1px solid var(--b);color:var(--mu);border-radius:6px;padding:3px 7px;font-size:10px;font-family:'DM Mono',monospace;cursor:pointer;transition:all .2s;}
+.hdel:hover{border-color:var(--a3);color:var(--a3);}
 /* Photo */
 .photo-thumb{width:100%;border-radius:8px;object-fit:cover;max-height:200px;margin-top:8px;display:block;}
 .photo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px;}
@@ -4250,6 +4253,28 @@ function checkImportBanner(){
   if(banner&&all)banner.style.display='none';
 }
 
+function deleteWeek(date, ev){
+  if(ev) ev.stopPropagation();
+  const idx=D.weeks.findIndex(w=>w.date===date);
+  if(idx<0) return;
+  if(!confirm('Delete this saved week? This cannot be undone.')) return;
+
+  D.weeks.splice(idx,1);
+  save();
+
+  const activeSec=document.querySelector('.sec.active')?.id||'';
+  const activeTab=activeSec.replace('sec-','')||'history';
+  markDirty(['summary','history','analytics','trends','training']);
+  renderApp(activeTab);
+
+  if(v('wDate')===date){
+    lastLoadedWeekSnapshot=null;
+    toast('Week deleted. Current LOG inputs kept as draft.');
+    return;
+  }
+  toast('Week deleted ✓');
+}
+
 function renderHistory(){
   // Photo strip
   const withPhotos=D.weeks.filter(w=>w.photo).reverse();
@@ -4273,10 +4298,13 @@ function renderHistory(){
         <div style="font-size:12px;margin-bottom:2px">${fmtD(w.date)}${isRefeed?'<span class="refeed-badge">REFEED</span>':''}${isDeload?'<span style="display:inline-block;background:rgba(71,184,255,.12);color:var(--a2);border:1px solid var(--a2);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:1px;margin-left:5px">DELOAD</span>':''}${modeBadge}${w._historical?'<span style="font-size:9px;color:var(--mu);margin-left:6px">hist</span>':''}</div>
         <div style="font-size:10px;color:var(--mu)">${(w.lifts||[]).filter(l=>l.weight).length} lifts${extraTags.map(t=>' <span style="font-size:8px;color:var(--mu)">#'+t+'</span>').join('')} &middot; ${w.photo?'📷 ':''}${w.notes?'📝 ':''}</div>
       </div>
-      <div class="hm">
-        <div style="color:var(--t)">${w.weight??'—'}<span style="color:var(--mu)"> lbs</span></div>
-        <div style="color:var(--t)">${w.waist??'—'}<span style="color:var(--mu)">"</span></div>
-        <div style="color:var(--t)">${w.sleep??'—'}<span style="color:var(--mu)">h</span></div>
+      <div class="hact">
+        <div class="hm">
+          <div style="color:var(--t)">${w.weight??'—'}<span style="color:var(--mu)"> lbs</span></div>
+          <div style="color:var(--t)">${w.waist??'—'}<span style="color:var(--mu)">"</span></div>
+          <div style="color:var(--t)">${w.sleep??'—'}<span style="color:var(--mu)">h</span></div>
+        </div>
+        <button class="hdel" onclick="deleteWeek('${w.date}', event)" title="Delete week">Delete</button>
       </div>
     </div>`;
   }).join('');
