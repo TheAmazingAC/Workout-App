@@ -3328,8 +3328,8 @@ function genSummary(){
       : {human:'mode default', machine:'mode_default'};
 
   // [Rule 8] Safe delta — 'n/a' for first week, '' if data missing
-  function delt(cur, prv, dec, unit){
-    if(prev==null || Number.isNaN(Number(prev))) return '  (n/a — first week)';
+  function delt(cur, prevWeek, prv, dec, unit){
+    if(prevWeek == null) return '  (n/a — first week)';
     if(cur == null || prv == null || Number.isNaN(Number(cur)) || Number.isNaN(Number(prv))) return '';
     const d = +(Number(cur)-Number(prv)).toFixed(dec);
     const sign = d > 0 ? '+' : '';
@@ -3402,9 +3402,9 @@ function genSummary(){
       ? ('−'+Math.abs(Math.round(neatGapStepEq)).toLocaleString())
       : '0');
   const neatLine = (wSteps||wBike)
-    ? 'Steps: '+(wSteps||0).toLocaleString()+delt(wSteps, prev&&(num(prev.steps)||null), 0, ' steps')
-      +' + Bike: '+(wBike||0)+'min'+delt(wBike, prev&&(num(prev.bikeMin)||null), 0, ' min')
-      +' = '+neatObj.totalEq.toLocaleString()+' step-eq'+(neatPrev?delt(neatObj.totalEq,neatPrev.totalEq,0,' eq'):'')
+    ? 'Steps: '+(wSteps||0).toLocaleString()+delt(wSteps, prev, prev&&(num(prev.steps)||null), 0, ' steps')
+      +' + Bike: '+(wBike||0)+'min'+delt(wBike, prev, prev&&(num(prev.bikeMin)||null), 0, ' min')
+      +' = '+neatObj.totalEq.toLocaleString()+' step-eq'+(neatPrev?delt(neatObj.totalEq,neatPrev,neatPrev.totalEq,0,' eq'):'')
       +' (~'+neatObj.bikeKcal+' kcal from bike)'
     : '—';
 
@@ -3564,13 +3564,13 @@ function genSummary(){
     statusLine ? '\n'+statusLine : '',
     '',
     '── BODY ──',
-    'Weight (7-day avg):  '+nd(wWeight)+' lbs'+delt(wWeight, prev&&(num(prev.weight)||null), 1, ' lbs'),
+    'Weight (7-day avg):  '+nd(wWeight)+' lbs'+delt(wWeight, prev, prev&&(num(prev.weight)||null), 1, ' lbs'),
     'Waist:Weight Ratio:  '+(wWeight&&wWaist
       ? ((wWaist/wWeight).toFixed(4)+(prev&&num(prev.weight)&&num(prev.waist)
           ? ' (Δ '+(+(wWaist/wWeight - num(prev.waist)/num(prev.weight)).toFixed(4))+')'
           : prev ? '' : ' (n/a — first week)'))
       : '—'),
-    'Waist (7-day avg):   '+nd(wWaist)+' in'+delt(wWaist, prev&&(num(prev.waist)||null), 2, ' in'),
+    'Waist (7-day avg):   '+nd(wWaist)+' in'+delt(wWaist, prev, prev&&(num(prev.waist)||null), 2, ' in'),
     (stSum.waistTrend!=null)
       ? (()=>{
           // Waist trend compares the current 3 most recent waist points to the immediately preceding 2 waist points.
@@ -3608,9 +3608,9 @@ function genSummary(){
     'NEAT:       '+adherenceText.neat,
     '',
     '── RECOVERY ──',
-    'HRV (7-day avg):     '+nd(wHRV)+' ms'+delt(wHRV, prev&&(num(prev.hrv)||null), 1, ' ms')+hrvFlag+(baseHRV?' [~'+recBaseSum.n+'-wk baseline (weekly inputs): '+baseHRV+' ms — '+recBaseSum.conf+' confidence]':' [no baseline]')+(recBaseSum.suppressed?' [flags LOW confidence]':''),
-    'RHR (7-day avg):     '+nd(wRHR)+' bpm'+delt(wRHR, prev&&(num(prev.rhr)||null), 1, ' bpm')+rhrFlag+(baseRHR?' [~'+recBaseSum.n+'-wk baseline (weekly inputs): '+baseRHR+' bpm — '+recBaseSum.conf+' confidence]':' [no baseline]')+(recBaseSum.suppressed?' [flags LOW confidence]':''),
-    'Sleep (7-day avg):   '+nd(wSleep)+' hrs'+delt(wSleep, prev&&(num(prev.sleep)||null), 1, ' hrs')+slpFlag,
+    'HRV (7-day avg):     '+nd(wHRV)+' ms'+delt(wHRV, prev, prev&&(num(prev.hrv)||null), 1, ' ms')+hrvFlag+(baseHRV?' [~'+recBaseSum.n+'-wk baseline (weekly inputs): '+baseHRV+' ms — '+recBaseSum.conf+' confidence]':' [no baseline]')+(recBaseSum.suppressed?' [flags LOW confidence]':''),
+    'RHR (7-day avg):     '+nd(wRHR)+' bpm'+delt(wRHR, prev, prev&&(num(prev.rhr)||null), 1, ' bpm')+rhrFlag+(baseRHR?' [~'+recBaseSum.n+'-wk baseline (weekly inputs): '+baseRHR+' bpm — '+recBaseSum.conf+' confidence]':' [no baseline]')+(recBaseSum.suppressed?' [flags LOW confidence]':''),
+    'Sleep (7-day avg):   '+nd(wSleep)+' hrs'+delt(wSleep, prev, prev&&(num(prev.sleep)||null), 1, ' hrs')+slpFlag,
     statusLine ? 'Recovery status:     '+statusLine : '',
     '',
     '── ACTIVITY ──',
@@ -3618,11 +3618,11 @@ function genSummary(){
     neatGapLabel+': '+neatGapValue+' step-eq/day',
     '',
     '── NUTRITION ──',
-    'Calories:  '+calLine+delt(wCals, prev&&(num(prev.calories)||null), 0, ' kcal'),
-    'Protein:   '+protLine+delt(wProt, prev&&(num(prev.protein)||null), 0, 'g'),
-    'Fat:       '+nd(wFat)+'g'+delt(wFat, prev&&(num(prev.fat)||null), 1, 'g'),
-    'Carbs:     '+nd(wCarbs)+'g'+delt(wCarbs, prev&&(num(prev.carbs)||null), 0, 'g'),
-    'Fiber:     '+nd(wFiber)+'g'+delt(wFiber, prev&&(num(prev.fiber)||null), 1, 'g'),
+    'Calories:  '+calLine+delt(wCals, prev, prev&&(num(prev.calories)||null), 0, ' kcal'),
+    'Protein:   '+protLine+delt(wProt, prev, prev&&(num(prev.protein)||null), 0, 'g'),
+    'Fat:       '+nd(wFat)+'g'+delt(wFat, prev, prev&&(num(prev.fat)||null), 1, 'g'),
+    'Carbs:     '+nd(wCarbs)+'g'+delt(wCarbs, prev, prev&&(num(prev.carbs)||null), 0, 'g'),
+    'Fiber:     '+nd(wFiber)+'g'+delt(wFiber, prev, prev&&(num(prev.fiber)||null), 1, 'g'),
     '',
     '── TRAINING — TOP SETS ──',
     liftLines||'  —',
@@ -5754,6 +5754,14 @@ window.__selfTest = function __selfTest() {
   add(regSt.waistFlat === false, 'Regression: waistFlat false when 3-week trend delta is material');
   const regWaistDelta = regWeeks[3].waist - regWeeks[2].waist;
   add(Math.abs(regWaistDelta - (-0.41)) <= 0.05, 'Regression: waist 7-day avg delta matches immediate prior week (±0.05)');
+
+  // Group 9: regression coverage — delt first-week vs missing-data semantics
+  const testDeltaRender = delt(184.6, {weight:185.3}, 185.3, 1, ' lbs');
+  add(/\(Δ /.test(testDeltaRender), 'Regression: delt renders when prev week + metric value exist');
+  const testDeltaFirstWeek = delt(184.6, null, null, 1, ' lbs');
+  add(/n\/a — first week/i.test(testDeltaFirstWeek), 'Regression: delt shows first-week message when prev week missing');
+  const testDeltaMissingData = delt(184.6, {weight:null}, null, 1, ' lbs');
+  add(testDeltaMissingData === '', 'Regression: delt shows missing-data blank when prev week exists but metric missing');
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
