@@ -310,7 +310,7 @@ select option{background:var(--s2);}
   <div class="mode-toggle">
     <button class="mode-btn cut active" onclick="setMode('cut')">CUT</button>
     <button class="mode-btn maint" onclick="setMode('maint')">MAINT</button>
-    <button class="mode-btn bulk" onclick="setMode('bulk')">BULK</button>
+    <button class="mode-btn bulk" onclick="setMode('bulk')">SURPLUS</button>
   </div>
 </div>
 <nav class="nav">
@@ -348,7 +348,7 @@ select option{background:var(--s2);}
         <select id="phaseRef">
           <option value="cut">Cut</option>
           <option value="maint">Maintenance</option>
-          <option value="bulk">Bulk</option>
+          <option value="bulk">Surplus</option>
         </select>
       </div>
     </div>
@@ -370,6 +370,13 @@ select option{background:var(--s2);}
     <div class="fg">
       <div class="field"><label>Weight 7-day avg (lbs)</label><input type="number" id="wt" placeholder="184.3" step="0.1" oninput="updLoss();updVelocity();updProteinDynamic();updBodyDeltas();updWTWR()"></div>
       <div class="field"><label>Waist 7-day avg (in)</label><input type="number" id="waist" placeholder="33.65" step="0.01" oninput="updBodyDeltas();updWTWR();updLoss();updVelocity()"></div>
+    </div>
+    <div class="fg">
+      <div class="field"><label title="Waist trends never compute across this date (e.g. tape change).">Waist baseline break</label><input type="date" id="waistBreakDate" oninput="D.waistBaselineBreakDate=v('waistBreakDate')||null;save();updVelocity();" title="Waist trends never compute across this date."></div>
+      <div class="field"><label title="Inches added to pre-break waist history so old-tape weeks stay comparable. +0 keeps the current behavior.">Waist offset (in, pre-break only)</label><input type="number" id="waistOffset" step="0.1" placeholder="+0.0" oninput="D.waistBaselineOffsetIn=parseFloat(v('waistOffset'))||0;save();updVelocity();updBodyDeltas();updWTWR();" title="Inches added to pre-break waist history. +1.3 adjusts old history; +0 keeps trends starting after the break."></div>
+    </div>
+    <div class="fg">
+      <div class="field"><label>Baseline status</label><div id="waistBreakNote" style="font-size:10px;color:var(--mu);padding:9px 0;line-height:1.5">—</div></div>
     </div>
     <div class="fg">
       <div class="field"><label>Target Weight (lbs)</label><input type="number" id="targetWt" placeholder="175" step="0.5" oninput="D.targetWeight=nv('targetWt');save();" title="Used for Runway Projection in Analytics"></div>
@@ -396,7 +403,7 @@ select option{background:var(--s2);}
           <div style="font-size:9px;color:var(--mu);margin-top:3px">Short-term Δ: <span id="lrShortTerm">—</span> <em style="color:var(--mu)">— direction only</em></div>
         </div>
       </div>
-      <div class="rrow">
+      <div class="rrow" id="lrChips">
         <div class="rc" id="c-slow">↓ &lt;0.5%/wk slow</div>
         <div class="rc" id="c-good">✓ 0.5–1.0%/wk ideal</div>
         <div class="rc" id="c-agg">⚡ 1.0–1.25% aggressive</div>
@@ -407,13 +414,75 @@ select option{background:var(--s2);}
 
   <!-- CUT VELOCITY PANEL -->
   <div class="card" id="velocityCard" style="display:none">
-    <div class="ct">// Cut Velocity</div>
+    <div class="ct" id="velocityTitle">// Cut Velocity</div>
     <div id="velBadge"></div>
     <div id="velStats" class="fg fg3" style="margin-bottom:8px"></div>
     <div id="velWaist" style="margin-bottom:8px"></div>
     <div id="velAdherence" style="margin-bottom:8px"></div>
     <div id="velStall" style="margin-bottom:8px"></div>
     <div id="velAction"></div>
+  </div>
+
+  <!-- WEEKLY TDEE ESTIMATE (v17 F2) -->
+  <div class="card" id="tdeeCard" style="display:none">
+    <div class="ct">// Weekly TDEE Estimate</div>
+    <p class="note">Sunday-review estimator: TDEE ≈ avg intake − (weight trend × 500). Rolling clean weeks; flagged weeks are excluded from the intake average and listed with reasons.</p>
+    <div id="tdeeBody"></div>
+  </div>
+
+  <!-- BODY COMPOSITION LOG (v17 F3) -->
+  <div class="card" id="bcCard">
+    <div class="ct">// Body Composition</div>
+    <p class="note">Dated log — DEXA + 3-site calipers (chest / abdomen / thigh, 3 readings per site, stored averaged). Persisted in the dashboard and backups. First fasted DEXA + caliper session planned Sunday morning 2026-09-27.</p>
+    <div class="fg">
+      <div class="field"><label>Date</label><input type="date" id="bcDate"></div>
+      <div class="field"><label>Type</label>
+        <select id="bcType" onchange="toggleBcFields()">
+          <option value="dexa">DEXA</option>
+          <option value="caliper">3-site calipers</option>
+        </select>
+      </div>
+    </div>
+    <div id="bcDexaFields">
+      <div class="fg fg3">
+        <div class="field"><label>Body fat %</label><input type="number" id="bcBf" step="0.1" placeholder="12.0"></div>
+        <div class="field"><label>Fat mass (lb)</label><input type="number" id="bcFat" step="0.1"></div>
+        <div class="field"><label>Lean mass (lb)</label><input type="number" id="bcLean" step="0.1"></div>
+      </div>
+      <div class="fg">
+        <div class="field"><label>Bone mass (lb, optional)</label><input type="number" id="bcBone" step="0.1"></div>
+        <div class="field"><label>Notes</label><input type="text" id="bcNotes" placeholder="fasted, morning"></div>
+      </div>
+    </div>
+    <div id="bcCaliperFields" style="display:none">
+      <div style="font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin:8px 0 6px">3 readings per site (mm)</div>
+      <div class="fg fg3">
+        <div class="field"><label>Chest (mm)</label><div style="display:flex;gap:4px"><input type="number" id="bcCh1" step="0.5" placeholder="1"><input type="number" id="bcCh2" step="0.5" placeholder="2"><input type="number" id="bcCh3" step="0.5" placeholder="3"></div></div>
+        <div class="field"><label>Abdomen (mm)</label><div style="display:flex;gap:4px"><input type="number" id="bcAb1" step="0.5"><input type="number" id="bcAb2" step="0.5"><input type="number" id="bcAb3" step="0.5"></div></div>
+        <div class="field"><label>Thigh (mm)</label><div style="display:flex;gap:4px"><input type="number" id="bcTh1" step="0.5"><input type="number" id="bcTh2" step="0.5"><input type="number" id="bcTh3" step="0.5"></div></div>
+      </div>
+      <div class="field" style="margin-top:6px"><label>Notes</label><input type="text" id="bcCalNotes" placeholder="fasted, same time of day"></div>
+    </div>
+    <div class="btn-row" style="margin-top:10px"><button class="btn btn-p" onclick="addBodyComp()">ADD ENTRY</button></div>
+    <div id="bcList" style="margin-top:10px"></div>
+    <div id="bcTrend" style="margin-top:6px"></div>
+  </div>
+
+  <!-- MAINTENANCE TARGETS (v17 F1) -->
+  <div class="card" id="maintCard">
+    <div class="ct">// Maintenance Targets</div>
+    <p class="note">Global targets used in the Maintenance phase: next-week baselines, the velocity-card adherence panel, and the AI export. Protein is a dynamic equation — 0.8g/lb of current 7-day-average body weight (recomputed automatically, not a static number). Carbs are the caloric remainder — (kcal − protein×4 − fat×9) ÷ 4; hit RE-DERIVE CARBS after any change. Base plan: 2500 kcal · 60g fat · 15,000 step-eq.</p>
+    <div class="fg fg3">
+      <div class="field"><label>Calories (kcal/day)</label><input type="number" id="mtKcal" step="50" placeholder="2500"></div>
+      <div class="field"><label>Protein (g/day) — auto 0.8g/lb</label><input type="number" id="mtProt" step="5" placeholder="—" readonly style="opacity:.65" title="Computed from current 7-day-average weight — not editable"></div>
+      <div class="field"><label>Step-eq (per day)</label><input type="number" id="mtStep" step="500" placeholder="15000"></div>
+    </div>
+    <div class="fg fg3">
+      <div class="field"><label>Fat (g/day)</label><input type="number" id="mtFat" step="5" placeholder="60"></div>
+      <div class="field"><label>Carbs (g/day)</label><input type="number" id="mtCarbs" step="5" placeholder="—"></div>
+      <div class="field"><label>&nbsp;</label><button class="btn" onclick="deriveMaintCarbs()">RE-DERIVE CARBS</button></div>
+    </div>
+    <div class="btn-row" style="margin-top:10px"><button class="btn btn-p" onclick="saveMaintTargets()">SAVE MAINTENANCE TARGETS</button></div>
   </div>
 
   <div class="card">
@@ -443,14 +512,14 @@ select option{background:var(--s2);}
     </div>
     <div class="fg fg4">
       <div class="field"><label>Protein (g)</label><input type="number" id="prot" placeholder="185" oninput="updPG();updLoss();updVelocity()"></div>
-      <div class="field"><label>Auto Target (g)</label><input type="number" id="protTgt" placeholder="—" readonly style="color:var(--a2);cursor:default" title="Auto: 1g × current bodyweight"></div>
+      <div class="field"><label>Auto Target (g)</label><input type="number" id="protTgt" placeholder="—" readonly style="color:var(--a2);cursor:default" title="Auto: phase protein rule × current bodyweight"></div>
       <div class="field"><label>Fat avg (g)</label><input type="number" id="fat" placeholder="70" step="0.5"></div>
       <div class="field"><label>Carbs avg (g)</label><input type="number" id="carbs" placeholder="180" step="1"></div>
     </div>
     <div id="protDynWrap" style="display:none;margin-bottom:8px"></div>
     <div class="field" style="margin-bottom:8px"><label>Fiber avg (g)</label><input type="number" id="fiber" placeholder="30" step="0.5"></div>
     <div class="fg" style="margin-top:6px">
-      <div class="field"><label title="Days you tracked nutrition this week (0–7)">Days Tracked (0–7)</label><input type="number" id="daysTracked" placeholder="7" min="0" max="7" step="1" oninput="updAdhConfidence();updVelocity()"></div>
+      <div class="field"><label title="Days you tracked nutrition this week (0–7)">Days Tracked (0–7)</label><input type="number" id="daysTracked" placeholder="–" min="0" max="7" step="1" oninput="updAdhConfidence();updVelocity()"></div>
       <div class="field"><label title="Days with events/travel/eating out (0–7)">Event Days (0–7)</label><input type="number" id="eventDays" placeholder="0" min="0" max="7" step="1"></div>
     </div>
     <div id="adhConfWrap" style="font-size:9px;color:var(--mu);margin-top:4px;display:none"></div>
@@ -527,7 +596,7 @@ select option{background:var(--s2);}
 <!-- ═══════════════ TRENDS ═══════════════ -->
 <div class="sec" id="sec-trends">
   <div class="card">
-    <div class="ct">// Cut Trends</div>
+    <div class="ct" id="trendTitle">// Cut Trends</div>
     <div class="ctabs" id="trendTabs">
       <button class="ctab active" onclick="showTrend('weight',this)">Weight</button>
       <button class="ctab" onclick="showTrend('waist',this)">Waist</button>
@@ -596,7 +665,7 @@ select option{background:var(--s2);}
   <!-- Strength Retention view -->
   <div id="tv-retention" style="display:none">
     <div class="card">
-      <div class="ct">// Strength Retention vs Bulk Peak</div>
+      <div class="ct">// Strength Retention vs Surplus Peak</div>
       <p class="note">Compares your current top sets (last 4 weeks) to the peak from Hevy history. Green ≥95%, Yellow 90–94%, Red &lt;90%. If red for 2+ weeks → consider refeed or reduce deficit. [Inference] based on estimated 1RM.</p>
       <div id="retentionPanel"><div class="empty"><div class="empty-icon">💪</div>Loading retention data...</div></div>
     </div>
@@ -677,7 +746,7 @@ select option{background:var(--s2);}
     <!-- Feature 5: Volume Retention -->
     <div class="card" id="volRetCard" style="display:none">
       <div class="ct">// Muscle Volume Retention</div>
-      <p class="note">Current week vs bulk-phase baseline. Floor lines shown on muscle charts.</p>
+      <p class="note">Current week vs surplus-phase baseline. Floor lines shown on muscle charts.</p>
       <div id="volRetPanel"></div>
     </div>
     <!-- Next Week Targets -->
@@ -842,6 +911,32 @@ const HEVY_DATA = {"sessions":[{"d":"2024-12-24","t":"Morning workout \u2600\ufe
 // ══════════════════════════════════════════
 const SK = 'alexCutDash_v3';
 const SCHEMA_VERSION = 1;
+// Maintenance targets (Alex's bridge plan): protein is a DYNAMIC equation —
+// 0.8g/lb of current 7-day-average body weight (Alex decision 2026-09-25; at
+// ~172.5 lb ≈ 138g). Fat 60g; carbs derived: (2500 − protein×4 − 60×9) / 4 —
+// re-derive carbs after protein changes via the RE-DERIVE CARBS button.
+// protein:175 below is only the no-weight-data fallback, never the live target.
+// Declared here (before DEFAULT_STATE) so cloneDefaultState/migrateState can use it.
+const DEFAULT_MAINT_TARGETS = {kcal:2500, protein:175, fat:60, carbs:315, stepEq:15000};
+// v17 R2b: protein equations — cut keeps the existing 1.0g/lb; maintenance uses
+// 0.8g/lb of body weight, recomputed from current weight (not a static number).
+const CUT_PROTEIN_PER_LB = 1.0;
+const MAINT_PROTEIN_PER_LB = 0.8;
+function proteinPerLb(mode){ return mode==='maint' ? MAINT_PROTEIN_PER_LB : CUT_PROTEIN_PER_LB; }
+function proteinRuleLabel(mode){ return mode==='maint' ? '0.8g/lb maintenance' : '1g/lb cut'; }
+// Latest logged 7-day-average week weight (the week's stored weight IS the 7-day avg).
+function currentAvgWeight(){
+  const ws = (typeof D!=='undefined' && Array.isArray(D.weeks) ? D.weeks : []).filter(w=>w && w.weight!=null);
+  return ws.length ? Number(ws[ws.length-1].weight) : null;
+}
+// Maintenance protein target: 0.8 × 7-day-average body weight, rounded.
+// refWeight: the 7-day-avg weight to base it on (a week's own weight for
+// historical exports; defaults to the latest logged week). Null when no weight.
+function calcMaintProtein(refWeight){
+  const w = (refWeight!=null && Number.isFinite(Number(refWeight)) && Number(refWeight)>0)
+    ? Number(refWeight) : currentAvgWeight();
+  return (w!=null && w>0) ? Math.round(w*MAINT_PROTEIN_PER_LB) : null;
+}
 const DEFAULT_STATE = {
   schemaVersion:SCHEMA_VERSION,
   weeks:[],
@@ -853,7 +948,19 @@ const DEFAULT_STATE = {
   transitionDismissed:false,
   targetWeight:null,
   bulkVolBaseline:null,
-  countingMethod:'all'
+  countingMethod:'all',
+  // A1: measurement-baseline break for waist trends (tape changed 2026-09-19).
+  // Waist trends never compute across this date. Offset stays +0 in until Alex
+  // decides (C3) — pre-9/19 data is NOT adjusted.
+  waistBaselineBreakDate:'2026-09-19',
+  waistBaselineOffsetIn:0,
+  waistBaselineNote:'Tape changed 9/19/26 — old tape read ~1.3" low. Offset pending Alex decision.',
+  // v17 F1: maintenance targets (Alex's bridge plan; see DEFAULT_MAINT_TARGETS for derivation)
+  maintTargets:{kcal:2500,protein:175,fat:60,carbs:315,stepEq:15000},
+  // v17 F3: body-composition log — dated entries, persisted in D and backups
+  // dexa:    {id,type:'dexa',date,bfPct,fatMassLb,leanMassLb,boneMassLb?,notes?}
+  // caliper: {id,type:'caliper',date,chest:[a,b,c],abdomen:[a,b,c],thigh:[a,b,c],chestAvg,abdomenAvg,thighAvg,siteSum,notes?}
+  bodyComp:[],
 };
 const DEFAULT_WEEK = {
   date:null,
@@ -868,7 +975,11 @@ const DEFAULT_WEEK = {
 function cloneDefaultState(){
   return {
     ...DEFAULT_STATE,
-    weeks:[]
+    weeks:[],
+    // v17: deep-copy mutable defaults — a shared array/object reference would
+    // let two cloned states mutate each other's bodyComp/maintTargets.
+    maintTargets:{...DEFAULT_MAINT_TARGETS},
+    bodyComp:[]
   };
 }
 
@@ -985,6 +1096,15 @@ function migrateState(raw){
   migrated.schemaVersion = raw.schemaVersion ?? SCHEMA_VERSION;
   const rawWeeks = Array.isArray(raw.weeks) ? raw.weeks : [];
   migrated.weeks = rawWeeks.map(migrateWeek);
+  // v17: sanitize body-comp on import — malformed entries are dropped, numeric
+  // fields are normalized, and every entry leaves with a stable id (so the
+  // delete buttons wired to getBodyComp() ids always match the stored entry).
+  migrated.bodyComp = Array.isArray(raw.bodyComp)
+    ? raw.bodyComp.map(sanitizeBodyCompEntry).filter(Boolean)
+    : [];
+  // v17: partial maintTargets from an older backup merge over the defaults so
+  // a missing field never produces an undefined target downstream.
+  migrated.maintTargets = {...DEFAULT_MAINT_TARGETS, ...((raw.maintTargets && typeof raw.maintTargets==='object') ? raw.maintTargets : {})};
   return migrated;
 }
 
@@ -1016,6 +1136,23 @@ function save(){writeJSON(SK,D);}
 // ══════════════════════════════════════════
 // MODE SYSTEM
 // ══════════════════════════════════════════
+// ── Phase-aware constants (v17) ──
+// Maintenance drift band: |rate| ≤ 0.25 %BW/wk = stable; anything outside the
+// band is drift and triggers adjustment (v17: the ±0.25%/wk band IS the action
+// threshold — no separate wider trigger).
+const MAINT_DRIFT_BAND_PCT = 0.25;
+// Surplus gain cap: ~1 lb/month at ~170 lb ≈ 0.15 %BW/wk — Alex's exit-plan cap for bulk/surplus.
+const SURPLUS_GAIN_CAP_PCT_WK = 0.15;
+// (declared above DEFAULT_STATE so cloneDefaultState/migrateState can use it)
+function getMaintTargets(){
+  const base = Object.assign({}, DEFAULT_MAINT_TARGETS, (typeof D!=='undefined' && D.maintTargets) || {});
+  // v17 R2b: maintenance protein is the 0.8g/lb equation, recomputed from current
+  // weight — the stored static value is never the live target.
+  const p = calcMaintProtein();
+  if(p!=null) base.protein = p;
+  return base;
+}
+
 const MODE_CONFIG = {
   cut: {
     label:'CUT', logoCls:'CUT', bannerCls:'cut', heroCls:'mode-primary-cut',
@@ -1029,7 +1166,7 @@ const MODE_CONFIG = {
   },
   maint: {
     label:'MAINT', logoCls:'MAINT', bannerCls:'maint', heroCls:'mode-primary-maint',
-    directionLabel:'Drift', rateTargetLow:0, rateTargetHigh:0.25, maxRate:0.5,
+    directionLabel:'Drift', rateTargetLow:0, rateTargetHigh:0.25, maxRate:0.25,
     rateSign:'hold', rateLabel:'%BW/wk drift (abs)', targetGuidance:'Target: ±0.25% BW/wk',
     ladderTitle:'// Maintenance Decision Ladder',
     ladderNote:'Goal is stability. Monitor for drift in either direction. Recovery and joint health are the primary watchpoints.',
@@ -1038,11 +1175,13 @@ const MODE_CONFIG = {
     protFloor:0.8, calAdhFloor:75, stpAdhFloor:75, protAdhFloor:85,
   },
   bulk: {
-    label:'BULK', logoCls:'BULK', bannerCls:'bulk', heroCls:'mode-primary-bulk',
-    directionLabel:'Gain', rateTargetLow:0.25, rateTargetHigh:0.5, maxRate:0.75,
-    rateSign:'gain', rateLabel:'%BW/wk gain', targetGuidance:'Target: 0.25–0.5% BW/wk gain',
-    ladderTitle:'// Bulk Decision Ladder',
-    ladderNote:'Goal is lean muscle gain. Gaining too fast = excess fat. Gaining too slow = wasted time. Strength trend and waist drift are primary signals.',
+    // v17 F1: user-facing label is Surplus; internal key stays 'bulk' (CSS classes + tests).
+    // Exit-plan gain cap: ~1 lb/month ≈ 0.15 %BW/wk (SURPLUS_GAIN_CAP_PCT_WK).
+    label:'SURPLUS', logoCls:'SURPLUS', bannerCls:'bulk', heroCls:'mode-primary-bulk',
+    directionLabel:'Gain', rateTargetLow:0, rateTargetHigh:SURPLUS_GAIN_CAP_PCT_WK, maxRate:SURPLUS_GAIN_CAP_PCT_WK,
+    rateSign:'gain', rateLabel:'%BW/wk gain', targetGuidance:'Cap: ≈1 lb/month gain (≈0.15 %BW/wk) — stay at or under the cap',
+    ladderTitle:'// Surplus Decision Ladder',
+    ladderNote:'Goal is lean muscle gain without excess fat. The only rate guardrail is the exit-plan cap: ≈1 lb/month (≈0.15 %BW/wk). Under the cap and lifting well = stay the course.',
     primaryPanels:['velocityCard','ladderCard'],
     signalPrimary:['strength','waistDrift','recovery','adherence'],
     protFloor:0.8, calAdhFloor:80, stpAdhFloor:70, protAdhFloor:85,
@@ -1051,7 +1190,7 @@ const MODE_CONFIG = {
 
 const TRANSITION_DATA = {
   'bulk→cut': {
-    cls:'bulk-cut', label:'🔄 Transitioning: Bulk → Cut',
+    cls:'bulk-cut', label:'🔄 Transitioning: Surplus → Cut',
     items:[
       'Calorie target set below estimated TDEE?',
       'Protein confirmed at 1g/lb current bodyweight?',
@@ -1070,11 +1209,11 @@ const TRANSITION_DATA = {
     ]
   },
   'maint→bulk': {
-    cls:'maint-bulk', label:'🔄 Transitioning: Maint → Bulk',
+    cls:'maint-bulk', label:'🔄 Transitioning: Maint → Surplus',
     items:[
       'Calorie surplus target set (+250–350 kcal/day above TDEE)?',
       'Training program updated for hypertrophy focus?',
-      'Bulk duration planned (end-weight ceiling set)?',
+      'Surplus duration planned (end-weight ceiling set)?',
       'Weekly weigh-in cadence confirmed?',
     ]
   }
@@ -1119,6 +1258,9 @@ function applyModeUI(){
     el.classList.remove('mode-primary-cut','mode-primary-maint','mode-primary-bulk');
     if(cfg.primaryPanels.includes(id)) el.classList.add(cfg.heroCls);
   });
+  // Trends section title follows the active phase (v17: no "Cut Trends" in maint/surplus)
+  const tt = document.getElementById('trendTitle');
+  if(tt) tt.textContent = '// '+({cut:'Cut',maint:'Maintenance',bulk:'Surplus'}[m]||'Cut')+' Trends';
   // Transition card
   renderTransitionCard();
   if(!D.weeks.some(w=>w.date===v('wDate'))) sv('phaseRef', m);
@@ -1192,10 +1334,37 @@ function setActiveTags(tags){
    - No localStorage writes
    ========================= */
 
-function calcCutVelocity(currentWeight, savedWeeks){
+// v17 R2: week mode accessor — modeless weeks predate the mode system; they were all cut.
+function weekModeOf(w){ return ((w && w.mode) || 'cut'); }
+// v17 R2: mode-change run tracking shared by the drift engine and the TDEE estimator.
+// priorWeeks: earlier weeks in date order (current week excluded).
+// Returns the trailing run of weeks in `mode` (oldest→newest), whether a different
+// mode preceded the run (a real mode change), and the transition state counting the
+// current week under evaluation as week 1 of the run.
+function modeRunInfo(priorWeeks, mode){
+  const run = [];
+  let changed = false;
+  const arr = priorWeeks || [];
+  for(let i=arr.length-1;i>=0;i--){
+    if(weekModeOf(arr[i])===mode) run.unshift(arr[i]);
+    else { changed = true; break; }
+  }
+  const weeksInMode = run.length + 1; // + current week under evaluation
+  return { runWeeks: run, changed, weeksInMode, inTransition: !!(changed && weeksInMode<=2) };
+}
+
+function calcCutVelocity(currentWeight, savedWeeks, mode){
   // savedWeeks: array of {weight, waist, calories, calorieTarget, protein, steps, bikeMin, stepTarget, sleep}
   // Returns full velocity object used by updLoss, updVelocity, renderDecisionLadder, genSummary
-  const wks = savedWeeks.filter(w=>w.weight); // weight-only weeks for velocity
+  // v17 F1: mode-aware zones. mode defaults to 'cut' (legacy behavior); pass
+  // 'maint' or 'bulk' so zones read correctly outside a cut.
+  // v17 R2: mode-local velocity — weeks from a previous mode never enter the
+  // rolling comparison (modeless weeks predate the mode system; all cut).
+  mode = mode || 'cut';
+  const wks = savedWeeks.filter(w=>w && w.weight && weekModeOf(w)===mode); // mode-local weight weeks
+  // v17 R2: the first 2 weeks after a mode change are glycogen/water transition
+  // weeks — labeled explicitly; the action engine takes no rate action during them.
+  const mi = modeRunInfo(savedWeeks, mode);
   const W0 = currentWeight;
   const W1 = wks.length>=1 ? wks[wks.length-1].weight : null;
   const W2 = wks.length>=2 ? wks[wks.length-2].weight : null;
@@ -1214,26 +1383,95 @@ function calcCutVelocity(currentWeight, savedWeeks){
   // Short-term (week-over-week, display only — not decision driver)
   const shortTermRate = (W0!=null && W1!=null) ? ((W1-W0)/W1)*100 : null;
 
-  // Velocity zone
+  // Velocity zone — mode-aware (v17 F1). Cut zones unchanged (A-verified baseline).
+  // v17 R2: transition weeks are labeled, never drift-classified.
   let zone, zoneCls;
-  if(rollingRate==null){ zone='Insufficient data'; zoneCls='vel-gray'; }
-  else if(rollingRate<0){ zone='Gaining'; zoneCls='vel-red'; }
-  else if(rollingRate<0.5){ zone='Slow — monitor'; zoneCls='vel-red'; }
-  else if(rollingRate<=1.0){ zone='Ideal ✓'; zoneCls='vel-green'; }
-  else if(rollingRate<=1.25){ zone='Aggressive — acceptable short-term'; zoneCls='vel-yellow'; }
-  else { zone='Too Fast — muscle risk'; zoneCls='vel-red'; }
+  if(mi.inTransition){ zone='Transition — glycogen/water'; zoneCls='vel-yellow'; }
+  else if(rollingRate==null){ zone='Insufficient data'; zoneCls='vel-gray'; }
+  else if(mode==='maint'){
+    // Positive rollingRate = losing; negative = gaining. Band is |rate|.
+    // v17 R2: the zone classifies the week; the ACTION (2-consecutive-week gate)
+    // lives in the action engine / velocity card / export — the zone no longer
+    // says "adjust" on a single week.
+    const drift = Math.abs(rollingRate);
+    if(drift<=MAINT_DRIFT_BAND_PCT){ zone='Stable ✓'; zoneCls='vel-green'; }
+    else { zone='Drifting'; zoneCls='vel-red'; }
+  }
+  else if(mode==='bulk'){
+    // v17: minimal surplus — the only rate guardrail is the exit-plan cap
+    // (≈1 lb/month ≈ 0.15 %BW/wk). No "ideal gain range" bands.
+    const gain = -rollingRate; // gain-positive %BW/wk
+    if(gain<0){ zone='Losing — check surplus'; zoneCls='vel-yellow'; }
+    else if(gain<=SURPLUS_GAIN_CAP_PCT_WK){ zone='Within cap ✓'; zoneCls='vel-green'; }
+    else { zone='Above cap — trim surplus'; zoneCls='vel-red'; }
+  }
+  else {
+    if(rollingRate<0){ zone='Gaining'; zoneCls='vel-red'; }
+    else if(rollingRate<0.5){ zone='Slow — monitor'; zoneCls='vel-red'; }
+    else if(rollingRate<=1.0){ zone='Ideal ✓'; zoneCls='vel-green'; }
+    else if(rollingRate<=1.25){ zone='Aggressive — acceptable short-term'; zoneCls='vel-yellow'; }
+    else { zone='Too Fast — muscle risk'; zoneCls='vel-red'; }
+  }
 
   // 3-week waist trend
   const allWaist = savedWeeks.filter(w=>w.waist);
   const Wst0 = currentWeight!=null ? (savedWeeks[savedWeeks.length]?.waist ?? null) : null; // will be passed separately
   // (waist passed in separately — see calcStallStatus)
 
-  return { W0, W1, W2, W3, rollingRate, shortTermRate, zone, zoneCls };
+  return { W0, W1, W2, W3, rollingRate, shortTermRate, zone, zoneCls,
+           // v17 R2: mode-local drift state for the action engine / card / export
+           inTransition: mi.inTransition, weeksInMode: mi.weeksInMode, modeRunChanged: mi.changed, velMode: mode };
+}
+
+// v17 R2c: prior-week rolling rate for the 2-consecutive-week maintenance drift
+// trigger (Alex decision 2026-09-25, per Claude's recommendation).
+// weeksBeforeCurrent: weeks strictly before the current week, date order.
+function priorWeekRollingRate(weeksBeforeCurrent, mode){
+  const arr = (weeksBeforeCurrent||[]).filter(w=>w && w.weight!=null);
+  if(!arr.length) return null;
+  const pw = arr[arr.length-1];
+  return calcCutVelocity(pw.weight, arr.slice(0,-1), mode).rollingRate;
+}
+// v17 R2c: maintenance drift fires after 2 CONSECUTIVE weeks outside the ±0.25%/wk
+// band (Alex decision 2026-09-25: consecutive weeks outside the band, no extra
+// direction requirement — a single outside week is watch-only).
+function evalMaintDriftTrigger(curRR, prevRR){
+  const band = MAINT_DRIFT_BAND_PCT;
+  const curOut = curRR!=null && Math.abs(curRR)>band;
+  const prevOut = prevRR!=null && Math.abs(prevRR)>band;
+  return { curRR:curRR, prevRR:prevRR, curOut:curOut, prevOut:prevOut,
+    trigger: !!(curOut && prevOut),
+    watch: !!(curOut && !prevOut) };
+}
+
+// v17 F1: mode-aware zone chips for the loss-rate card (updLoss rebuilds them per mode)
+function zoneChipsFor(mode){
+  if(mode==='maint') return [
+    {label:'✓ ±0.25%/wk stable', zones:['Stable ✓']},
+    {label:'⚠ >0.25%/wk drift (action after 2 wks)', zones:['Drifting']},
+  ];
+  if(mode==='bulk') return [
+    {label:'✓ ≤0.15%/wk within cap', zones:['Within cap ✓']},
+    {label:'⚠ losing — check surplus', zones:['Losing — check surplus']},
+    {label:'⚠ >0.15%/wk above cap', zones:['Above cap — trim surplus']},
+  ];
+  return [
+    {label:'↓ <0.5%/wk slow', zones:['Slow — monitor','Gaining']},
+    {label:'✓ 0.5–1.0%/wk ideal', zones:['Ideal ✓']},
+    {label:'⚡ 1.0–1.25% aggressive', zones:['Aggressive — acceptable short-term']},
+    {label:'⚠ >1.25%/wk too fast', zones:['Too Fast — muscle risk']},
+  ];
+}
+function zoneChipClass(zoneCls){
+  return zoneCls==='vel-green'?'ag':zoneCls==='vel-yellow'?'aw':zoneCls==='vel-red'?'ad':'';
 }
 
 function parsedTarget(v){
   const n = Number(v);
-  return Number.isFinite(n) ? n : null;
+  // A4: a 0 (or negative) target is never a real prescription — treat as missing
+  // so the export can never print "manual (0 kcal)"; falls through to
+  // carried-forward or the mode default instead.
+  return (Number.isFinite(n) && n>0) ? n : null;
 }
 
 function resolveCalTarget(weeks, idx, fallbackTarget=null){
@@ -1259,9 +1497,14 @@ function calcExportAdherence2Week(weeks, anchorIdx){
     const calTgt = resolveCalTarget(weeks, absIdx, null);
     return (Number.isFinite(cal) && calTgt!=null && calTgt!==0) ? {actual:cal, target:calTgt} : null;
   }).filter(Boolean);
+  // A9: never blend adherence across a prescription change. If the two weeks'
+  // resolved targets differ, suppress the blended figure and report per-week pcts.
+  const calWeekly = calEntries.map((e,i)=>({date: pair[i]?.date ?? null, actual:e.actual, target:e.target,
+    pct: e.target ? e.actual/e.target*100 : null}));
+  const calTargetChanged = calEntries.length===2 && calEntries[0].target!==calEntries[1].target;
   const protEntries = pair.map(w=>{
     const prot = Number(w?.protein);
-    const protTgt = Number(w?.weight); // 1g/lb
+    const protTgt = Number(w?.weight) * proteinPerLb(weekModeOf(w)); // rule-based: 1g/lb cut, 0.8g/lb maint
     return (Number.isFinite(prot) && Number.isFinite(protTgt) && protTgt!==0) ? {actual:prot, target:protTgt} : null;
   }).filter(Boolean);
   const neatEntries = pair.map(w=>{
@@ -1278,12 +1521,17 @@ function calcExportAdherence2Week(weeks, anchorIdx){
     return {pct: target!==0 ? actual/target*100 : null, actual, target};
   };
 
-  const cal = aggregate(calEntries);
+  const calAgg = aggregate(calEntries);
+  const cal = calTargetChanged
+    ? {...calAgg, pct:null, targetChanged:true, weekly:calWeekly}
+    : {...calAgg, targetChanged:false, weekly:calWeekly};
   const prot = aggregate(protEntries);
   const neat = aggregate(neatEntries);
   return {
     window: {anchorDate: weeks[anchorIdx]?.date ?? null, previousDate: weeks[anchorIdx-1]?.date ?? null},
     caloriePct: cal.pct,
+    calorieTargetChanged: cal.targetChanged===true,
+    calorieWeekly: cal.weekly||[],
     proteinPct: prot.pct,
     neatPct: neat.pct,
     calActual: cal.actual,
@@ -1293,6 +1541,34 @@ function calcExportAdherence2Week(weeks, anchorIdx){
     neatActual: neat.actual,
     stepTarget: neat.target
   };
+}
+
+// ── Waist baseline helpers (A1 boundary; v17 hoisted to top-level) ──
+// Week start = week-ending minus 6 days. Week-ending 2026-09-19 stays on the OLD
+// baseline (its 6 days used the old tape); 2026-09-26 is the first NEW-baseline week.
+function weekStartISO(weDate){
+  try{
+    const d = new Date(String(weDate)+'T12:00:00Z');
+    if(isNaN(d)) return '';
+    d.setUTCDate(d.getUTCDate()-6);
+    return d.toISOString().slice(0,10);
+  }catch(e){ return ''; }
+}
+// F5: true when a week sits on the OLD side of the waist baseline break.
+function waistIsPreBreak(weekDate){
+  const bd = (typeof D!=='undefined' && D.waistBaselineBreakDate) || null;
+  if(!bd || !weekDate) return false;
+  const ws = weekStartISO(weekDate);
+  return !!ws && ws < bd;
+}
+// F5: offset-adjusted waist — applies D.waistBaselineOffsetIn ONLY to pre-break
+// history. Stored raw values are never mutated; pass the entry's week date.
+function adjWaist(val, weekDate){
+  const n = Number(val);
+  if(!Number.isFinite(n)) return val;
+  const off = Number((typeof D!=='undefined' && D.waistBaselineOffsetIn) || 0);
+  if(off !== 0 && waistIsPreBreak(weekDate)) return +(n + off).toFixed(2);
+  return n;
 }
 
 function calcStallStatus(cv, currentWaist, savedWeeks, opts={}){
@@ -1336,10 +1612,28 @@ function calcStallStatus(cv, currentWaist, savedWeeks, opts={}){
   }
 
   const waistAnchor = anchorIdxAll>=0 ? anchorIdxAll : (liveIdxAll>=0 ? liveIdxAll : (allWeeks.length ? allWeeks.length-1 : -1));
+  // A1: waist trend uses only CONTIGUOUS weeks with valid waist data on the same
+  // measurement baseline. Stop at the first gap, and never cross the baseline
+  // break date (tape change 2026-09-19). Boundary rule: a week counts as
+  // NEW-baseline only if its FIRST day (weekStartISO: weekEnding minus 6 days)
+  // is on or after the break date. WE 9/19 runs Sun 9/13–Sat 9/19 — 6 days
+  // old-tape + 1 new — so it is OLD baseline.
+  const waistBreakDate = opts.waistBreakDate || ((typeof D!=='undefined' && D.waistBaselineBreakDate) || null);
+  const waistAnchorDate = waistAnchor>=0 ? allWeeks[waistAnchor]?.date : null;
+  const anchorOnNewBaseline = !!(waistBreakDate && waistAnchorDate &&
+    weekStartISO(waistAnchorDate) >= waistBreakDate);
   const waistPts = [];
+  let waistTruncated = false;
+  let waistBreakHit = false;
   for(let i=waistAnchor;i>=0 && waistPts.length<5;i--){
-    const w = Number(allWeeks[i]?.waist);
-    if(Number.isFinite(w)) waistPts.push(w);
+    const wk = allWeeks[i];
+    // A1: null/empty waist is missing data (Number(null) is 0 — never a real waist).
+    const rawW = wk?.waist;
+    const w = (rawW==null || rawW==='') ? NaN : Number(rawW);
+    if(!Number.isFinite(w)){ waistTruncated = true; break; }
+    if(anchorOnNewBaseline && wk?.date && weekStartISO(wk.date) < waistBreakDate){ waistTruncated = true; waistBreakHit = true; break; }
+    // F5: offset applies only to pre-break history; no-op while offset stays +0.
+    waistPts.push(adjWaist(w, wk?.date));
   }
   const Waist0 = waistPts.length>=1 ? waistPts[0] : null;
   const Waist1 = waistPts.length>=2 ? waistPts[1] : null;
@@ -1361,7 +1655,7 @@ function calcStallStatus(cv, currentWaist, savedWeeks, opts={}){
     : null;
 
   const protAdhPct = (currentWeek && currentWeek.protein!=null && currentWeek.weight!=null && currentWeek.weight!==0)
-    ? currentWeek.protein/currentWeek.weight*100 // 1g/lb = 100%
+    ? currentWeek.protein/currentWeek.weight/proteinPerLb((opts&&opts.mode)||(typeof D!=='undefined'&&D.mode)||'cut')*100 // % of the phase protein rule
     : null;
 
   const stpAdhPct = (currentWeek && currentWeek.steps!=null && currentWeek.stepTarget!=null && currentWeek.stepTarget!==0)
@@ -1400,7 +1694,7 @@ function calcStallStatus(cv, currentWaist, savedWeeks, opts={}){
 
   const stalled = stallReasons.length === 0;
 
-  return { stalled, stallReasons, waistTrend, waistFlat, waistPrev,
+  return { stalled, stallReasons, waistTrend, waistFlat, waistPrev, waistTruncated, waistBreakHit,
            calAdhPct, protAdhPct, stpAdhPct,
            calTarget, protTarget: currentWeek?.weight ?? null,
            stepTarget: currentWeek?.stepTarget ?? null,
@@ -1411,7 +1705,7 @@ function calcStallStatus(cv, currentWaist, savedWeeks, opts={}){
            twoConsecSlow, slowThisWk, prevRolling };
 }
 
-function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks){
+function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks, priorRR){
   const cfg = MODE_CONFIG[mode];
   const tagList = tags || [];
   const suppressed = tagList.includes('illness') || tagList.includes('deload');
@@ -1451,6 +1745,16 @@ function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks){
 
   // ── 3. RATE ───────────────────────────────────────────────────────
   const rr = cv.rollingRate;
+  // v17 R2: transition gate — no rate actions during the 2 glycogen/water
+  // weeks after a mode change (labeled explicitly; drift tracking resumes
+  // automatically afterwards). Checked before the rr!=null guard: during
+  // transition there is deliberately no rolling rate yet.
+  if(cv.inTransition){
+    const tmsg = 'MODE TRANSITION ('+MODE_CONFIG[mode].label+' phase): week '+cv.weeksInMode+' of 2 — the scale is settling (glycogen/water) after the phase change. No intake adjustments while it settles; drift tracking resumes automatically.';
+    if(suppressed) return suppress('NONE', tmsg);
+    return {action:tmsg, actionCode:'NONE', priority:5, suppressed:false,
+      note:'Transition gate: rate actions suppressed for 2 weeks post-mode-change.'};
+  }
   if(rr != null){
     if(mode==='cut'){
       if(rr > cfg.maxRate){
@@ -1474,24 +1778,38 @@ function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks){
         return {action:msg, actionCode:'RATE', priority:3, suppressed:false, note:'Slow velocity; strict stall criteria not fully met — premature to cut calories.'};
       }
     } else if(mode==='bulk'){
+      // v17: minimal surplus — the exit-plan cap (≈1 lb/month ≈ 0.15 %BW/wk)
+      // is the only rate guardrail. No "ideal gain range" bands.
       const gain = -rr; // rr is loss; negative rr = gaining
-      if(gain > cfg.maxRate){
-        const msg = 'GAINING TOO FAST ('+Math.abs(gain).toFixed(2)+'%/wk > '+cfg.maxRate+'% max): Reduce calorie surplus by 150–200 kcal/day. Waist trend is the primary tell — check it.';
+      if(gain > SURPLUS_GAIN_CAP_PCT_WK){
+        const msg = 'ABOVE SURPLUS CAP ('+gain.toFixed(2)+'%/wk > '+SURPLUS_GAIN_CAP_PCT_WK+'% ≈1 lb/month): Reduce calorie surplus by 100–150 kcal/day to get back under the cap. Waist trend is the primary tell — check it.';
         if(suppressed) return suppress('RATE', msg);
-        return {action:msg, actionCode:'RATE', priority:3, suppressed:false, note:'Bulk gain rate exceeds '+cfg.maxRate+'%/wk — excess fat accumulation risk.'};
+        return {action:msg, actionCode:'RATE', priority:3, suppressed:false, note:'Surplus gain exceeds exit-plan cap (≈1 lb/month) — trim surplus.'};
       }
-      if(gain < cfg.rateTargetLow && gain >= 0){
-        const msg = 'GAINING TOO SLOWLY ('+Math.abs(gain).toFixed(2)+'%/wk < '+cfg.rateTargetLow+'% target): Add +150–200 kcal/day (carbs + fats). Reassess after 7–10 days.';
+      if(gain < 0){
+        const msg = 'LOSING WEIGHT IN SURPLUS ('+Math.abs(gain).toFixed(2)+'%/wk loss): Add 150–200 kcal/day — the surplus is not landing.';
         if(suppressed) return suppress('RATE', msg);
-        return {action:msg, actionCode:'RATE', priority:3, suppressed:false, note:'Bulk gain rate below '+cfg.rateTargetLow+'%/wk target.'};
+        return {action:msg, actionCode:'RATE', priority:3, suppressed:false, note:'Losing weight in surplus phase — increase intake.'};
       }
     } else { // maint
       const absRate = Math.abs(rr);
       if(absRate > cfg.maxRate){
         const dir = rr < 0 ? 'gaining' : 'losing';
-        const msg = 'WEIGHT DRIFTING ('+dir+' '+absRate.toFixed(2)+'%/wk): Adjust calories ±100 kcal/day to return toward zero drift. Target ±0.25%/wk.';
-        if(suppressed) return suppress('RATE', msg);
-        return {action:msg, actionCode:'RATE', priority:3, suppressed:false, note:'Maintenance drift exceeds ±'+cfg.maxRate+'%/wk tolerance.'};
+        // v17 R2c: drift action requires 2 CONSECUTIVE weeks outside the band
+        // (Alex decision 2026-09-25). A single outside week only watches.
+        // priorRR is the previous week's rolling rate, passed by callers
+        // (null when unavailable → cannot confirm 2 weeks).
+        const trig = evalMaintDriftTrigger(rr, priorRR);
+        let msg, code, pri, note;
+        if(trig.trigger){
+          msg = 'WEIGHT DRIFTING ('+dir+' '+absRate.toFixed(2)+'%/wk): Outside the ±'+cfg.maxRate+'%/wk band 2 consecutive weeks. Adjust calories ±100 kcal/day to return toward zero drift.';
+          code='RATE'; pri=3; note='Maintenance drift confirmed — 2 consecutive weeks outside ±'+cfg.maxRate+'%/wk.';
+        } else {
+          msg = 'DRIFT WATCH ('+dir+' '+absRate.toFixed(2)+'%/wk): 1st week outside the ±'+cfg.maxRate+'%/wk band. Monitoring — adjustment only after 2 consecutive weeks outside the band.';
+          code='NONE'; pri=5; note='Single-week excursion outside band — monitoring.';
+        }
+        if(suppressed) return suppress(code, msg);
+        return {action:msg, actionCode:code, priority:pri, suppressed:false, note:note};
       }
     }
   }
@@ -1508,10 +1826,14 @@ function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks){
   }
 
   // ── 5. NONE — all clear ───────────────────────────────────────────
+  // v17 R2: bulk uses the exit-plan cap only (no legacy "ideal" band); maint is
+  // gate-aware — a single outside-band week that didn't trigger RATE is a watch.
   const zoneMsg = {
     cut: rr!=null ? (rr>=0.5&&rr<=1.0 ? 'Rolling velocity '+Math.abs(rr).toFixed(2)+'%/wk — ideal range. Hold course.' : rr<0.5 ? 'Slow — 1 week only. Monitor. No action yet.' : 'Velocity OK. Monitor.') : 'Insufficient rolling data — log more weeks.',
-    bulk: rr!=null ? (-rr>=0.25&&-rr<=0.5 ? 'Bulk rate '+Math.abs(rr).toFixed(2)+'%/wk — ideal range. Hold course.' : 'Bulk rate OK. Monitor waist drift.') : 'Insufficient rolling data.',
-    maint: rr!=null ? ('Drift '+Math.abs(rr).toFixed(2)+'%/wk — within maintenance band. Hold course.') : 'Insufficient rolling data.'
+    bulk: rr!=null ? ('Gain '+Math.abs(rr).toFixed(2)+'%/wk — within the ≈'+SURPLUS_GAIN_CAP_PCT_WK+'%/wk exit-plan cap. Hold course.') : 'Insufficient rolling data.',
+    maint: rr!=null ? (Math.abs(rr)>MAINT_DRIFT_BAND_PCT
+      ? 'Drift '+Math.abs(rr).toFixed(2)+'%/wk — outside band (monitoring; action after 2 consecutive weeks).'
+      : 'Drift '+Math.abs(rr).toFixed(2)+'%/wk — within maintenance band. Hold course.') : 'Insufficient rolling data.'
   };
   return {action: zoneMsg[mode]||'Hold current plan.', actionCode:'NONE', priority:5, suppressed:false, note:'All checks passed — no adjustment triggered.'};
 }
@@ -1535,7 +1857,10 @@ function checkPerformanceDrop(mode){
     });
     if(redCount>=2) return {
       flag:true,
-      msg:'PERFORMANCE DROP: '+redCount+' priority lifts below 90% of peak. Add a refeed day (carbs to maintenance) or reduce deficit 100–150 kcal. Strength loss at this level signals excessive deficit or under-recovery.',
+      // v17 R2: mode-aware wording — maintenance never says "reduce deficit".
+      msg: mode==='maint'
+        ? 'PERFORMANCE DROP: '+redCount+' priority lifts below 90% of peak. Add 100–150 kcal/day (biased toward carbs) and address recovery/sleep — in maintenance this signals under-recovery or under-fueling, not a deficit to cut.'
+        : 'PERFORMANCE DROP: '+redCount+' priority lifts below 90% of peak. Add a refeed day (carbs to maintenance) or reduce deficit 100–150 kcal. Strength loss at this level signals excessive deficit or under-recovery.',
       note:redCount+' lifts <90% of peak e1RM.'
     };
   } else {
@@ -1555,7 +1880,7 @@ function checkPerformanceDrop(mode){
       });
       if(newPeaks===0) return {
         flag:true,
-        msg:'PERFORMANCE PLATEAU (bulk): No new strength peaks set in 3 weeks. Check: are calories sufficient? Is progressive overload being applied each session?',
+        msg:'PERFORMANCE PLATEAU (surplus): No new strength peaks set in 3 weeks. Check: are calories sufficient? Is progressive overload being applied each session?',
         note:'0 new e1RM peaks across priority lifts in last 3 weeks.'
       };
     }
@@ -1587,14 +1912,14 @@ function calcAdherenceStreak(){
     const prior = saved.slice(0,i);
     if(!prior.length) break;
 
-    const cv = calcCutVelocity(w.weight, prior);
+    const cv = calcCutVelocity(w.weight, prior, mode);
     const rr = cv.rollingRate;
 
     // Check velocity in mode band
     let velOk = false;
     if(rr!=null){
       if(mode==='cut') velOk = rr>=cfg.rateTargetLow && rr<=cfg.rateTargetHigh;
-      else if(mode==='bulk') velOk = (-rr)>=cfg.rateTargetLow && (-rr)<=cfg.rateTargetHigh;
+      else if(mode==='bulk'){ const g=-rr; velOk = g>=0 && g<=SURPLUS_GAIN_CAP_PCT_WK; } // v17: cap is the only guardrail
       else velOk = Math.abs(rr)<=cfg.rateTargetHigh;
     }
 
@@ -1611,13 +1936,15 @@ function calcAdherenceStreak(){
     const protAdh = (w.protein&&w.weight) ? w.protein/w.weight*100 : null;
     const neatAdh = w.steps!=null ? calcNEAT(w.steps,w.bikeMin).totalEq/(w.stepTarget||15000)*100 : null;
     const calOk  = calAdh==null  || calAdh>=90;
-    const protOk = protAdh==null || protAdh>=90;
+    // v17 R2b: protein streak threshold follows the phase rule (90% of 1g/lb cut, 90% of 0.8g/lb maint)
+    const protFloorPct = 90*proteinPerLb(mode);
+    const protOk = protAdh==null || protAdh>=protFloorPct;
     const neatOk = neatAdh==null || neatAdh>=80;
 
     if(velOk && recOk && calOk && protOk && neatOk){
       streak++;
     } else {
-      brokenReason = !velOk?'velocity off target':!recOk?'recovery red flag':!calOk?'calorie adherence <90%':!protOk?'protein adherence <90%':'NEAT adherence <80%';
+      brokenReason = !velOk?'velocity off target':!recOk?'recovery red flag':!calOk?'calorie adherence <90%':!protOk?('protein adherence <'+Math.round(protFloorPct)+'%'):'NEAT adherence <80%';
       break;
     }
   }
@@ -1636,16 +1963,18 @@ function calcWaterFluctuation(){
   if(tags.includes('sodium')) return {show:true, reason:'High-sodium tag active — expect 1–3 lb scale increase from water retention'};
 
   // Trigger 2: weight up ≥2 lb but waist barely changed
+  // (F5: waist compared offset-adjusted — a raw read across the tape change
+  // would fake a ~1.3" waist swing and break the signal)
   if(latest.weight&&prev.weight&&latest.waist&&prev.waist){
     const wtDelta    = latest.weight - prev.weight;
-    const waistDelta = Math.abs(latest.waist - prev.waist);
+    const waistDelta = Math.abs(adjWaist(latest.waist,latest.date) - adjWaist(prev.waist,prev.date));
     if(wtDelta>=2 && waistDelta<0.15) return {show:true, reason:'Scale up '+wtDelta.toFixed(1)+' lbs but waist unchanged (<0.15") — likely water, not fat'};
   }
 
-  // Trigger 3: W:W ratio unchanged but scale jumped
+  // Trigger 3: W:W ratio unchanged but scale jumped (F5: offset-adjusted waists)
   if(latest.weight&&prev.weight&&latest.waist&&prev.waist){
-    const ratioCurr = latest.waist/latest.weight;
-    const ratioPrev = prev.waist/prev.weight;
+    const ratioCurr = adjWaist(latest.waist,latest.date)/latest.weight;
+    const ratioPrev = adjWaist(prev.waist,prev.date)/prev.weight;
     const ratioDelta = Math.abs(ratioCurr-ratioPrev);
     const wtDelta = latest.weight - prev.weight;
     if(wtDelta>=1.5 && ratioDelta<0.0005) return {show:true, reason:'Waist:Weight ratio unchanged but weight up '+wtDelta.toFixed(1)+' lbs — consistent with water fluctuation'};
@@ -1794,10 +2123,12 @@ function applyTiebreakers(baseResult, cv, st, rs, savedWeeks, mode){
   let tiebreakerApplied = null;
 
   // [D1] Velocity slow/stalled BUT waist improving ≥0.20" over last 2 weeks → HOLD
+  // (F5: waist compared offset-adjusted by each week's own date — a raw read
+  // across the 2026-09-19 tape change would understate the true change)
   if(mode === 'cut' && (baseResult.actionCode === 'RATE') &&
      (rr != null && rr < 0.5) &&
      latest.waist != null && prev.waist != null &&
-     (prev.waist - latest.waist) >= 0.20){
+     (adjWaist(prev.waist, prev.date) - adjWaist(latest.waist, latest.date)) >= 0.20){
     tiebreakerApplied = 'Tie-break D1: waist improvement overrides slow weight rate.';
     return {
       ...baseResult,
@@ -1809,16 +2140,19 @@ function applyTiebreakers(baseResult, cv, st, rs, savedWeeks, mode){
   }
 
   // [D2] Rate on-target/fast BUT waist flat AND performance down → REFEED
+  // (F5: same offset-adjusted comparison as D1)
   if((mode === 'cut' || mode === 'maint') &&
      rr != null && rr >= 0.5 &&
      latest.waist != null && prev.waist != null &&
-     Math.abs(prev.waist - latest.waist) < 0.15){
+     Math.abs(adjWaist(prev.waist, prev.date) - adjWaist(latest.waist, latest.date)) < 0.15){
     const perfDrop = checkPerformanceDrop(mode);
     if(perfDrop.flag){
       tiebreakerApplied = 'Tie-break D2: performance + waist signals override scale rate.';
       return {
         ...baseResult,
-        action: 'REFEED / EASE DEFICIT: Scale moving but waist flat + strength dropping. Likely losing muscle. Add 1–2 refeed days at maintenance calories (carbs up). Reduce deficit 100–150 kcal. Address recovery before resuming cut pace.',
+        action: (mode==='maint'
+          ? 'RECOVERY CHECK: Scale drifting but waist flat + strength dropping. Likely losing muscle or under-recovering. Add 1–2 higher-carb days at maintenance calories, pull drift back inside the ±0.25%/wk band, and address recovery before pushing NEAT.'
+          : 'REFEED / EASE DEFICIT: Scale moving but waist flat + strength dropping. Likely losing muscle. Add 1–2 refeed days at maintenance calories (carbs up). Reduce deficit 100–150 kcal. Address recovery before resuming cut pace.'),
         actionCode: 'PERFORMANCE',
         note: tiebreakerApplied,
         tiebreakerApplied
@@ -1864,10 +2198,17 @@ function applyTiebreakers(baseResult, cv, st, rs, savedWeeks, mode){
 
 function calcAdherenceConfidence(week){
   const dt = week?.daysTracked;
-  if(dt == null) return {conf:'NONE', label:'Not reported', low: false};
-  if(dt >= 7)  return {conf:'HIGH', label:'7 days tracked', low: false};
-  if(dt >= 5)  return {conf:'MED',  label:dt+' days tracked', low: false};
-  return {conf:'LOW', label:dt+' days tracked — low confidence', low: true};
+  if(dt == null){
+    // A5: derive confidence from logged intake when the days-tracked field was
+    // never entered — a week with nutrition logged is not a real adherence gap.
+    // Labeled inferred; never claims a day count.
+    const hasNutrition = week?.calories!=null || week?.protein!=null;
+    if(hasNutrition) return {conf:'MED', label:'nutrition logged — days not entered (inferred MED)', inferred:true, low:false};
+    return {conf:'NONE', label:'Not reported', inferred:false, low:false};
+  }
+  if(dt >= 7)  return {conf:'HIGH', label:'7 days tracked', inferred:false, low:false};
+  if(dt >= 5)  return {conf:'MED',  label:dt+' days tracked', inferred:false, low:false};
+  return {conf:'LOW', label:dt+' days tracked — low confidence', inferred:false, low:true};
 }
 
 function getDeficitLevel(anchorDate=null){
@@ -1935,29 +2276,32 @@ function calcNextWeekTargets(anchorDate=null){
   const tags    = latest.tags || [];
   const suppressed = tags.includes('illness') || tags.includes('deload');
 
-  // ── Baseline targets ──
+  // ── Baseline targets — v17 F1: maintenance starts from the maintenance target set ──
   const bw        = latest.weight || 0;
-  const baseCals  = latest.calorieTarget || latest.calories || 2300;
-  const baseStepEq = latest.stepTarget || calcNEAT(latest.steps, latest.bikeMin).totalEq || 15000;
+  const mtNWT     = getMaintTargets();
+  const baseCals  = wkMode==='maint' ? mtNWT.kcal : (latest.calorieTarget || latest.calories || 2300);
+  const baseStepEq = wkMode==='maint' ? mtNWT.stepEq : (latest.stepTarget || calcNEAT(latest.steps, latest.bikeMin).totalEq || 15000);
   const baseBike  = latest.bikeMin || 0;
-  // [Fix 3] Protein: exact 1g/lb (no rounding) — label explicitly
-  const exactProt = wkMode === 'cut' ? Math.round(bw * 1.0) : Math.round(bw * 0.8);
+  // [Fix 3] Protein — cut: existing 1g/lb equation (kept); maintenance: 0.8g/lb of
+  // body weight, dynamic from the week's 7-day-avg weight (Alex decision 2026-09-25)
+  const exactProt = wkMode==='maint' ? (calcMaintProtein(bw) ?? mtNWT.protein)
+    : wkMode === 'cut' ? Math.round(bw * CUT_PROTEIN_PER_LB) : Math.round(bw * 0.8);
   const baseProt  = exactProt;
 
   // [Fix 2] Basis description — make clear what the starting point is
-  const calSrc    = latest.calorieTarget ? 'calorie target' : 'last actual';
-  const stepSrc   = latest.stepTarget    ? 'step target'    : 'last actual NEAT';
+  const calSrc    = wkMode==='maint' ? 'maintenance target' : latest.calorieTarget ? 'calorie target' : 'last actual';
+  const stepSrc   = wkMode==='maint' ? 'maintenance target' : latest.stepTarget    ? 'step target'    : 'last actual NEAT';
   const basisLine = 'HOLD ('+calSrc+' '+baseCals+' kcal · '+stepSrc+' '+Math.round(baseStepEq).toLocaleString()+' step-eq · protein '+exactProt+'g exact)'
 
   // ── Existing computed statuses ──
-  const cv  = calcCutVelocity(latest.weight, scoped.slice(0,-1));
-  const st  = calcStallStatus(cv, latest.waist, scoped.slice(0,-1));
+  const cv  = calcCutVelocity(latest.weight, scoped.slice(0,-1), wkMode);
+  const st  = calcStallStatus(cv, latest.waist, scoped.slice(0,-1), {mode:wkMode});
   const rsWeeks = scoped.slice(0, -1).filter(w => w.hrv || w.rhr || w.sleep);
   const rs  = calcRecoveryStatusFromData(latest.hrv, latest.rhr, latest.sleep, rsWeeks);
   const rr  = cv.rollingRate;
   const adhConf = calcAdherenceConfidence(latest);
   const recBaseNWT = calcRecoveryBaselineConfidence(scoped, scoped.length-1);
-  const baseActionResult = calcWeeklyAction(wkMode, cv, st, rs, tags, scoped);
+  const baseActionResult = calcWeeklyAction(wkMode, cv, st, rs, tags, scoped, priorWeekRollingRate(scoped.slice(0,-1), wkMode));
   const actionResult = applyTiebreakers(baseActionResult, cv, st, rs, scoped, wkMode);
   const actionCode = actionResult.actionCode;
   // Low recovery baseline also triggers compliance mode (Rule 7)
@@ -2048,7 +2392,7 @@ function _calcNWTInner(wkMode, rs, actionCode, rr, adhConf,
       stepEq:      baseStepEq,
       bikeMin:     baseBike,
       complianceMode: true,   // triggers compliance goal in export/UI
-      rationale:   'Tracking/adherence week — numeric targets unchanged. Focus on consistency: log ≥5 days + hit protein target (1g/lb rule).'
+      rationale:   'Tracking/adherence week — numeric targets unchanged. Focus on consistency: log ≥5 days + hit protein target ('+proteinRuleLabel(wkMode)+').'
     };
   }
 
@@ -2254,12 +2598,12 @@ function renderActionSummary(){
   if(saved.length < 2){ card.style.display='none'; return; }
   const latest = saved[saved.length-1];
 
-  const cv = calcCutVelocity(latest.weight, saved.slice(0,-1));
-  const st = calcStallStatus(cv, latest.waist, saved.slice(0,-1));
+  const cv = calcCutVelocity(latest.weight, saved.slice(0,-1), mode);
+  const st = calcStallStatus(cv, latest.waist, saved.slice(0,-1), {mode:mode});
   const rs = calcRecoveryStatus();
   const tags = latest.tags || [];
 
-  let result = calcWeeklyAction(mode, cv, st, rs, tags, saved);
+  let result = calcWeeklyAction(mode, cv, st, rs, tags, saved, priorWeekRollingRate(saved.slice(0,-1), mode));
 
   // [D] Apply tie-breakers (wrapper only — does not change calc engines)
   result = applyTiebreakers(result, cv, st, rs, saved, mode);
@@ -2398,11 +2742,14 @@ function upsertHevySessions(sessions){
 // ══════════════════════════════════════════
 // Called on init and after saveWeek so that D.weeks[].hevySessions
 // are visible in the session log and lift charts.
+// R3: ts keys are canonicalized here (backup-load path) so renamed Hevy
+// exercises share the canonical history key in every downstream consumer.
+// Idempotent — already-canonical keys pass through unchanged.
 function mergeStoredSessions(){
   const merged = [...HEVY_DATA.sessions];
   D.weeks.forEach(w=>{
     if(!w.hevySessions||!Array.isArray(w.hevySessions)) return;
-    merged.push(...w.hevySessions);
+    merged.push(...w.hevySessions.map(canonicalizeSessionTs));
   });
   upsertHevySessions(merged);
 }
@@ -2483,7 +2830,9 @@ const CANONICAL_EXERCISE_MAP = {
   'Incline Dumbbell Press':                   'Incline Bench Press (Dumbbell)',
   'Incline Bench Press (Cable)':              'Incline Bench Press (Dumbbell)',
   'Incline Bench Press (Machine)':            'Incline Bench Press (Dumbbell)',
-  'Incline Press (Vitruvian)':               'Incline Bench Press (Dumbbell)',
+  // A6 (Alex decision 2026-09-25: rename in Hevy): the new Hevy title maps to
+  // the EXISTING history key so strength history stays continuous.
+  'Incline Bench Press (Vitruvian)':       'Incline Bench Press (Dumbbell)',
   // Shoulder Press variants
   'Shoulder Press':                           'Shoulder Press (Dumbbell)',
   'Overhead Press':                           'Shoulder Press (Dumbbell)',
@@ -2499,7 +2848,9 @@ const CANONICAL_EXERCISE_MAP = {
   'Romanian Deadlift (Dumbbell)':            'Romanian Deadlift (Barbell)',
   'Romanian Deadlift (Cable)':               'Romanian Deadlift (Barbell)',
   'Stiff Leg Deadlift':                       'Romanian Deadlift (Barbell)',
-  'Romanian Deadlift (Vitruvian)':           'Romanian Deadlift (Barbell)',
+  // A7 (Alex decision 2026-09-25: rename in Hevy): the new Hevy title maps to
+  // the EXISTING history key so strength history stays continuous.
+  'Romanian Deadlift (Vitruvian)':         'Romanian Deadlift (Barbell)',
   // Leg Extension variants
   'Leg Extension':                            'Leg Extension (Machine)',
   'Leg Extension (Cable)':                    'Leg Extension (Machine)',
@@ -2507,9 +2858,10 @@ const CANONICAL_EXERCISE_MAP = {
   // Chin Up variants
   'Chin-Up':                                  'Chin Up',
   'Chinup':                                   'Chin Up',
-  'Chin Up (Weighted)':                       'Chin Up',
-  'Weighted Chin Up':                         'Chin Up',
-  'Chin Up (Assisted)':                       'Chin Up',
+  // R3: 'Chin Up (Weighted)', 'Weighted Chin Up', 'Chin Up (Assisted)' are
+  // deliberately NOT aliased here. They are distinct exercises: any positive
+  // weight outranks bodyweight on e1RM, so merging them into 'Chin Up' would
+  // let one weighted set overwrite the bodyweight top set.
   // Seated Cable Row variants
   'Seated Row':                               'Seated Cable Row - Bar Grip',
   'Seated Cable Row':                         'Seated Cable Row - Bar Grip',
@@ -2529,6 +2881,28 @@ function canonicalize(rawName){
 function canonicalizeWithMeta(rawName){
   const canon = canonicalize(rawName);
   return {canonicalName: canon, sourceName: rawName, wasAliased: canon !== rawName};
+}
+
+// ══════════════════════════════════════════
+// PATCH R3: TRUE RENAME MAP
+// True Hevy exercise RENAMES only — the ONLY aliases allowed to merge stored
+// history into a single canonical key. Alex decision 2026-09-25: rename the
+// two exercises in Hevy; these map the new titles to the EXISTING history keys.
+// Broad aliases (e.g. 'Shoulder Press' → 'Shoulder Press (Dumbbell)') exist in
+// CANONICAL_EXERCISE_MAP for display/matching convenience, but ONLY entries
+// here may be used when collapsing stored session data (session ts keys,
+// backup load). Weighted/assisted variants are intentionally absent: they are
+// distinct exercises and must never merge.
+// ══════════════════════════════════════════
+const TRUE_RENAME_MAP = {
+  'Incline Bench Press (Vitruvian)': 'Incline Bench Press (Dumbbell)',
+  'Romanian Deadlift (Vitruvian)':   'Romanian Deadlift (Barbell)',
+};
+
+// Resolve a raw exercise name through TRUE renames only (identity otherwise).
+function canonicalizeRename(rawName){
+  if(!rawName) return rawName;
+  return TRUE_RENAME_MAP[rawName] || rawName;
 }
 
 // ══════════════════════════════════════════
@@ -2606,10 +2980,11 @@ function updBodyDeltas(){
     wtEl.style.color=col;
     wtEl.textContent=sign+d+' lbs';
   } else { wtEl.textContent='—'; wtEl.style.color='var(--mu)'; }
-  // Waist delta
+  // Waist delta — both sides offset-adjusted by their own week dates
+  // (F5: offset only touches pre-break history; +0 offset = no-op)
   const waistEl=document.getElementById('waistDelta');
   if(cWaist && prev?.waist){
-    const d=+(cWaist-prev.waist).toFixed(2);
+    const d=+(adjWaist(cWaist, ctx.anchorDate)-adjWaist(prev.waist, prev.date)).toFixed(2);
     const sign=d<=0?'':'+';
     const col=d<0?'var(--g)':d>0?'var(--a3)':'var(--mu)';
     waistEl.style.color=col;
@@ -2628,8 +3003,9 @@ function updLoss(){
   if(!cw||!D.weeks.length){document.getElementById('lrWrap').style.display='none';return;}
 
   const ctx = getLogWeekContext();
-  const cv = calcCutVelocity(cw, ctx.priorWeeks);
-  const st = calcStallStatus(cv, cWaist, ctx.weeksThroughAnchor, {anchorDate: ctx.anchorDate});
+  const mode = D.mode || 'cut';
+  const cv = calcCutVelocity(cw, ctx.priorWeeks, mode);
+  const st = calcStallStatus(cv, cWaist, ctx.weeksThroughAnchor, {anchorDate: ctx.anchorDate, mode:mode});
 
   document.getElementById('lrWrap').style.display='block';
 
@@ -2642,15 +3018,22 @@ function updLoss(){
   const stStr = cv.shortTermRate!=null ? ((cv.shortTermRate>=0?'−':'+')+Math.abs(cv.shortTermRate).toFixed(2)+'%') : '—';
   document.getElementById('lrShortTerm').textContent = stStr;
 
-  // Zone badge classes
-  ['c-slow','c-good','c-agg','c-fast'].forEach(c=>{const el=document.getElementById(c);if(el)el.className='rc';});
+  // Zone chips — rebuilt per mode (v17 F1: cut loss-speed zones never show in maint/bulk)
+  const chips = zoneChipsFor(mode);
+  const row = document.getElementById('lrChips');
+  if(row){
+    const chipCls = zoneChipClass(cv.zoneCls);
+    row.innerHTML = chips.map(c=>{
+      const active = c.zones.includes(cv.zone);
+      return '<div class="rc'+(active&&chipCls?' '+chipCls:'')+'">'+c.label+'</div>';
+    }).join('');
+  }
   const rv=document.getElementById('lrVal'), lrSt=document.getElementById('lrStatus');
   if(rr==null){ rv.className='lv'; lrSt.textContent='Need 4 weeks of data for rolling rate'; }
-  else if(rr<0){ rv.className='lv danger'; lrSt.textContent='Gaining — check adherence'; document.getElementById('c-slow').className='rc ad'; }
-  else if(rr<0.5){ rv.className='lv warn'; lrSt.textContent='Slow — check stall conditions below'; document.getElementById('c-slow').className='rc aw'; }
-  else if(rr<=1.0){ rv.className='lv good'; lrSt.textContent='Ideal velocity ✓'; document.getElementById('c-good').className='rc ag'; }
-  else if(rr<=1.25){ rv.className='lv warn'; lrSt.textContent='Aggressive — acceptable short-term'; document.getElementById('c-agg').className='rc aw'; }
-  else { rv.className='lv danger'; lrSt.textContent='⚠ Too fast — add 100–200 kcal carbs'; document.getElementById('c-fast').className='rc ad'; }
+  else {
+    rv.className = 'lv '+(cv.zoneCls==='vel-green'?'good':cv.zoneCls==='vel-yellow'?'warn':cv.zoneCls==='vel-red'?'danger':'');
+    lrSt.textContent = cv.zone;
+  }
 }
 
 // ══════════════════════════════════════════
@@ -2701,9 +3084,10 @@ function calcRecoveryStatusFromData(hrv, rhr, slp, savedWeeks){
   const yellowCount = [slpLevel===1, hrvLevel===1, rhrLevel===1].filter(Boolean).length;
   const redCount    = [slpLevel===2, hrvLevel===2, rhrLevel===2].filter(Boolean).length;
   const anyRed      = redCount > 0;
-  // Watch: 2+ yellows (and no reds); Intervention: any red
-  const watchActive = anyRed || yellowCount >= 2;
-  const statusLabel = anyRed ? 'RECOVERY INTERVENTION' : (yellowCount >= 2 ? 'RECOVERY WATCH' : '');
+  // A3: one shared calculation — any single yellow metric is a WATCH, so the
+  // computed recovery_status can never be GREEN while a component is flagged WATCH.
+  const watchActive = anyRed || yellowCount >= 1;
+  const statusLabel = anyRed ? 'RECOVERY INTERVENTION' : (yellowCount >= 1 ? 'RECOVERY WATCH' : '');
   const calBlocked  = watchActive;
 
   return { slpLevel, slpMsg, slpDetail, hrvLevel, hrvMsg, hrvDetail, rhrLevel, rhrMsg, rhrDetail,
@@ -2786,7 +3170,7 @@ function chkRec(){
   document.getElementById('rflagMetrics').innerHTML = rows.join('') +
     `<div style="font-size:10px;color:var(--mu);margin-top:5px">${isIntv
       ? 'Any red metric = intervention. Reduce training volume 15–25%, add 100–200 kcal carbs for 2–4 days.'
-      : '2 of 3 metrics yellow = watch. Hold calories, reduce accessory volume, prioritize sleep.'}</div>`;
+      : 'Any yellow metric = watch. Hold calories, reduce accessory volume, prioritize sleep.'}</div>`;
   document.getElementById('rflagCalBlock').style.display = rs.calBlocked ? 'block' : 'none';
 
   flag.classList.remove('watch','intervention');
@@ -2837,6 +3221,15 @@ function markDirty(keys){
 }
 
 function renderApp(activeTabName){
+  // A1: keep the waist baseline-break input synced with state
+  const wbd = document.getElementById('waistBreakDate');
+  if(wbd && document.activeElement!==wbd) wbd.value = D.waistBaselineBreakDate || '';
+  const woff = document.getElementById('waistOffset');
+  if(woff && document.activeElement!==woff) woff.value = (D.waistBaselineOffsetIn||0)===0 ? '' : D.waistBaselineOffsetIn;
+  const wbn = document.getElementById('waistBreakNote');
+  if(wbn) wbn.textContent = D.waistBaselineBreakDate
+    ? 'Trends stop at '+D.waistBaselineBreakDate+'. Offset +'+(D.waistBaselineOffsetIn||0)+' in applied to pre-break history (editable above).'
+    : 'No break set — trends compute across all contiguous weeks.';
   if(dirty.summary){ populateSumSel(); dirty.summary = false; }
   if(dirty.history){ renderHistory(); checkImportBanner(); dirty.history = false; }
 
@@ -2850,6 +3243,11 @@ function renderApp(activeTabName){
   if(activeTabName==='training' && dirty.training){ renderTraining(); dirty.training = false; }
   if(activeTabName==='analytics' && needsAnalytics){ renderAnalytics(); }
   if(needsAnalytics) dirty.analytics = false;
+
+  // v17: weekly TDEE estimate, body-comp log, maintenance targets (cheap — always render)
+  renderTDEE();
+  renderBodyComp();
+  renderMaintTargets();
 }
 
 function getCurrentFormSnapshot(){
@@ -2903,8 +3301,13 @@ function saveWeek(){
   if(!weekDate){toast('Set a week ending date first');return;}
   const lifts=[1,2,3,4,5,6].map(i=>({
     name:v('l'+i+'n'),weight:nv('l'+i+'w'),
-    reps:v('l'+i+'r')?parseInt(v('l'+i+'r')):null,rpe:nv('l'+i+'rpe')
+    reps:v('l'+i+'r')?parseInt(v('l'+i+'r')):null,rpe:nv('l'+i+'rpe'),
+    // A8: attribute this top set to the Hevy session it was imported from
+    ...(window._importedLiftSrc&&window._importedLiftSrc[i]
+      ? {srcTitle:window._importedLiftSrc[i].title, srcDate:window._importedLiftSrc[i].date}
+      : {})
   }));
+  window._importedLiftSrc = null; // consume staged attribution — never reuse across saves
   // [E] Canonicalize lift names at save time
   lifts.forEach(l=>{ if(l.name){ const c=canonicalizeWithMeta(l.name); l.canonicalName=c.canonicalName; l.sourceName=c.sourceName; l.wasAliased=c.wasAliased; } });
   const entry={
@@ -3083,15 +3486,85 @@ function parseHevyDate(str){
   return '';
 }
 
-function getTopSetForExercise(sets, exName){
+// A8: top set = best PERFORMANCE, not highest RPE. Pick max e1RM (Epley),
+// tiebreak heaviest weight then most reps; report that set's own RPE.
+// (Highest-RPE-first systematically picks fatigued second sets.)
+function epley1rm(w, r){
+  w = parseFloat(w)||0; r = parseInt(r)||0;
+  return (w>0&&r>0) ? w*(1+r/30) : 0;
+}
+// mode 'broad' (default): match through the broad alias map — used by the
+// priority-lift picker, matching how weekly lifts have always been
+// canonicalized when saved. mode 'rename': match on TRUE renames only —
+// used by buildSessionTopSets so stored session data never merges distinct
+// exercises (e.g. Romanian Deadlift (Dumbbell) must NOT fold into
+// Romanian Deadlift (Barbell)).
+function getTopSetForExercise(sets, exName, mode){
   if(!isValidExerciseName(exName)) return null;
-  const matching = sets.filter(r=>r.exercise_title===exName&&r.set_type!=='warmup');
+  // A6/A7: resolve aliases so renamed Hevy titles (e.g. '... (Vitruvian)')
+  // match the existing canonical history keys.
+  // R3: canonicalize the query name as well, so a raw renamed title passed as
+  // exName resolves to the same canonical key as the sets it must match.
+  // R4: 'rename' mode restricts matching to TRUE_RENAME_MAP; the picker
+  // keeps the broad map (default) — do not change that behavior.
+  // Weighted/assisted variants are NOT aliases (see CANONICAL_EXERCISE_MAP)
+  // and therefore never merge into the bodyweight lift's picker.
+  const useRename = (mode==='rename');
+  const canonEx = useRename ? canonicalizeRename(exName) : canonicalize(exName);
+  const matching = sets.filter(r=>(useRename ? canonicalizeRename(r.exercise_title) : canonicalize(r.exercise_title))===canonEx&&r.set_type!=='warmup');
   if(!matching.length) return null;
+  const score = r => {
+    const w = parseFloat(r.weight_lbs)||0, reps = parseInt(r.reps)||0;
+    return [epley1rm(w,reps), w, reps];
+  };
   return matching.reduce((best,r)=>{
-    const rpe=parseFloat(r.rpe)||0, wt=parseFloat(r.weight_lbs)||0;
-    const bRpe=parseFloat(best.rpe)||0, bWt=parseFloat(best.weight_lbs)||0;
-    return (rpe>bRpe||(rpe===bRpe&&wt>bWt)) ? r : best;
+    const s = score(r), b = score(best);
+    return (s[0]>b[0] || (s[0]===b[0]&&s[1]>b[1]) ||
+            (s[0]===b[0]&&s[1]===b[1]&&s[2]>b[2])) ? r : best;
   });
+}
+
+// R3/R4: build per-exercise top sets for one session, stored under keys that
+// merge ONLY on TRUE renames. True renames (e.g.
+// 'Incline Bench Press (Vitruvian)') collapse onto the existing history key
+// ('Incline Bench Press (Dumbbell)') so per-exercise charts, the e1RM chart,
+// and the exercise picker see ONE exercise, never a brand-new one. Distinct
+// exercises (e.g. Romanian Deadlift (Dumbbell) vs Romanian Deadlift
+// (Barbell)) stay stored as SEPARATE keys, consistent with pre-2/21 embedded
+// history. The per-set matcher runs in 'rename' mode so it cannot cross-match
+// broad aliases either. If two raw names ever collide on one key, keep the better set.
+function buildSessionTopSets(sets){
+  const ts = {};
+  const exNames = [...new Set(sets.map(r=>r.exercise_title).filter(isValidExerciseName))];
+  exNames.forEach(ex=>{
+    const key = canonicalizeRename(ex);
+    const top = getTopSetForExercise(sets, ex, 'rename');
+    if(top){
+      const w = parseFloat(top.weight_lbs)||0;
+      const r = parseInt(top.reps)||0;
+      const rpe = parseFloat(top.rpe)||0;
+      const e1rm = (w>0&&r>0) ? +(w*(1+r/30)).toFixed(1) : null;
+      const prev = ts[key];
+      if(!prev || (e1rm!=null && (prev.e1rm==null || e1rm>prev.e1rm))) ts[key] = {w, r, rpe: rpe||null, e1rm};
+    }
+  });
+  return ts;
+}
+
+// R3/R4: resolve the ts keys of an already-stored session (backup load path)
+// through TRUE renames only — never the broad alias map, so stored history
+// keeps distinct exercises distinct. Idempotent: keys that are already
+// resolved pass through unchanged.
+function canonicalizeSessionTs(ses){
+  if(!ses || !ses.ts || typeof ses.ts !== 'object') return ses;
+  const ts = {};
+  Object.entries(ses.ts).forEach(([ex,t])=>{
+    const key = canonicalizeRename(ex);
+    const prev = ts[key];
+    if(!prev) ts[key] = t;
+    else if(t && prev && t.e1rm!=null && (prev.e1rm==null || t.e1rm>prev.e1rm)) ts[key] = t;
+  });
+  return {...ses, ts};
 }
 
 // Global staging for import modal
@@ -3178,10 +3651,17 @@ function confirmHevyImport(){
   const includedSessions = _importSessions.filter(s=>s.included);
   const gymSessions = _importSessions.filter(s=>s.type==='gym'&&s.included);
 
-  // Extract priority lifts — prefer gym sessions, fall back to any included
-  const liftSource = gymSessions.length ? gymSessions : includedSessions;
-  const allSets = liftSource.flatMap(s=>s.sets);
+  // Extract priority lifts from ALL included sessions. Incline press and RDL are
+  // only trained at home ("Upper Day (Home)" / "Lower Day (Home)"); excluding
+  // home sessions whenever gym sessions exist made them read "not trained".
+  // The gym/home distinction is preserved for peak analytics (setsForPeaks),
+  // not for extraction.
+  const liftSource = includedSessions;
+  // A8: keep the source session on each set so the week's top set is attributed
+  // to the session it was logged under — never the priority-lift day label.
+  const allSets = liftSource.flatMap(s=>s.sets.map(r=>({...r,_srcTitle:s.title,_srcDate:s.dateSort})));
 
+  window._importedLiftSrc = {};
   PRIORITY_LIFTS.forEach(pl=>{
     const top = getTopSetForExercise(allSets, pl.name);
     const i = pl.slot;
@@ -3191,24 +3671,18 @@ function confirmHevyImport(){
       sv('l'+i+'w', top.weight_lbs||'');
       sv('l'+i+'r', top.reps||'');
       sv('l'+i+'rpe', top.rpe||'');
+      window._importedLiftSrc[i] = {title: top._srcTitle||null, date: top._srcDate||null};
+    } else {
+      window._importedLiftSrc[i] = null;
     }
     // If no top set found for this lift, leave blank (may not have trained it this week)
   });
 
-  // Store full session data (HEVY_DATA format) for merging on save
+  // Store full session data (HEVY_DATA format) for merging on save.
+  // R3: top sets are built under canonical keys (see buildSessionTopSets) so a
+  // renamed Hevy exercise shares its history key in every downstream consumer.
   window._importedSessions = _importSessions.filter(s=>s.included).map(s=>{
-    const ts = {};
-    const exNames = [...new Set(s.sets.map(r=>r.exercise_title).filter(isValidExerciseName))];
-    exNames.forEach(ex=>{
-      const top = getTopSetForExercise(s.sets, ex);
-      if(top){
-        const w = parseFloat(top.weight_lbs)||0;
-        const r = parseInt(top.reps)||0;
-        const rpe = parseFloat(top.rpe)||0;
-        const e1rm = (w>0&&r>0) ? +(w*(1+r/30)).toFixed(1) : null;
-        ts[ex] = {w, r, rpe: rpe||null, e1rm};
-      }
-    });
+    const ts = buildSessionTopSets(s.sets);
     const vol = s.sets.reduce((sum,r)=>{
       const w=parseFloat(r.weight_lbs)||0, reps=parseInt(r.reps)||0;
       return sum + w*reps;
@@ -3257,6 +3731,26 @@ function confirmHevyImport(){
 }
 
 function showHevySt(m){const e=document.getElementById('hevyStatus');e.textContent=m;e.style.display='block';}
+
+// R3/R4: pure helper for the B12 alt-location/equipment check. Candidates are
+// matched on TRUE-rename-resolved names so a pure rename (e.g. the Vitruvian
+// renames, already collapsed onto the canonical key by buildSessionTopSets)
+// never prints a duplicate line next to the same top set — while a genuinely
+// different equipment/location variant (e.g. 'Shoulder Press (Machine)' vs
+// 'Shoulder Press (Dumbbell)') still surfaces, because the broad map is NOT
+// applied here.
+function collectAltEquipCands(sessions, pl){
+  const baseName = n => String(n||'').split(' (')[0].trim().toLowerCase();
+  const base = baseName(pl.name);
+  const cands = [];
+  (Array.isArray(sessions)?sessions:[]).forEach(s=>Object.entries(s.ts||{}).forEach(([ex,t])=>{
+    const cex = canonicalizeRename(ex)||ex;
+    if(ex && cex!==pl.name && baseName(cex)===base && t && Number.isFinite(Number(t.w))){
+      cands.push({ex:cex, w:Number(t.w), r:t.r, rpe:t.rpe, e1rm:t.e1rm, session:s.t, date:s.d});
+    }
+  }));
+  return cands;
+}
 
 // ══════════════════════════════════════════
 // SUMMARY GENERATOR
@@ -3349,17 +3843,32 @@ function genSummary(){
   const yelFlags = rs.yellowCount;
   let statusLine='';
   if(redFlags>0) statusLine='⚠ RECOVERY INTERVENTION — calorie reduction blocked';
-  else if(yelFlags>=2) statusLine='⚠ RECOVERY WATCH — hold calories, reduce accessory volume';
+  else if(yelFlags>=1) statusLine='⚠ RECOVERY WATCH — hold calories, reduce accessory volume';
 
   // ── Velocity ──
-  const cvSum = calcCutVelocity(wWeight, D.weeks.slice(0,idx));
-  const stSum = calcStallStatus(cvSum, wWaist, D.weeks, {anchorDate:w.date, useLiveInputs:false});
+  const cvSum = calcCutVelocity(wWeight, D.weeks.slice(0,idx), wkMode);
+  const stSum = calcStallStatus(cvSum, wWaist, D.weeks, {anchorDate:w.date, useLiveInputs:false, mode:wkMode});
   const rr    = cvSum.rollingRate;
   const stRate = cvSum.shortTermRate;
   let rateStr = '—';
   if(rr!=null){
     rateStr=(rr>=0?'−':'+')+Math.abs(rr).toFixed(2)+'%/wk [2-wk rolling]';
-    rateStr+=rr>1.25?' ⚠ TOO FAST':rr<0.5?' ↓ SLOW':rr>=0.75?' ✓ IDEAL':' monitor';
+    // v17 F1: phase-aware annotations (cut speed zones never print for maint/bulk)
+    // v17 R2: maint annotation is gate-aware (2 consecutive weeks); bulk uses
+    // the exit-plan cap only — no legacy 0.25–0.5% "ideal" band.
+    if(wkMode==='maint'){
+      const d=Math.abs(rr);
+      if(d<=MAINT_DRIFT_BAND_PCT) rateStr+=' ✓ STABLE';
+      else {
+        const trig=evalMaintDriftTrigger(rr, priorWeekRollingRate(D.weeks.slice(0,idx), wkMode));
+        rateStr+=trig.trigger?' ⚠ ADJUST (2 wks)':' ⚠ WATCH (1st wk)';
+      }
+    } else if(wkMode==='bulk'){
+      const g=-rr;
+      rateStr+=g>SURPLUS_GAIN_CAP_PCT_WK?' ⚠ ABOVE CAP':g<0?' ↓ LOSING':' ✓ WITHIN CAP';
+    } else {
+      rateStr+=rr>1.25?' ⚠ TOO FAST':rr<0.5?' ↓ SLOW':rr>=0.75?' ✓ IDEAL':' monitor';
+    }
   }
 
   // [Rule 4] Signal conflict: short-term direction vs rolling direction
@@ -3409,14 +3918,39 @@ function genSummary(){
     : '—';
 
   // ── Lifts ──
+  // A8: each top set is attributed to the session it was logged under —
+  // the priority-lift day label is the slot, not the source.
   const liftLines = PRIORITY_LIFTS.map((pl,i)=>{
     const l = wLifts[i]||{};
     const hasData = l.weight||l.reps||l.rpe;
     const aliasNote = l.wasAliased ? ' (canonical) — source: '+str(l.sourceName) : '';
+    const srcNote = (l.srcTitle||l.srcDate)
+      ? ' [from "'+str(l.srcTitle||'?')+'"'+(l.srcDate?' '+str(l.srcDate):'')+']'
+      : '';
     return '  '+pl.day+' — '+pl.name+aliasNote+': '+(hasData
-      ? nd(l.weight)+' lbs × '+nd(l.reps)+' reps @ RPE '+nd(l.rpe)
+      ? nd(l.weight)+' lbs × '+nd(l.reps)+' reps @ RPE '+nd(l.rpe)+srcNote
       : 'not trained');
   }).join('\n');
+
+  // B12: same movement at another location/equipment is a distinct exercise —
+  // surface its top set too instead of silently showing only one entry.
+  // R3: matching uses canonical names via collectAltEquipCands so a pure rename
+  // never duplicates the line for the canonical top set.
+  const altEquipLines = (()=>{
+    const sessions = arr(w.hevySessions);
+    if(!sessions.length) return [];
+    const out = [];
+    PRIORITY_LIFTS.forEach(pl=>{
+      const cands = collectAltEquipCands(sessions, pl);
+      if(cands.length){
+        cands.sort((a,b)=>((b.e1rm??b.w))-((a.e1rm??a.w)));
+        const c = cands[0];
+        out.push('  + alt location/equipment — '+c.ex+': '+nd(c.w)+' lbs × '+nd(c.r)+' reps @ RPE '+nd(c.rpe)
+          +(c.session?' [from "'+str(c.session)+'"'+(c.date?' '+str(c.date):'')+']':''));
+      }
+    });
+    return out;
+  })();
 
   const flags = [
     wTags.includes('refeed')||bool(w.refeed) ? '[REFEED]' : null,
@@ -3449,19 +3983,69 @@ function genSummary(){
   const adhConfSum   = calcAdherenceConfidence(w);  // declare before stallConf (Rule 2 needs it)
   const stallConfSum = calcStallConfidence(phaseWksSum, recBaseSum, adhConfSum);
   const stallGatedSum = phaseWksSum < 4 || stallConfSum === 'LOW';
-  const stallStr = stallGatedSum
-    ? ('Stall engine inactive/low confidence (phase='+phaseWksSum+' wks, stall conf='+formatStallConfidenceLabel(stallConfSum, stSum.stalled)+')')
-    : stSum.stalled
-      ? 'STALLED — all conditions met'
-      : stSum.twoConsecSlow
-        ? 'Slow ('+stSum.stallReasons.length+' condition(s) not yet met)'
-        : 'Not stalled';
+  // A2: the machine-readable verdict must never assert a stall when confidence
+  // is LOW — one consistent verdict across stall_status and stall_confidence.
+  // v17 F1: the stall engine is CUT ONLY — disabled in maintenance/surplus phases.
+  const cutPhaseActive = wkMode === 'cut';
+  const stalledEffective = (!cutPhaseActive || stallGatedSum) ? false : stSum.stalled;
+  // v17: phase-aware export extras — maintenance targets/drift, surplus cap, TDEE, body-comp
+  const mtExp = getMaintTargets();
+  // v17 R2c: drift action needs 2 consecutive weeks outside the band — the
+  // export line reports the gate state explicitly (no silent "adjust").
+  const rrPrevExp = wkMode==='maint' && rr!=null ? priorWeekRollingRate(D.weeks.slice(0,idx), wkMode) : null;
+  const driftTrigExp = wkMode==='maint' && rr!=null ? evalMaintDriftTrigger(rr, rrPrevExp) : null;
+  const driftLine = wkMode==='maint'
+    ? 'Drift status:         '+(cvSum.zone||'—')+(rr!=null?' ('+Math.abs(rr).toFixed(2)+'%/wk vs ±'+MAINT_DRIFT_BAND_PCT+'%/wk band)':'')
+      +(driftTrigExp
+        ? (driftTrigExp.trigger ? ' — 2 consecutive weeks outside → adjust ±100 kcal/day'
+          : driftTrigExp.curOut ? ' — 1st week outside band (monitor; action after 2 consecutive weeks)'
+          : ' — inside band, hold course')
+        : '')
+    : null;
+  const maintTargetsLine = wkMode==='maint'
+    ? 'Maint targets:         '+mtExp.kcal+' kcal · '+mtExp.protein+'g protein · '+mtExp.fat+'g fat · '+mtExp.carbs+'g carbs · '+mtExp.stepEq.toLocaleString()+' step-eq'
+    : null;
+  const capEval = wkMode==='bulk' ? checkSurplusCap(rr) : null;
+  const capLine = wkMode==='bulk' && capEval && capEval.gainPct!=null
+    ? 'Surplus gain cap:      '+(capEval.overCap?'ABOVE':'within')+' exit-plan cap (~1 lb/month ≈ '+SURPLUS_GAIN_CAP_PCT_WK+'%/wk) — gain '+capEval.gainPct+'%/wk'
+    : null;
+  // v17 R2: TDEE is mode-local (trailing run in wkMode, transition weeks dropped).
+  // The exact included weeks are named — never just a window range.
+  const tdeeExp = calcTDEEEstimate(wkMode);
+  const tdeeLine = tdeeExp.available
+    ? 'TDEE estimate ('+wkMode+'): '+tdeeExp.tdee.toLocaleString()+' ±'+tdeeExp.band+' kcal/day ['+tdeeExp.confidence+', '+tdeeExp.nClean+' clean wks: '+(tdeeExp.cleanDates||[]).join(', ')+(tdeeExp.transitionWeeks&&tdeeExp.transitionWeeks.length?'; transition excluded: '+tdeeExp.transitionWeeks.join(', '):'')+(tdeeExp.provisional?' — PROVISIONAL: '+tdeeExp.provisionalReason:'')+']'
+    : 'TDEE estimate ('+wkMode+'): n/a ('+tdeeExp.reason+')';
+  // v17 R2: keep the cut-phase estimate as a separate labeled reference line in maintenance exports.
+  const tdeeCutExp = wkMode==='maint' ? calcTDEEEstimate('cut', {wholeHistory:true}) : null;
+  const tdeeCutLine = tdeeCutExp
+    ? (tdeeCutExp.available
+        ? 'TDEE estimate (cut phase, ref): '+tdeeCutExp.tdee.toLocaleString()+' ±'+tdeeCutExp.band+' kcal/day ['+tdeeCutExp.confidence+', '+tdeeCutExp.nClean+' clean wks]'
+        : 'TDEE estimate (cut phase, ref): n/a ('+tdeeCutExp.reason+')')
+    : null;
+  const bcAllExp = getBodyComp();
+  const bcDexaExp = bcAllExp.filter(e=>e.type==='dexa').slice(-1)[0] || null;
+  const bcCalExp = bcAllExp.filter(e=>e.type==='caliper').slice(-1)[0] || null;
+  const dexaLine = bcDexaExp
+    ? 'DEXA (latest):         '+bcDexaExp.date+' — '+(bcDexaExp.bfPct!=null?bcDexaExp.bfPct+'% BF':'—')+(bcDexaExp.fatMassLb!=null?' · '+bcDexaExp.fatMassLb+' lb fat':'')+(bcDexaExp.leanMassLb!=null?' · '+bcDexaExp.leanMassLb+' lb lean':'')+' [calibration anchor]'
+    : 'DEXA (latest):         none logged';
+  const caliperLine = bcCalExp
+    ? 'Calipers (latest):     '+bcCalExp.date+' — chest '+(bcCalExp.chestAvg??'—')+' · abdomen '+(bcCalExp.abdomenAvg??'—')+' · thigh '+(bcCalExp.thighAvg??'—')+' mm'+(bcCalExp.siteSum!=null?' · Σ '+bcCalExp.siteSum+' mm':'')
+    : 'Calipers (latest):     none logged';
+  const stallStr = !cutPhaseActive
+    ? 'Stall engine OFF — '+wkMode+' phase (cut logic disabled)'
+    : stallGatedSum
+      ? ('Stall engine inactive/low confidence (phase='+phaseWksSum+' wks, stall conf='+formatStallConfidenceLabel(stallConfSum, stSum.stalled)+')')
+      : stSum.stalled
+        ? 'STALLED — all conditions met'
+        : stSum.twoConsecSlow
+          ? 'Slow ('+stSum.stallReasons.length+' condition(s) not yet met)'
+          : 'Not stalled';
 
   // ── Tiebreakers ──
-  const cvTb = calcCutVelocity(wWeight, D.weeks.slice(0,idx));
-  const stTb = calcStallStatus(cvTb, wWaist, D.weeks, {anchorDate:w.date, useLiveInputs:false});
+  const cvTb = calcCutVelocity(wWeight, D.weeks.slice(0,idx), wkMode);
+  const stTb = calcStallStatus(cvTb, wWaist, D.weeks, {anchorDate:w.date, useLiveInputs:false, mode:wkMode});
   const rsTb = calcRecoveryStatusFromData(wHRV, wRHR, wSleep, D.weeks.slice(0,idx).filter(x=>x.hrv||x.rhr||x.sleep));
-  const baseTbResult = calcWeeklyAction(wkMode, cvTb, stTb, rsTb, wTags, D.weeks.slice(0,idx+1));
+  const baseTbResult = calcWeeklyAction(wkMode, cvTb, stTb, rsTb, wTags, D.weeks.slice(0,idx+1), priorWeekRollingRate(D.weeks.slice(0,idx), wkMode));
   const tbResult = applyTiebreakers(baseTbResult, cvTb, stTb, rsTb, D.weeks.slice(0,idx+1), wkMode);
 
   // [Rule 5 + Fix 1] RECOVERY is always primary when any metric is RED.
@@ -3504,7 +4088,7 @@ function genSummary(){
   const rateStrMachine = v => (v == null || Number.isNaN(Number(v))) ? 'n/a' : ((Number(v)>=0?'−':'+')+Math.abs(Number(v)).toFixed(2)+'%/wk');
   const numMachine = (v, dec=2) => (v == null || Number.isNaN(Number(v))) ? 'n/a' : Number(v).toFixed(dec);
   const pctMachine = (v, dec=0) => (v == null || Number.isNaN(Number(v))) ? 'n/a' : Number(v).toFixed(dec)+'%';
-  const recoveryStatus = redFlags>0 ? 'RED' : (yelFlags>=2 ? 'WATCH' : 'GREEN');
+  const recoveryStatus = redFlags>0 ? 'RED' : (yelFlags>=1 ? 'WATCH' : 'GREEN');
   const deficitLevel = na(getDeficitLevel());
   const waterFluctuation = calcWaterFluctuation();
   const actionCodeMachine = na(tbResult.actionCode);
@@ -3522,11 +4106,13 @@ function genSummary(){
     neatPct: adherenceWindow?.neatPct ?? null
   };
   const adherenceText = {
-    calories: (adherenceComputed.caloriePct!=null && adherenceWindow?.calTarget!=null)
+    calories: (adherenceWindow?.calorieTargetChanged)
+      ? 'n/a [target changed within window — no blended figure: '+(adherenceWindow.calorieWeekly||[]).map(x=>(x.date?fmtDShort(x.date):'?')+': '+(x.pct!=null?pct(x.pct):'n/a')+' ('+Math.round(x.actual)+'/'+Math.round(x.target)+' kcal)').join(' · ')+']'
+      : (adherenceComputed.caloriePct!=null && adherenceWindow?.calTarget!=null)
       ? pct(adherenceComputed.caloriePct)+' ('+nd(Math.round(adherenceWindow.calActual))+' / '+nd(Math.round(adherenceWindow.calTarget))+' kcal target)'
       : (wCals!=null ? nd(wCals)+' kcal [need selected + previous week with calorie targets]' : 'n/a'),
     protein: (adherenceComputed.proteinPct!=null && adherenceWindow?.protTarget!=null)
-      ? pct(adherenceComputed.proteinPct)+' ('+nd(Math.round(adherenceWindow.protActual))+'g / '+Math.round(adherenceWindow.protTarget)+' g (1g/lb rule)) [rule-based target]'
+      ? pct(adherenceComputed.proteinPct)+' ('+nd(Math.round(adherenceWindow.protActual))+'g / '+Math.round(adherenceWindow.protTarget)+' g ('+proteinRuleLabel(wkMode)+')) [rule-based target]'
       : (wProt!=null ? nd(wProt)+'g [need selected + previous week with bodyweight]' : 'n/a'),
     neat: (adherenceComputed.neatPct!=null && adherenceWindow?.stepTarget!=null)
       ? pct(adherenceComputed.neatPct)+' ('+Number(adherenceWindow.neatActual).toLocaleString()+' / '+Math.round(adherenceWindow.stepTarget).toLocaleString()+' step-eq target)'
@@ -3547,8 +4133,8 @@ function genSummary(){
     'Tags:                '+(wTags.length ? wTags.join(', ') : 'none'),
     '',
     '── META ──',
-    'Weeks in phase:      '+phaseWksSum+(stallGatedSum?' [stall engine inactive/low conf]':''),
-    'Stall confidence:    '+formatStallConfidenceLabel(stallConfSum, stSum.stalled),
+    'Weeks in '+phaseLabel.toLowerCase()+' phase (not training block): '+phaseWksSum+(stallGatedSum?' [stall engine inactive/low conf]':''),
+    'Stall confidence:    '+formatStallConfidenceLabel(stallConfSum, stalledEffective),
     'Recovery baseline:   '+recBaseSum.label+' ['+recBaseSum.conf+' confidence]',
     'Adherence confidence:'+adhConfSum.label+' ['+adhConfSum.conf+']',
     'Calorie target source: '+calorieTargetSource.human+' ('+Math.round(exportCalTarget)+' kcal)',
@@ -3556,21 +4142,35 @@ function genSummary(){
     'Modifiers:           '+(modifiers.length ? modifiers.join(' | ') : 'none'),
     'Water fluctuation:   '+(wfSum.show?'ON — '+wfSum.reason:'OFF'),
     'Suppressions:        '+(wTags.filter(t=>t==='illness'||t==='deload').join(', ')||'none'),
-    'Diet break candidate:'+(dbcSum.candidate
-      ? 'YES ('+dbcSum.cleanWeeks+' clean cut wks) — '+dbcSum.reason
-      : dbcSum.insufficientData
-        ? 'INSUFFICIENT DATA — '+dbcSum.insufficientReason
-        : 'NO ('+( dbcSum.cleanWeeks||0)+' clean cut wks)'),
+    'Diet break candidate:'+(!cutPhaseActive
+      ? 'N/A — '+wkMode+' phase (diet breaks are a cut tool)'
+      : dbcSum.candidate
+        ? 'YES ('+dbcSum.cleanWeeks+' clean cut wks) — '+dbcSum.reason
+        : dbcSum.insufficientData
+          ? 'INSUFFICIENT DATA — '+dbcSum.insufficientReason
+          : 'NO ('+( dbcSum.cleanWeeks||0)+' clean cut wks)'),
+    maintTargetsLine,
+    driftLine,
+    capLine,
     statusLine ? '\n'+statusLine : '',
     '',
     '── BODY ──',
     'Weight (7-day avg):  '+nd(wWeight)+' lbs'+delt(wWeight, prev, prev&&(num(prev.weight)||null), 1, ' lbs'),
+    // F5: waist comparisons use offset-adjusted values on both sides (each by its
+    // own week date); raw stored values are unchanged. +0 offset = no-op.
     'Waist:Weight Ratio:  '+(wWeight&&wWaist
-      ? ((wWaist/wWeight).toFixed(4)+(prev&&num(prev.weight)&&num(prev.waist)
-          ? ' (Δ '+(+(wWaist/wWeight - num(prev.waist)/num(prev.weight)).toFixed(4))+')'
+      ? ((adjWaist(wWaist,w.date)/wWeight).toFixed(4)+(prev&&num(prev.weight)&&num(prev.waist)
+          ? ' (Δ '+(+(adjWaist(wWaist,w.date)/wWeight - adjWaist(num(prev.waist),prev.date)/num(prev.weight)).toFixed(4))+')'
           : prev ? '' : ' (n/a — first week)'))
       : '—'),
-    'Waist (7-day avg):   '+nd(wWaist)+' in'+delt(wWaist, prev, prev&&(num(prev.waist)||null), 2, ' in'),
+    'Waist (7-day avg):   '+nd(wWaist!=null?adjWaist(wWaist,w.date):null)+' in'+delt(wWaist!=null?adjWaist(wWaist,w.date):null, prev, prev?adjWaist(num(prev.waist),prev.date):null, 2, ' in'),
+    'Waist baseline:      '+(D.waistBaselineBreakDate
+      ? D.waistBaselineBreakDate+' break [offset +'+(D.waistBaselineOffsetIn||0)+' in — '+(D.waistBaselineNote||'no note')+']'
+      : 'none set'),
+    dexaLine,
+    caliperLine,
+    tdeeLine,
+    tdeeCutLine,
     (stSum.waistTrend!=null)
       ? (()=>{
           // Waist trend compares the current 3 most recent waist points to the immediately preceding 2 waist points.
@@ -3580,11 +4180,15 @@ function genSummary(){
             : null;
           return 'Waist trend (3-wk):  '+nd(Number(stSum.waistTrend).toFixed(2))+'" avg  ·  waistFlat: '+nd(stSum.waistFlat)+'  ·  Δ vs prior 2-wk avg: '+(waistTrendDelta!=null ? waistTrendDelta+'"' : '—');
         })()
-      : 'Waist trend (3-wk):  n/a (need 3 weeks of waist data)',
+      : 'Waist trend (3-wk):  n/a ('+(stSum.waistBreakHit
+          ? 'measurement baseline break '+ (D.waistBaselineBreakDate||'set')+' — fewer than 3 weeks on the new baseline; offset pending Alex decision'
+          : stSum.waistTruncated
+            ? 'gap in waist data — need 3 contiguous weeks on one measurement baseline'
+            : 'need 3 weeks of waist data')+')',
     '',
     '── PHASE PROGRESS ──',
     'Phase:               '+phaseLabel,
-    'Weeks in current phase: '+phaseComputed.weeksInPhase,
+    'Weeks in current '+phaseLabel.toLowerCase()+' phase (not training block): '+phaseComputed.weeksInPhase,
     (phaseComputed.weightChange!=null)
       ? 'Weight change since phase start: '+signedDynamic(phaseComputed.weightChange)+' lbs'
       : null,
@@ -3626,6 +4230,7 @@ function genSummary(){
     '',
     '── TRAINING — TOP SETS ──',
     liftLines||'  —',
+    ...altEquipLines,
     '',
     '── ONE RECOMMENDED ACTION ──',
     (()=>{
@@ -3634,7 +4239,7 @@ function genSummary(){
       // [Rule 4] If signal conflict, soften prescription
       const conflictNote = signalConflict ? '\n⚠ Velocity signals conflict — hold any adjustments until signals align.' : '';
       if(redFlags>0) return '🚫 RECOVERY INTERVENTION'+suppNote+': Hold or add +100 kcal on training days. Reduce volume 15–25%. Do not increase steps.'+conflictNote;
-      if(yelFlags>=2) return '⚠ RECOVERY WATCH: Hold calories, reduce accessory volume, prioritize sleep. No calorie reduction.'+conflictNote;
+      if(yelFlags>=1) return '⚠ RECOVERY WATCH: Hold calories, reduce accessory volume, prioritize sleep. No calorie reduction.'+conflictNote;
       if(cvSum.rollingRate!=null&&cvSum.rollingRate>1.25) return '⚠ LOSING TOO FAST: Add +100–200 kcal/day (bias carbs). Reassess in 7–10 days.'+conflictNote;
       if(stSum.stalled && !stallGatedSum){
         const neat2=calcNEAT(wSteps,wBike);
@@ -3654,13 +4259,14 @@ function genSummary(){
       const nwtExp = calcNextWeekTargets(w.date);
       if(!nwtExp) return '  Insufficient data (need ≥2 weeks)';
       const suppTag = nwtExp.suppressed ? ' [SUPPRESSED — held]' : '';
-      // [Rule 7] Protein label: always rule-based
+      // [Rule 7] Protein label: always rule-based — cut 1g/lb (existing), maint 0.8g/lb (dynamic equation)
+      const protRuleTxt = wkMode==='maint' ? '0.8g/lb' : '1g/lb';
       const protLabel = wWeight
-        ? Math.round(nwtExp.protein)+'g/day [exact: '+Math.round(wWeight)+' lbs × 1g/lb = '+Math.round(nwtExp.protein)+'g]'
-        : Math.round(nwtExp.protein)+'g/day [1g/lb rule — weight not logged]';
+        ? Math.round(nwtExp.protein)+'g/day [exact: '+Math.round(wWeight)+' lbs × '+protRuleTxt+' = '+Math.round(nwtExp.protein)+'g]'
+        : Math.round(nwtExp.protein)+'g/day ['+proteinRuleLabel(wkMode)+' — weight not logged]';
       // [Rule 7] Compliance goal during ADHERENCE / low confidence weeks
       const complianceGoal = (nwtExp.complianceMode)
-        ? '\n  Compliance goal:   ≥5 tracked days + ≥'+Math.round(nwtExp.protein)+'g protein/day (1g/lb rule)'
+        ? '\n  Compliance goal:   ≥5 tracked days + ≥'+Math.round(nwtExp.protein)+'g protein/day ('+proteinRuleLabel(wkMode)+')'
         : '';
       return [
         '  Basis:          '+(nwtExp.basis||'—'),
@@ -3683,8 +4289,25 @@ function genSummary(){
     'signal_conflict:           '+boolStr(signalConflict !== null),
     'waist_avg_in_3wk:          '+numMachine(stSum.waistTrend, 2),
     'waist_flat_3wk:            '+boolStr(stSum.waistFlat),
-    'stall_status:              '+boolStr(stSum.stalled),
-    'stall_confidence:          '+na(formatStallConfidenceLabel(stallConfSum, stSum.stalled)),
+    'waist_baseline_break:      '+(D.waistBaselineBreakDate||'none')+' [offset +'+(D.waistBaselineOffsetIn||0)+' in — editable in Log tab]',
+    'phase_drift_zone:          '+(wkMode==='maint' ? na(cvSum.zone) : 'n/a'),
+    'phase_drift_gate:          '+(wkMode==='maint' && driftTrigExp
+      ? (driftTrigExp.trigger ? '2-consecutive-weeks-outside → ADJUST ±100 kcal/day'
+        : driftTrigExp.curOut ? '1st-week-outside (watch; action after 2 consecutive)'
+        : 'in-band (hold)')
+      : 'n/a'),
+    'phase_transition:          '+(cvSum.inTransition ? 'week '+cvSum.weeksInMode+' of 2 — glycogen/water settling, no rate actions' : 'none'),
+    'surplus_gain_cap_over:     '+(wkMode==='bulk' ? boolStr(capEval && capEval.overCap) : 'n/a'),
+    'tdee_estimate_kcal:        '+(tdeeExp.available ? String(tdeeExp.tdee)+' ±'+tdeeExp.band+' ['+tdeeExp.confidence+']' : 'n/a'),
+    'tdee_provisional:          '+boolStr(tdeeExp.provisional===true),
+    'tdee_clean_weeks:          '+(tdeeExp.available && tdeeExp.cleanDates ? tdeeExp.cleanDates.join(',') : 'n/a'),
+    'tdee_transition_excluded:  '+(tdeeExp.transitionWeeks && tdeeExp.transitionWeeks.length ? tdeeExp.transitionWeeks.join(',') : 'none'),
+    'tdee_provisional_reason:   '+(tdeeExp.provisional && tdeeExp.provisionalReason ? tdeeExp.provisionalReason : 'n/a'),
+    'tdee_cut_phase_kcal:       '+(tdeeCutExp ? (tdeeCutExp.available ? String(tdeeCutExp.tdee)+' ±'+tdeeCutExp.band+' ['+tdeeCutExp.confidence+']' : 'n/a') : 'n/a'),
+    'dexa_latest_bf_pct:        '+(bcDexaExp && bcDexaExp.bfPct!=null ? String(bcDexaExp.bfPct) : 'n/a'),
+    'caliper_latest_site_sum_mm: '+(bcCalExp && bcCalExp.siteSum!=null ? String(bcCalExp.siteSum) : 'n/a'),
+    'stall_status:              '+boolStr(stalledEffective),
+    'stall_confidence:          '+na(formatStallConfidenceLabel(stallConfSum, stalledEffective)),
     'phase_weeks_to_anchor:     '+(phaseWksSum==null || Number.isNaN(Number(phaseWksSum)) ? 'n/a' : String(phaseWksSum)),
     'adherence_confidence:      '+na(adhConfSum&&adhConfSum.conf),
     'recovery_baseline_conf:    '+na(recBaseSum&&recBaseSum.conf),
@@ -3692,7 +4315,9 @@ function genSummary(){
     'deficit_level:             '+deficitLevel,
     'calorie_target_source:     '+calorieTargetSource.machine,
     'calorie_adherence_pct_2wk: '+pctMachine(adherenceComputed.caloriePct, 0),
+    'calorie_adherence_target_changed_2wk: '+boolStr(adherenceWindow?.calorieTargetChanged===true),
     'protein_adherence_pct_2wk: '+pctMachine(adherenceComputed.proteinPct, 0),
+    'protein_rule:              '+proteinRuleLabel(wkMode)+(wkMode==='maint' && wWeight ? ' ['+Math.round(calcMaintProtein(wWeight)||0)+'g at '+Math.round(wWeight)+' lb avg]' : ''),
     'neat_adherence_pct_2wk:    '+pctMachine(adherenceComputed.neatPct, 0),
     'neat_gap_step_eq:          '+String(Math.round(neatGapStepEq)),
     'phase_weight_change_lbs_to_anchor:   '+numMachine(phaseComputed.weightChange, 2),
@@ -3758,7 +4383,8 @@ function showTrend(metric, btn){
   if(metric==='wtwr'){
     const weeks=D.weeks.filter(w=>w.weight&&w.waist);
     const labels=weeks.map(w=>fmtDShort(w.date));
-    const vals=weeks.map(w=>+(w.waist/w.weight).toFixed(4));
+    // F5: pre-break waist offset-adjusted so ratios stay comparable
+    const vals=weeks.map(w=>+(adjWaist(w.waist, w.date)/w.weight).toFixed(4));
     replaceChart('trend',ctx,{type:'line',data:{labels,datasets:[{label:'Waist:Weight Ratio',data:vals,borderColor:'#ff9f47',backgroundColor:'#ff9f4718',borderWidth:2,pointRadius:3,fill:true,tension:0.3}]},options:chartOpts()});
     return;
   }
@@ -3767,7 +4393,8 @@ function showTrend(metric, btn){
   const key=KEY_ALIAS[metric]||metric;
   const weeks=D.weeks.filter(w=>w[key]!=null||w[metric]!=null);
   const labels=weeks.map(w=>fmtDShort(w.date));
-  const vals=weeks.map(w=>w[key]??w[metric]);
+  // F5: waist series offset-adjusted pre-break so the line stays comparable
+  const vals=weeks.map(w=>metric==='waist'?adjWaist(w[key]??w[metric], w.date):(w[key]??w[metric]));
   const refPts=weeks.map((w,i)=>(w.refeed||(w.tags||[]).includes('refeed'))?{x:i,y:vals[i]}:null).filter(Boolean);
   const ds=[{label:cfg.label,data:vals,borderColor:cfg.color,backgroundColor:cfg.color+'18',borderWidth:2,pointBackgroundColor:weeks.map(w=>(w.refeed||(w.tags||[]).includes('refeed'))?'#b847ff':cfg.color),pointRadius:weeks.map(w=>(w.refeed||(w.tags||[]).includes('refeed'))?6:3),fill:true,tension:0.3}];
   if(cfg.ref)ds.push({label:'Min',data:weeks.map(()=>cfg.ref),borderColor:'#ff4747',borderWidth:1,borderDash:[6,4],pointRadius:0,fill:false});
@@ -4098,7 +4725,9 @@ function renderMuscleChart(){
     // Sum volume for exercises targeting this muscle
     Object.entries(ses.ts).forEach(([ex, ts])=>{
       const effMap = getEffectiveMuscleMap();
-      const groups = effMap[ex];
+      // R3: canonicalize before lookup so sets logged under a renamed title
+      // (stored canonical, or a raw new name that slipped in) hit the map.
+      const groups = effMap[ex] || effMap[canonicalize(ex)];
       if(!groups || !groups.includes(muscle)) return;
       const w=ts.w||0, r=ts.r||0;
       muscVol[wkKey] += w*r;
@@ -4214,11 +4843,17 @@ function updDeficit(){
   const wkLoss=deficit*7/3500;
   document.getElementById('defDisplay').style.display='block';
   const col=deficit>0?'var(--g)':deficit<-200?'var(--a3)':'var(--mu)';
+  // v17: mode context — the Mifflin calculator is phase-neutral; the Log tab's
+  // rolling clean-weeks TDEE is the phase-aware figure in maint/surplus.
+  const defMode = D.mode || 'cut';
+  const defNote = defMode==='cut' ? '' :
+    `<div style="font-size:10px;color:var(--mu);margin-top:8px">Mode is ${defMode==='maint'?'MAINTENANCE':'SURPLUS'} — this Mifflin estimate is a rough calculator only. Use the Log tab's Weekly TDEE Estimate (rolling clean weeks) as the phase-aware figure.</div>`;
   document.getElementById('defStats').innerHTML=`
     <div class="def-item"><div class="def-val" style="color:#47b8ff">${tdee}</div><div class="def-lbl">Est. TDEE</div></div>
     <div class="def-item"><div class="def-val" style="color:#ff9f47">${Math.round(avgCals)}</div><div class="def-lbl">Avg Intake (4wk)</div></div>
     <div class="def-item"><div class="def-val" style="color:${col}">${deficit>0?'+':''}${deficit}</div><div class="def-lbl">Daily Deficit</div></div>
-    <div class="def-item"><div class="def-val" style="color:${col};font-size:14px">${wkLoss>0?'-':'+'} ${Math.abs(wkLoss).toFixed(2)} lbs</div><div class="def-lbl">Projected/wk [Inference]</div></div>`;
+    <div class="def-item"><div class="def-val" style="color:${col};font-size:14px">${wkLoss>0?'-':'+'} ${Math.abs(wkLoss).toFixed(2)} lbs</div><div class="def-lbl">Projected/wk [Inference]</div></div>
+    ${defNote}`;
   renderDeficitChart();
 }
 
@@ -4398,6 +5033,19 @@ function importData(e){
       if(imported.defHeight) D.defHeight = imported.defHeight;
       if(imported.defAge) D.defAge = imported.defAge;
       if(imported.defAct) D.defAct = imported.defAct;
+      // v17: restore body-comp log (merged by id), maintenance targets, waist offset
+      if(Array.isArray(imported.bodyComp) && imported.bodyComp.length){
+        if(!Array.isArray(D.bodyComp)) D.bodyComp = [];
+        const seen = new Set(D.bodyComp.map(e=>e&&e.id));
+        imported.bodyComp.forEach(e=>{
+          const s = sanitizeBodyCompEntry(e);
+          if(s && !seen.has(s.id)){ D.bodyComp.push(s); seen.add(s.id); }
+        });
+      }
+      if(imported.maintTargets && typeof imported.maintTargets==='object'){
+        D.maintTargets = Object.assign({}, getMaintTargets(), imported.maintTargets);
+      }
+      if(imported.waistBaselineOffsetIn!=null) D.waistBaselineOffsetIn = Number(imported.waistBaselineOffsetIn)||0;
       save();
       renderHistory();
       checkImportBanner();
@@ -4430,15 +5078,20 @@ function updVelocity(){
   card.style.display = 'block';
 
   const ctx = getLogWeekContext();
-  const cv = calcCutVelocity(cw, ctx.priorWeeks);
-  const st = calcStallStatus(cv, cWaist, ctx.weeksThroughAnchor, {anchorDate: ctx.anchorDate});
+  const mode = D.mode || 'cut';
+  const cv = calcCutVelocity(cw, ctx.priorWeeks, mode);
+  const st = calcStallStatus(cv, cWaist, ctx.weeksThroughAnchor, {anchorDate: ctx.anchorDate, mode:mode});
   const rr = cv.rollingRate;
+
+  // ── Card title follows the active phase ──
+  const velTitle = document.getElementById('velocityTitle');
+  if(velTitle) velTitle.textContent = mode==='maint' ? '// Maintenance Drift' : mode==='bulk' ? '// Surplus Velocity' : '// Cut Velocity';
 
   // ── Badge ──
   const rrDisp = rr!=null ? ((rr>=0?'−':'+')+Math.abs(rr).toFixed(2)+'%/wk') : '—';
   document.getElementById('velBadge').innerHTML =
     `<div class="vel-badge ${cv.zoneCls}">${cv.zone} &nbsp;·&nbsp; ${rrDisp}</div>
-     <div style="font-size:9px;color:var(--mu);margin-top:5px">2-week rolling average. Short-term Δ: ${cv.shortTermRate!=null?((cv.shortTermRate>=0?'−':'+')+Math.abs(cv.shortTermRate).toFixed(2)+'%/wk'):'—'} — direction only, not decision driver.</div>`;
+     <div style="font-size:9px;color:var(--mu);margin-top:5px">${cv.inTransition ? 'Rolling comparison paused during transition — resumes automatically after week 2.' : '2-week rolling average. Short-term Δ: '+(cv.shortTermRate!=null?((cv.shortTermRate>=0?'−':'+')+Math.abs(cv.shortTermRate).toFixed(2)+'%/wk'):'—')+' — direction only, not decision driver.'}</div>`;
 
   // ── W0/W1/W2/W3 stats ──
   document.getElementById('velStats').innerHTML =
@@ -4455,59 +5108,379 @@ function updVelocity(){
         + (st.waistPrev!=null ? ' <span style="color:var(--mu)">vs prior avg:</span> <strong>' + st.waistPrev.toFixed(2) + '"</strong>' : '')
         + ' <span style="color:' + waistCol + ';margin-left:8px">' + waistMsg + '</span>'
         + '</div>'
-    : '<div style="font-size:10px;color:var(--mu)">Waist trend: need 3 weeks of waist data.</div>';
+    : '<div style="font-size:10px;color:var(--mu)">Waist trend: '+(st.waistBreakHit
+        ? 'baseline break '+((typeof D!=='undefined'&&D.waistBaselineBreakDate)||'set')+' — fewer than 3 weeks on the new baseline (offset editable in Log tab).'
+        : st.waistTruncated
+          ? 'gap in waist data — need 3 contiguous weeks on one measurement baseline.'
+          : 'need 3 contiguous weeks of waist data on one measurement baseline.')+'</div>';
   document.getElementById('velWaist').innerHTML = waistHtml;
 
-  // ── Adherence panel ──
+  // ── Adherence panel — mode-aware (v17 F1) ──
   const pct = v => v!=null ? v.toFixed(0)+'%' : '—';
   const adCls = v => v==null?'var(--mu)':v>=90?'var(--g)':v>=80?'var(--a)':'var(--a3)';
   // UI shows an orange warning when NEAT adherence is close to target (90–99%).
   // The stall engine itself still uses the ≥80% rule for diagnostic eligibility.
   const neatAdCls = v => v==null ? 'var(--mu)' : v>=100 ? 'var(--g)' : v>=90 ? 'var(--a)' : 'var(--a3)';
-  const calAdCls = v => v==null
-    ? 'var(--mu)'
-    : (D.mode==='cut' ? (v<=100 ? 'var(--g)' : 'var(--a3)') : adCls(v));
+  const mtAdh = getMaintTargets();
+  let calLbl = 'Calories ≤100%', protLbl = 'Protein ≥90%', protPct = st.protAdhPct;
+  const calAdCls = v => {
+    if(v==null) return 'var(--mu)';
+    if(mode==='cut') return v<=100 ? 'var(--g)' : 'var(--a3)';
+    if(mode==='maint'){ const d=Math.abs(v-100); return d<=5?'var(--g)':d<=10?'var(--a)':'var(--a3)'; }
+    return adCls(v);
+  };
+  if(mode==='maint'){
+    calLbl = 'Calories ≈100%';
+    protLbl = 'Protein ≥'+mtAdh.protein+'g (0.8g/lb)';
+    const liveProt = nv('prot');
+    if(liveProt!=null && mtAdh.protein) protPct = liveProt/mtAdh.protein*100;
+  } else if(mode==='bulk'){
+    calLbl = 'Calories ≥100%';
+  }
+  const panelHead = mode==='cut'
+    ? 'Adherence (current loaded week) — required for stall diagnosis'
+    : 'Adherence (current loaded week) vs '+(mode==='maint'?'maintenance':'surplus')+' targets';
   document.getElementById('velAdherence').innerHTML =
-    `<div style="font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">Adherence (current loaded week) — required for stall diagnosis</div>
+    `<div style="font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin-bottom:5px">${panelHead}</div>
      <div class="sg" style="gap:6px">
-       <div class="sb"><div class="sv" style="font-size:14px;color:${calAdCls(st.calAdhPct)}">${pct(st.calAdhPct)}</div><div class="sl">Calories ≤100%</div></div>
-       <div class="sb"><div class="sv" style="font-size:14px;color:${adCls(st.protAdhPct)}">${pct(st.protAdhPct)}</div><div class="sl">Protein ≥90%</div></div>
+       <div class="sb"><div class="sv" style="font-size:14px;color:${calAdCls(st.calAdhPct)}">${pct(st.calAdhPct)}</div><div class="sl">${calLbl}</div></div>
+       <div class="sb"><div class="sv" style="font-size:14px;color:${adCls(protPct)}">${pct(protPct)}</div><div class="sl">${protLbl}</div></div>
        <div class="sb"><div class="sv" style="font-size:14px;color:${neatAdCls(st.stpAdhPct)}">${pct(st.stpAdhPct)}</div><div class="sl">NEAT ≥80%</div></div>
      </div>`;
 
-  // ── Stall diagnostic ──
+  // ── Stall diagnostic — CUT ONLY (v17 F1: stall engine disabled in maint/bulk) ──
   let stallHtml = '';
-  if(st.stalled){
-    stallHtml = `<div class="action-box yellow"><div class="ah">✓ STALLED — All Conditions Met</div>
-      All 6 stall criteria confirmed. Proceed with adjustment ladder:
-      <ol style="margin:6px 0 0 14px;font-size:10px;line-height:1.8">
-        <li>Confirm adherence (done ✓)</li>
-        <li>Add +2,000 step-eq/day (prefer bike — check knee status)</li>
-        <li>Reassess in 7–10 days</li>
-        <li>If still stalled → reduce calories −100 to −150 kcal/day</li>
-        <li>Reassess after 10–14 days</li>
-      </ol>
-    </div>`;
-  } else if(st.twoConsecSlow || st.slowThisWk){
-    stallHtml = `<div class="action-box blue"><div class="ah">Slow — Not Yet a Stall</div>
-      <div style="font-size:10px;margin-top:4px;line-height:1.7">Conditions not yet met for calorie reduction:</div>
-      <ul style="margin:5px 0 0 14px;font-size:10px;line-height:1.8">
-        ${st.stallReasons.map(r=>`<li>${r}</li>`).join('')}
-      </ul>
-    </div>`;
+  if(mode==='cut'){
+    if(st.stalled){
+      stallHtml = `<div class="action-box yellow"><div class="ah">✓ STALLED — All Conditions Met</div>
+        All 6 stall criteria confirmed. Proceed with adjustment ladder:
+        <ol style="margin:6px 0 0 14px;font-size:10px;line-height:1.8">
+          <li>Confirm adherence (done ✓)</li>
+          <li>Add +2,000 step-eq/day (prefer bike — check knee status)</li>
+          <li>Reassess in 7–10 days</li>
+          <li>If still stalled → reduce calories −100 to −150 kcal/day</li>
+          <li>Reassess after 10–14 days</li>
+        </ol>
+      </div>`;
+    } else if(st.twoConsecSlow || st.slowThisWk){
+      stallHtml = `<div class="action-box blue"><div class="ah">Slow — Not Yet a Stall</div>
+        <div style="font-size:10px;margin-top:4px;line-height:1.7">Conditions not yet met for calorie reduction:</div>
+        <ul style="margin:5px 0 0 14px;font-size:10px;line-height:1.8">
+          ${st.stallReasons.map(r=>`<li>${r}</li>`).join('')}
+        </ul>
+      </div>`;
+    }
+  } else {
+    stallHtml = `<div style="font-size:10px;color:var(--mu);background:var(--s2);border-radius:8px;padding:9px 12px">⏸ Stall engine OFF — ${mode==='maint'?'maintenance':'surplus'} phase. Cut stall/diet-break logic is disabled.</div>`;
   }
   document.getElementById('velStall').innerHTML = stallHtml;
 
-  // ── Action for too-fast ──
+  // ── Action boxes — mode-aware (v17 F1; v17 R2 transition gate + 2-wk drift gate + cap-only bulk) ──
   let action = '';
-  if(rr!=null && rr > 1.25){
-    action = `<div class="action-box red"><div class="ah">⚠ Guardrail: Over-Dieting Risk</div>Rolling rate >1.25%/wk. Prioritize muscle retention — increase calories +100–200 kcal/day (carbs). Do not reduce further until rate normalizes.</div>`;
-  } else if(rr!=null && rr >= 1.0){
-    action = `<div class="action-box yellow"><div class="ah">Aggressive Pace — Monitor</div>Rolling rate 1.0–1.25%/wk. Acceptable short-term. Hold current approach and reassess next week.</div>`;
-  } else if(rr!=null && rr >= 0.5){
-    action = `<div class="action-box green"><div class="ah">On Target — Hold Course</div>Rolling velocity ideal. No changes needed. Review again next week.</div>`;
+  if(cv.inTransition){
+    action = `<div class="action-box blue"><div class="ah">⇄ Transition — Glycogen/Water Settling</div>Week ${cv.weeksInMode} of 2 in ${MODE_CONFIG[mode].label} phase. The scale is settling after the phase change — no intake adjustments until drift tracking resumes.</div>`;
+  } else if(mode==='cut'){
+    if(rr!=null && rr > 1.25){
+      action = `<div class="action-box red"><div class="ah">⚠ Guardrail: Over-Dieting Risk</div>Rolling rate >1.25%/wk. Prioritize muscle retention — increase calories +100–200 kcal/day (carbs). Do not reduce further until rate normalizes.</div>`;
+    } else if(rr!=null && rr >= 1.0){
+      action = `<div class="action-box yellow"><div class="ah">Aggressive Pace — Monitor</div>Rolling rate 1.0–1.25%/wk. Acceptable short-term. Hold current approach and reassess next week.</div>`;
+    } else if(rr!=null && rr >= 0.5){
+      action = `<div class="action-box green"><div class="ah">On Target — Hold Course</div>Rolling velocity ideal. No changes needed. Review again next week.</div>`;
+    }
+  } else if(mode==='maint' && rr!=null){
+    // v17 R2c: drift action requires 2 consecutive weeks outside the band
+    // (Alex decision 2026-09-25). Single-week excursions watch.
+    const trig = evalMaintDriftTrigger(rr, priorWeekRollingRate(ctx.priorWeeks, mode));
+    const drift = Math.abs(rr);
+    const dir = rr > 0 ? 'losing' : 'gaining';
+    if(trig.trigger){
+      action = `<div class="action-box red"><div class="ah">⚠ Drift Beyond Band — Adjust</div>Drift ${drift.toFixed(2)}%/wk (${dir}) outside the ±${MAINT_DRIFT_BAND_PCT}%/wk band 2 consecutive weeks. Adjust intake ±100 kcal/day and reassess next week.</div>`;
+    } else if(trig.curOut){
+      action = `<div class="action-box yellow"><div class="ah">👀 Drift Watch — 1st Week Outside Band</div>Drift ${drift.toFixed(2)}%/wk (${dir}) exceeds the ±${MAINT_DRIFT_BAND_PCT}%/wk band. Monitoring — adjustment only after 2 consecutive weeks outside the band.</div>`;
+    } else {
+      action = `<div class="action-box green"><div class="ah">Stable ✓</div>Drift ${drift.toFixed(2)}%/wk is inside the ±${MAINT_DRIFT_BAND_PCT}%/wk maintenance band. Hold course.</div>`;
+    }
+  } else if(mode==='bulk' && rr!=null){
+    // v17 R2: cap-only guardrail — the old 0.25–0.5%/wk "ideal" band contradicted the exit-plan cap.
+    const gain = -rr;
+    if(gain < 0){
+      action = `<div class="action-box yellow"><div class="ah">⚠ Losing — Check Surplus</div>Losing ${Math.abs(gain).toFixed(2)}%/wk in a surplus phase — the surplus is not landing. Add 150–200 kcal/day.</div>`;
+    } else if(gain > SURPLUS_GAIN_CAP_PCT_WK){
+      action = `<div class="action-box red"><div class="ah">⚠ Above Cap — Trim Surplus</div>Gain ${gain.toFixed(2)}%/wk exceeds the ≈${SURPLUS_GAIN_CAP_PCT_WK}%/wk exit-plan cap (≈1 lb/month). Reduce surplus by 100–150 kcal/day.</div>`;
+    } else {
+      action = `<div class="action-box green"><div class="ah">Within Cap ✓</div>Gain ${gain.toFixed(2)}%/wk is at or under the ≈${SURPLUS_GAIN_CAP_PCT_WK}%/wk cap. Hold course.</div>`;
+    }
   }
   document.getElementById('velAction').innerHTML = action;
+}
+
+// v17 F1: surplus gain-cap evaluation — Alex's exit-plan cap (~1 lb/month).
+// v17 R2: the cap IS the bulk guardrail — the legacy 0.25–0.5%/wk "ideal" band
+// was removed for contradicting the cap.
+function checkSurplusCap(rr){
+  if(rr==null || !Number.isFinite(rr)) return {gainPct:null, overCap:false};
+  const gain = -rr;
+  return {gainPct:+gain.toFixed(2), overCap: gain > SURPLUS_GAIN_CAP_PCT_WK};
+}
+
+// ══════════════════════════════════════════
+// WEEKLY TDEE ESTIMATE (v17 F2 — Sunday review)
+// ══════════════════════════════════════════
+// TDEE ≈ avg intake − (weight trend lb/wk × 3500/7).
+// Uses weekly 7-day-average weights and rolling clean weeks.
+// A week is CLEAN when: intake is logged, daysTracked ≥ 5, and the calorie
+// target did not change vs the prior week in the window. Flagged weeks are
+// excluded from the intake average (weight trend still uses their 7-day avg
+// weight, which is reliable regardless of tracking coverage) and are listed
+// with reasons. Confidence band tightens with clean-week count: ±(400/√n).
+const TDEE_WINDOW_WEEKS = 6;
+const TDEE_MIN_CLEAN_WEEKS = 2;
+function calcTDEEEstimate(mode, opts){
+  // v17 R2: mode-local estimate. Uses the trailing run of weeks in `mode`; the
+  // first 2 weeks after a mode change are glycogen/water transition and are
+  // dropped (never mixed into the estimate). Requires ≥2 clean post-transition
+  // weeks. Set opts.wholeHistory to use all same-mode weeks without the
+  // transition drop (cut-phase reference line / settled past phases).
+  mode = mode || (typeof D!=='undefined' && D.mode) || 'cut';
+  opts = opts || {};
+  const saved = (typeof D!=='undefined' && Array.isArray(D.weeks) ? D.weeks : [])
+    .filter(w=>w && w.weight!=null && Number.isFinite(Number(w.calories)))
+    .slice().sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+  if(saved.length < 2) return {available:false, reason:'need ≥2 weeks with weight + logged intake'};
+  let pool, transitionWeeks = [];
+  if(opts.wholeHistory){
+    pool = saved.filter(w=>weekModeOf(w)===mode);
+  } else {
+    const t = modeRunInfo(saved, mode);
+    pool = t.changed ? t.runWeeks.slice(2) : t.runWeeks;
+    if(t.changed) transitionWeeks = t.runWeeks.slice(0,2).map(w=>w.date);
+  }
+  if(pool.length < 2){
+    return {available:false,
+      reason:'need ≥2 post-transition '+mode+' weeks with weight + logged intake (transition weeks excluded)',
+      nClean:0, nWindow:0, flags:[], provisional:true,
+      provisionalReason:'mode run too short — transition weeks excluded ('+transitionWeeks.join(', ')+')',
+      transitionWeeks, mode};
+  }
+  const window = pool.slice(-TDEE_WINDOW_WEEKS);
+  const weeks = window.map((w,i)=>{
+    const prev = i>0 ? window[i-1] : null;
+    const flags = [];
+    const dt = w.daysTracked;
+    // Blank Days Tracked = genuinely not tracked (Alex fills it in weekly) —
+    // the week is correctly excluded from clean weeks. No fallback inference.
+    if(dt==null || dt==='') flags.push('tracked-day coverage unknown');
+    else if(Number(dt) < 5) flags.push('only '+dt+' tracked days');
+    const tgt = parsedTarget(w.calorieTarget);
+    const prevTgt = prev ? parsedTarget(prev.calorieTarget) : null;
+    if(tgt!=null && prevTgt!=null && tgt!==prevTgt) flags.push('calorie target changed '+prevTgt+'→'+tgt);
+    return {week:w, clean: flags.length===0 && tgt!=null, flags, target:tgt};
+  });
+  const cleanWeeks = weeks.filter(x=>x.clean);
+  if(cleanWeeks.length < TDEE_MIN_CLEAN_WEEKS){
+    return {available:false, reason:'only '+cleanWeeks.length+' clean week(s) — need ≥'+TDEE_MIN_CLEAN_WEEKS,
+      nClean:cleanWeeks.length, nWindow:window.length, flags:weeks.filter(x=>!x.clean).map(x=>({date:x.week.date, reasons:x.flags})),
+      provisional:true, provisionalReason:'fewer than '+TDEE_MIN_CLEAN_WEEKS+' clean '+mode+' weeks after transition',
+      transitionWeeks, mode};
+  }
+  // Weight trend: least-squares slope of 7-day-avg weight vs week index (lb/wk).
+  const pts = window.map((w,i)=>({x:i, y:Number(w.weight)}));
+  const n = pts.length;
+  const mx = pts.reduce((s,p)=>s+p.x,0)/n, my = pts.reduce((s,p)=>s+p.y,0)/n;
+  const denom = pts.reduce((s,p)=>s+(p.x-mx)*(p.x-mx),0);
+  const slope = denom!==0 ? pts.reduce((s,p)=>s+(p.x-mx)*(p.y-my),0)/denom : 0;
+  const avgIntake = cleanWeeks.reduce((s,x)=>s+Number(x.week.calories),0)/cleanWeeks.length;
+  const tdee = Math.round(avgIntake - slope*500); // 3500/7 = 500 kcal per lb/wk
+  const band = Math.round(400/Math.sqrt(cleanWeeks.length));
+  const flagged = weeks.filter(x=>!x.clean).map(x=>({date:x.week.date, reasons:x.flags}));
+  // Provisional until 4+ clean mode-local weeks; the reason names the included
+  // weeks and the excluded transition weeks explicitly.
+  const provisional = cleanWeeks.length < 4;
+  const provisionalReason = provisional
+    ? 'early '+mode+' reading — '+cleanWeeks.length+' clean week(s) ('+cleanWeeks.map(x=>x.week.date).join(', ')+')'
+      + (transitionWeeks.length ? '; transition weeks excluded ('+transitionWeeks.join(', ')+')' : '')
+      + '; band ±'+band+' is wide until 4+ clean weeks'
+    : null;
+  const confidence = (cleanWeeks.length>=4 && flagged.length===0) ? 'HIGH'
+    : (cleanWeeks.length>=3) ? 'MEDIUM' : 'LOW';
+  return {
+    available:true, tdee, band, nClean:cleanWeeks.length, nWindow:window.length,
+    slopeLbPerWk:+slope.toFixed(3), avgIntake:Math.round(avgIntake),
+    windowStart:window[0].date, windowEnd:window[window.length-1].date,
+    cleanDates: cleanWeeks.map(x=>x.week.date),
+    flagged, modes:[mode], provisional, provisionalReason, confidence,
+    transitionWeeks, mode
+  };
+}
+
+function renderTDEE(){
+  const card = document.getElementById('tdeeCard');
+  const body = document.getElementById('tdeeBody');
+  if(!card || !body) return;
+  if(!(D.weeks||[]).length){ card.style.display='none'; return; }
+  card.style.display = 'block';
+  const mode = (typeof D!=='undefined' && D.mode) || 'cut';
+  const e = calcTDEEEstimate(mode);
+  if(!e.available){
+    body.innerHTML = '<div style="font-size:11px;color:var(--mu)">Not enough clean data yet — '+e.reason+'.</div>';
+    return;
+  }
+  const flagHtml = e.flagged.length
+    ? '<div style="font-size:10px;color:var(--mu);margin-top:8px">Flagged weeks (excluded from intake avg):<ul style="margin:4px 0 0 14px;line-height:1.7">'
+      + e.flagged.map(f=>'<li>'+f.date+': '+f.reasons.join('; ')+'</li>').join('') + '</ul></div>'
+    : '<div style="font-size:10px;color:var(--g);margin-top:8px">✓ All '+e.nWindow+' weeks in the window are clean.</div>';
+  const provHtml = e.provisional
+    ? '<div class="action-box yellow" style="margin-top:8px"><div class="ah">Provisional</div><div style="font-size:10px">'+e.provisionalReason+'. Treat this estimate as a bridge reading, not a settled maintenance number.</div></div>'
+    : '';
+  const confCol = e.confidence==='HIGH'?'var(--g)':e.confidence==='MEDIUM'?'var(--a)':'var(--a3)';
+  // v17 R2: in maintenance, keep the cut-phase estimate as a separate labeled reference line.
+  let cutRefHtml = '';
+  if(mode==='maint'){
+    const c = calcTDEEEstimate('cut', {wholeHistory:true});
+    if(c.available){
+      cutRefHtml = '<div style="font-size:10px;color:var(--mu);margin-top:8px;line-height:1.7">Cut-phase TDEE (reference): <strong>'
+        + c.tdee.toLocaleString() + ' ±' + c.band + '</strong> kcal/day [' + c.confidence + ', ' + c.nClean + ' clean wks]</div>';
+    }
+  }
+  body.innerHTML =
+    '<div class="sg" style="gap:6px">'
+    + '<div class="sb"><div class="sv" style="font-size:18px">'+e.tdee.toLocaleString()+'</div><div class="sl">Est. TDEE kcal/day</div></div>'
+    + '<div class="sb"><div class="sv" style="font-size:18px">±'+e.band+'</div><div class="sl">Confidence band</div></div>'
+    + '<div class="sb"><div class="sv" style="font-size:18px;color:'+confCol+'">'+e.confidence+'</div><div class="sl">'+e.nClean+' clean / '+e.nWindow+' wks</div></div>'
+    + '</div>'
+    + '<div style="font-size:10px;color:var(--mu);margin-top:8px;line-height:1.7">Window '+e.windowStart+' → '+e.windowEnd
+    + ' · trend '+(e.slopeLbPerWk<=0?'−':'+')+Math.abs(e.slopeLbPerWk).toFixed(2)+' lb/wk · avg clean intake '+e.avgIntake.toLocaleString()+' kcal</div>'
+    + flagHtml + provHtml + cutRefHtml;
+}
+
+// ══════════════════════════════════════════
+// BODY-COMPOSITION LOG (v17 F3)
+// ══════════════════════════════════════════
+// Dated entries persisted in D and backups (not weekly).
+// dexa:    {id,type:'dexa',date,bfPct,fatMassLb,leanMassLb,boneMassLb?,notes?}
+// caliper: {id,type:'caliper',date,chest:[..],abdomen:[..],thigh:[..],
+//           chestAvg,abdomenAvg,thighAvg,siteSum,notes?}
+// Caliper readings are stored averaged per site; siteSum = Σ site avgs (mm).
+function sanitizeBodyCompEntry(e){
+  if(!e || typeof e!=='object') return null;
+  const type = e.type==='caliper' ? 'caliper' : 'dexa';
+  const date = String(e.date||'').slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const num = x => { const n=Number(x); return Number.isFinite(n)?n:null; };
+  const id = String(e.id || ('bc'+Date.now().toString(36)+Math.floor(Math.random()*1e4)));
+  if(type==='dexa'){
+    const bfPct=num(e.bfPct), fat=num(e.fatMassLb), lean=num(e.leanMassLb);
+    if(bfPct==null && fat==null && lean==null) return null;
+    return {id, type, date, bfPct, fatMassLb:fat, leanMassLb:lean,
+      boneMassLb:num(e.boneMassLb), notes:String(e.notes||'').slice(0,500)};
+  }
+  const site = arr => Array.isArray(arr) ? arr.map(num).filter(x=>x!=null).slice(0,3) : [];
+  const chest=site(e.chest), abdomen=site(e.abdomen), thigh=site(e.thigh);
+  if(!chest.length && !abdomen.length && !thigh.length) return null;
+  const avg = a => a.length ? +(a.reduce((s,x)=>s+x,0)/a.length).toFixed(1) : null;
+  const cAvg=avg(chest), aAvg=avg(abdomen), tAvg=avg(thigh);
+  const siteSum = (cAvg!=null&&aAvg!=null&&tAvg!=null) ? +(cAvg+aAvg+tAvg).toFixed(1) : null;
+  return {id, type, date, chest, abdomen, thigh,
+    chestAvg:cAvg, abdomenAvg:aAvg, thighAvg:tAvg, siteSum, notes:String(e.notes||'').slice(0,500)};
+}
+function getBodyComp(){
+  const arr = (typeof D!=='undefined' && Array.isArray(D.bodyComp)) ? D.bodyComp : [];
+  return arr.map(sanitizeBodyCompEntry).filter(Boolean)
+    .sort((a,b)=>a.date.localeCompare(b.date));
+}
+function toggleBcFields(){
+  const t = v('bcType');
+  document.getElementById('bcDexaFields').style.display = t==='dexa' ? 'block' : 'none';
+  document.getElementById('bcCaliperFields').style.display = t==='caliper' ? 'block' : 'none';
+}
+function addBodyComp(){
+  const type = v('bcType') || 'dexa';
+  const date = v('bcDate');
+  if(!date){ toast('Pick a date'); return; }
+  let entry;
+  if(type==='dexa'){
+    entry = sanitizeBodyCompEntry({type, date,
+      bfPct:nv('bcBf'), fatMassLb:nv('bcFat'), leanMassLb:nv('bcLean'),
+      boneMassLb:nv('bcBone'), notes:v('bcNotes')});
+  } else {
+    entry = sanitizeBodyCompEntry({type, date,
+      chest:[nv('bcCh1'),nv('bcCh2'),nv('bcCh3')],
+      abdomen:[nv('bcAb1'),nv('bcAb2'),nv('bcAb3')],
+      thigh:[nv('bcTh1'),nv('bcTh2'),nv('bcTh3')],
+      notes:v('bcCalNotes')});
+  }
+  if(!entry){ toast('Enter at least one measurement'); return; }
+  if(!Array.isArray(D.bodyComp)) D.bodyComp = [];
+  D.bodyComp.push(entry);
+  save(); renderBodyComp();
+  toast('Body-comp entry added ✓');
+}
+function delBodyComp(id){
+  if(!Array.isArray(D.bodyComp)) return;
+  D.bodyComp = D.bodyComp.filter(e=>e && e.id!==id);
+  save(); renderBodyComp();
+}
+function renderBodyComp(){
+  const list = document.getElementById('bcList');
+  const trend = document.getElementById('bcTrend');
+  if(!list) return;
+  const all = getBodyComp();
+  if(!all.length){
+    list.innerHTML = '<div class="empty"><div class="empty-icon">📏</div>No body-comp entries yet.</div>';
+    if(trend) trend.innerHTML = '';
+    return;
+  }
+  list.innerHTML = all.slice().reverse().map(e=>{
+    const del = '<button class="btn" style="padding:2px 8px;font-size:10px" onclick="delBodyComp(\''+e.id+'\')">✕</button>';
+    if(e.type==='dexa'){
+      return '<div style="background:var(--s2);border-radius:8px;padding:9px 12px;margin-bottom:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center">'
+        + '<div>⚓ <strong>DEXA</strong> · '+e.date+' — '+(e.bfPct!=null?e.bfPct+'% BF':'')
+        + (e.fatMassLb!=null?' · '+e.fatMassLb+' lb fat':'')+(e.leanMassLb!=null?' · '+e.leanMassLb+' lb lean':'')
+        + (e.notes?' <span style="color:var(--mu)">('+e.notes+')</span>':'')
+        + '<div style="font-size:9px;color:var(--mu)">calibration anchor — compare against waist/weight trend</div></div>'
+        + del + '</div>';
+    }
+    return '<div style="background:var(--s2);border-radius:8px;padding:9px 12px;margin-bottom:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center">'
+      + '<div>📏 <strong>Calipers</strong> · '+e.date+' — chest '+(e.chestAvg??'—')+' · abdomen '+(e.abdomenAvg??'—')+' · thigh '+(e.thighAvg??'—')+' mm'
+      + (e.siteSum!=null?' · <strong>Σ '+e.siteSum+' mm</strong>':'')
+      + (e.notes?' <span style="color:var(--mu)">('+e.notes+')</span>':'')+'</div>'
+      + del + '</div>';
+  }).join('');
+  // Caliper Σ trend (3-site sum over time)
+  const cals = all.filter(e=>e.type==='caliper' && e.siteSum!=null);
+  if(trend){
+    trend.innerHTML = cals.length>=2
+      ? '<div style="font-size:9px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Caliper Σ trend (mm)</div>'
+        + '<div style="font-size:11px;line-height:2">'
+        + cals.map((e,i)=>{
+            const prev = i>0 ? cals[i-1] : null;
+            const d = prev ? (e.siteSum - prev.siteSum) : null;
+            const dStr = d==null ? '' : ' <span style="color:'+(d<0?'var(--g)':d>0?'var(--a3)':'var(--mu)')+'">('+(d<=0?'':'+')+d.toFixed(1)+')</span>';
+            return e.date+': <strong>'+e.siteSum+'</strong>'+dStr;
+          }).join('<br>') + '</div>'
+      : cals.length===1 ? '<div style="font-size:10px;color:var(--mu)">One caliper entry — trend appears after the second.</div>' : '';
+  }
+}
+
+// ══════════════════════════════════════════
+// MAINTENANCE TARGETS (v17 F1)
+// ══════════════════════════════════════════
+function renderMaintTargets(){
+  const mt = getMaintTargets();
+  sv('mtKcal', mt.kcal); sv('mtProt', mt.protein); sv('mtFat', mt.fat);
+  sv('mtCarbs', mt.carbs); sv('mtStep', mt.stepEq);
+}
+function deriveMaintCarbs(){
+  const kcal=nv('mtKcal')||0, p=nv('mtProt')||0, f=nv('mtFat')||0;
+  const c=Math.round((kcal - p*4 - f*9)/4);
+  if(c>0){ sv('mtCarbs', c); toast('Carbs re-derived: '+c+'g'); }
+  else toast('Check kcal/protein/fat — derived carbs ≤ 0');
+}
+function saveMaintTargets(){
+  D.maintTargets = {kcal:nv('mtKcal')||2500, protein:nv('mtProt')||175, fat:nv('mtFat')||60,
+    carbs:nv('mtCarbs')||315, stepEq:nv('mtStep')||15000};
+  save(); renderMaintTargets();
+  toast('Maintenance targets saved ✓');
 }
 
 // ══════════════════════════════════════════
@@ -4587,15 +5560,20 @@ function updProteinDynamic(){
   const protInEl = document.getElementById('protTgt');
   const wrap = document.getElementById('protDynWrap');
   if(!bw){ wrap.style.display='none'; return; }
-  const autoTgt = Math.round(bw); // 1g per lb
+  // v17 R2b: auto target follows the phase rule — cut 1g/lb (existing), maint 0.8g/lb (dynamic equation)
+  const pdMode = (typeof D!=='undefined' && D.mode) || 'cut';
+  const ppl = proteinPerLb(pdMode);
+  const autoTgt = Math.round(bw*ppl); // g per lb of bodyweight
+  protInEl.title = 'Auto: '+ppl+'g × current bodyweight ('+proteinRuleLabel(pdMode)+')';
   sv('protTgt', autoTgt);
   // Show g/lb stat
   const prot = nv('prot');
   wrap.style.display = 'block';
-  if(!prot){ wrap.innerHTML = `<div style="font-size:10px;color:var(--mu)">Protein target auto-set to <strong style="color:var(--a2)">${autoTgt}g</strong> (1g × ${bw} lbs bodyweight). Enter protein intake above.</div>`; return; }
+  const phaseWord = pdMode==='cut' ? 'cut' : pdMode==='maint' ? 'maintenance' : 'surplus';
+  if(!prot){ wrap.innerHTML = `<div style="font-size:10px;color:var(--mu)">Protein target auto-set to <strong style="color:var(--a2)">${autoTgt}g</strong> (${ppl}g × ${bw} lbs bodyweight). Enter protein intake above.</div>`; return; }
   const gPerLb = prot / bw;
-  const gCol = gPerLb >= 0.9 ? 'var(--g)' : gPerLb >= 0.8 ? 'var(--a)' : 'var(--a3)';
-  const gFlag = gPerLb < 0.9 ? ' ⚠ Below 0.9g/lb — muscle retention at risk during cut' : ' ✓ Adequate for cut';
+  const gCol = gPerLb >= 0.9*ppl ? 'var(--g)' : gPerLb >= 0.8*ppl ? 'var(--a)' : 'var(--a3)';
+  const gFlag = gPerLb < 0.9*ppl ? ' ⚠ Below '+(0.9*ppl).toFixed(2)+'g/lb — muscle retention at risk during '+phaseWord : ' ✓ Adequate for '+phaseWord;
   wrap.innerHTML = `<div style="font-size:10px;padding:8px 12px;background:var(--s2);border-radius:7px">
     <span style="color:var(--mu)">Protein/lb: </span><strong style="color:${gCol}">${gPerLb.toFixed(2)} g/lb</strong>
     <span style="color:${gPerLb<0.9?'var(--a)':'var(--mu)'}"> ${gFlag}</span>
@@ -4717,12 +5695,15 @@ function updWTWR(){
   if(!field||!val) return;
   if(wt&&waist){
     field.style.display='block';
-    const ratio = (waist/wt).toFixed(4);
+    // F5: current waist adjusted by the loaded week's own date, so editing a
+    // pre-break week stays comparable with the offset-adjusted prev week.
+    const waistAdj = adjWaist(waist, v('wDate'));
+    const ratio = (waistAdj/wt).toFixed(4);
     val.textContent = ratio;
     // Compare to most recent saved week
     const prev = D.weeks.filter(w=>w.weight&&w.waist).slice(-1)[0];
     if(prev){
-      const prevRatio = prev.waist/prev.weight;
+      const prevRatio = adjWaist(prev.waist, prev.date)/prev.weight; // F5 offset-adjusted
       const delta = (ratio - prevRatio);
       const sign = delta>0?'+':'';
       const col = delta<0?'var(--g)':delta>0?'var(--a3)':'var(--mu)';
@@ -4750,7 +5731,7 @@ function renderRunway(){
   const cw = latest.weight;
   if(!cw){ card.style.display='none'; return; }
 
-  const cv = calcCutVelocity(cw, saved.slice(0,-1));
+  const cv = calcCutVelocity(cw, saved.slice(0,-1), mode);
   const rr = cv.rollingRate; // positive = loss, negative = gain
 
   card.style.display='block';
@@ -4914,7 +5895,8 @@ function getMuscleVolumeForWeek(muscle, weekKey){
     if(wk!==weekKey) return;
     Object.entries(ses.ts).forEach(([ex,ts])=>{
       const effMap2 = getEffectiveMuscleMap();
-      const groups = effMap2[ex];
+      // R3: canonicalize before lookup (see renderMuscleChart).
+      const groups = effMap2[ex] || effMap2[canonicalize(ex)];
       if(groups&&groups.includes(muscle)) vol += (ts.w||0)*(ts.r||0);
     });
   });
@@ -5045,18 +6027,21 @@ function renderMetaPanel(){
   const phaseWks = getWeeksInCurrentPhase();
   const stallConf = calcStallConfidence(phaseWks, recBase, adhConf);
   const stallGated = phaseWks < 4;
+  // v17 F1: stall confidence is a cut concept — label it OFF outside cut.
+  const stallEngineOff = weekMode !== 'cut';
 
   const confBadge = c => `<span class="conf-badge conf-${c}">${c}</span>`;
 
   panel.innerHTML = `
     <div class="meta-block">
       <div class="meta-row"><span>Mode (this week)</span><span><strong>${weekMode.toUpperCase()}</strong>${latest.transition&&latest.transition!=='none'?' → '+latest.transition:''}</span></div>
-      <div class="meta-row"><span>Weeks in phase</span><span><strong>${phaseWks}</strong>${stallGated?' <em style="color:var(--a);font-size:9px">— stall engine inactive</em>':''}</span></div>
-      <div class="meta-row"><span>Stall confidence</span><span>${confBadge(stallConf)} ${stallGated?'<em style="font-size:9px;color:var(--mu)">need ≥4 wks</em>':''}</span></div>
+      <div class="meta-row"><span>Weeks in diet phase (not training block)</span><span><strong>${phaseWks}</strong>${stallGated?' <em style="color:var(--a);font-size:9px">— stall engine inactive</em>':''}</span></div>
+      <div class="meta-row"><span>Stall confidence</span><span>${stallEngineOff?'<em style="font-size:9px;color:var(--mu)">OFF — '+weekMode+' phase</em>':confBadge(stallConf)+' '+(stallGated?'<em style="font-size:9px;color:var(--mu)">need ≥4 wks</em>':'')}</span></div>
       <div class="meta-row"><span>Recovery baseline</span><span>${recBase.label} ${confBadge(recBase.conf)}</span></div>
       <div class="meta-row"><span>Adherence confidence</span><span>${adhConf.label} ${confBadge(adhConf.conf)}</span></div>
     </div>
-    ${stallGated?'<div class="phase-gate-note">⏳ Stall engine inactive — need ≥4 weeks in current phase for reliable weekly-only data. Velocity shown for reference only.</div>':''}
+    ${stallEngineOff?'<div class="phase-gate-note">⏸ Stall engine OFF — '+weekMode+' phase. Cut stall/diet-break logic disabled; drift/gain bands apply instead.</div>':''}
+    ${!stallEngineOff&&stallGated?'<div class="phase-gate-note">⏳ Stall engine inactive — need ≥4 weeks in current phase for reliable weekly-only data. Velocity shown for reference only.</div>':''}
     ${recBase.suppressed?'<div class="phase-gate-note">⚠ Recovery baseline LOW — fewer than 3 eligible weeks. HRV/RHR flags labeled LOW confidence.</div>':''}
     ${adhConf.low?'<div class="phase-gate-note">⚠ Low tracking days this week — adherence-based adjustments suppressed. Improve consistency before adjusting targets.</div>':''}`;
 }
@@ -5107,6 +6092,10 @@ function renderNextWeekTargets(){
   if(!nwt){ card.style.display='none'; return; }
 
   card.style.display = 'block';
+  // v17 R2b: protein rule label follows the active phase (cut 1g/lb, maint 0.8g/lb);
+  // same mode resolution as calcNextWeekTargets (latest week, then D.mode)
+  const nwtMode = (saved[saved.length-1].mode || (typeof D!=='undefined' && D.mode)) || 'cut';
+  const nwtRuleTxt = nwtMode==='maint' ? '0.8g/lb' : '1g/lb';
 
   const holdCls = (val, base) => val === base ? 'hold' : '';
   const fmt = v => v != null ? Math.round(v).toLocaleString() : '—';
@@ -5123,7 +6112,7 @@ function renderNextWeekTargets(){
       </div>
       <div class="nwt-row">
         <span class="nwt-label">Protein</span>
-        <span class="nwt-val">${fmt(nwt.protein)}g/day <span style="font-size:9px;color:var(--mu);font-weight:400">(${saved[saved.length-1].weight ? Math.round(saved[saved.length-1].weight)+' lbs × 1g/lb' : '1g/lb rule'})</span></span>
+        <span class="nwt-val">${fmt(nwt.protein)}g/day <span style="font-size:9px;color:var(--mu);font-weight:400">(${saved[saved.length-1].weight ? Math.round(saved[saved.length-1].weight)+' lbs × '+nwtRuleTxt : proteinRuleLabel(nwtMode)})</span></span>
       </div>
       <div class="nwt-row">
         <span class="nwt-label">Step-equivalents</span>
@@ -5138,7 +6127,7 @@ function renderNextWeekTargets(){
       ? '<div class="nwt-suppressed">⚠ Suppressed week — targets held. Would have triggered: ' + (nwt.wouldHaveRule||'—') + '</div>'
       : '<div class="nwt-rationale">↗ ' + nwt.rationale + '</div>'}
     ${nwt.complianceMode
-      ? '<div class="nwt-suppressed" style="border-color:var(--a2);background:rgba(71,184,255,.06);color:var(--a2)">📋 Compliance goal this week: log ≥5 days + hit ' + Math.round(nwt.protein) + 'g protein/day <span style="opacity:.7">(1g/lb rule)</span></div>'
+      ? '<div class="nwt-suppressed" style="border-color:var(--a2);background:rgba(71,184,255,.06);color:var(--a2)">📋 Compliance goal this week: log ≥5 days + hit ' + Math.round(nwt.protein) + 'g protein/day <span style="opacity:.7">('+proteinRuleLabel(nwtMode)+')</span></div>'
       : ''}
     <div style="font-size:9px;color:var(--mu);margin-top:6px">[Inference] Based on this week\'s computed outputs. Adjust if circumstances change.</div>`;
 }
@@ -5191,7 +6180,7 @@ function getRunwayProjectionDate(targetWeight){
   if(!saved.length || !targetWeight) return null;
   const latest = saved[saved.length-1];
   const cw = latest.weight;
-  const cv = calcCutVelocity(cw, saved.slice(0,-1));
+  const cv = calcCutVelocity(cw, saved.slice(0,-1), (typeof D!=='undefined' && D.mode) || 'cut');
   const rr = cv.rollingRate;
   if(rr==null || rr<=0 || targetWeight>=cw) return null;
   const weeklyLbs = cw*(rr/100);
@@ -5379,16 +6368,24 @@ function renderDecisionLadder(){
   const neat = calcNEAT(stp, bike);
   const stpOk = neat.totalEq >= stpTgt - 1000;
   const bikeKcalDay = neat.bikeKcal;
-  const protTgt = bw ? Math.round(bw) : null;
-  const protOk = prot && protTgt && (prot/bw) >= 0.9;
+  const protPerLb = proteinPerLb(mode);
+  const protTgt = bw ? Math.round(bw*protPerLb) : null;
+  const protOk = prot && protTgt && (prot/bw) >= 0.9*protPerLb;
 
   // Recovery uses calcRecoveryStatus
   const rs = calcRecoveryStatus({savedWeeks: ctx.priorWeeks});
   const recOk = !rs.watchActive;
 
-  // Velocity + stall use precise engine
-  const cv = calcCutVelocity(bw||0, ctx.priorWeeks);
-  const st = calcStallStatus(cv, latest.waist, ctx.weeksThroughAnchor, {anchorDate: ctx.anchorDate});
+  // Velocity + stall use precise engine (v17 R2: pass mode — velocity is mode-local)
+  const cv = calcCutVelocity(bw||0, ctx.priorWeeks, mode);
+  const st = calcStallStatus(cv, latest.waist, ctx.weeksThroughAnchor, {anchorDate: ctx.anchorDate, mode:mode});
+  // v17 R2: surplus rung 5 keys off the exit-plan cap only (no legacy bands)
+  const capLadder = mode==='bulk' ? checkSurplusCap(cv.rollingRate) : null;
+
+  // v17 R2: drift/cap state for the ladder rungs (cut keeps the stall engine)
+  const driftTrigLadder = mode==='maint' && cv.rollingRate!=null
+    ? evalMaintDriftTrigger(cv.rollingRate, priorWeekRollingRate(ctx.priorWeeks, mode)) : null;
+  const gainPctLadder = mode==='bulk' && cv.rollingRate!=null ? -cv.rollingRate : null;
 
   const rungs = [
     {
@@ -5404,8 +6401,8 @@ function renderDecisionLadder(){
       status:'Protocol: add bike → hold steps → no walking through pain'
     },
     {
-      n:'2', title:'Protein ≥1g/lb bodyweight',
-      sub:'Current: '+(prot?prot+'g':'—')+' · Target: '+(protTgt?protTgt+'g':'set bodyweight')+' · Under-eating protein = muscle loss, not fat loss.',
+      n:'2', title: mode==='maint' ? 'Protein ≥0.8g/lb bodyweight' : 'Protein ≥1g/lb bodyweight',
+      sub:'Current: '+(prot?prot+'g':'—')+' · Target: '+(protTgt?protTgt+'g ('+proteinRuleLabel(mode)+')':'set bodyweight')+' · Under-eating protein = muscle loss, not fat loss.',
       ok: protOk,
       status: prot&&bw ? (prot/bw).toFixed(2)+' g/lb '+(protOk?'✓':'— increase protein') : 'No data'
     },
@@ -5416,16 +6413,44 @@ function renderDecisionLadder(){
       status: recOk ? '✓ Recovery OK' : rs.statusLabel+' — calorie reduction blocked'
     },
     {
-      n:'4', title:'Velocity stalled? Check strict criteria',
-      sub:'Rolling rate: '+(cv.rollingRate!=null?(Math.abs(cv.rollingRate).toFixed(2)+'%/wk'):'—')+' '+mcfg.rateLabel+' · '+mcfg.targetGuidance+' · Decision engine uses strict criteria — see Action Summary card.',
-      ok: !st.twoConsecSlow || st.stalled || !recOk,
-      status: st.stalled ? '⚠ Stalled — all conditions met, proceed to ladder' : st.twoConsecSlow ? 'Slow — '+(st.stallReasons.length)+' condition(s) not met yet' : (cv.rollingRate!=null&&cv.rollingRate<0.5?'Slow — 1 week, monitor':'Velocity OK — hold course')
+      n:'4',
+      title: mode==='cut' ? 'Velocity stalled? Check strict criteria'
+        : mode==='maint' ? 'Drift check: 2 consecutive weeks outside the band?'
+        : 'Gain rate: under the exit-plan cap?',
+      sub: mode==='maint'
+        ? 'Rolling drift: '+(cv.rollingRate!=null?(Math.abs(cv.rollingRate).toFixed(2)+'%/wk'):'—')+' '+mcfg.rateLabel+' · '+mcfg.targetGuidance+' · Action only after 2 consecutive weeks outside the band.'
+        : mode==='bulk'
+        ? 'Rolling gain: '+(gainPctLadder!=null?(gainPctLadder.toFixed(2)+'%/wk'):'—')+' · '+mcfg.targetGuidance
+        : 'Rolling rate: '+(cv.rollingRate!=null?(Math.abs(cv.rollingRate).toFixed(2)+'%/wk'):'—')+' '+mcfg.rateLabel+' · '+mcfg.targetGuidance+' · Decision engine uses strict criteria — see Action Summary card.',
+      ok: mode==='cut' ? (!st.twoConsecSlow || st.stalled || !recOk)
+        : mode==='maint' ? (cv.rollingRate==null || !driftTrigLadder.trigger)
+        : !!(capLadder && capLadder.gainPct!=null && !capLadder.overCap),
+      status: mode==='cut'
+        ? (st.stalled ? '⚠ Stalled — all conditions met, proceed to ladder' : st.twoConsecSlow ? 'Slow — '+(st.stallReasons.length)+' condition(s) not met yet' : (cv.rollingRate!=null&&cv.rollingRate<0.5?'Slow — 1 week, monitor':'Velocity OK — hold course'))
+        : mode==='maint'
+        ? (cv.rollingRate==null ? 'Insufficient rolling data'
+          : driftTrigLadder.trigger ? '⚠ Drift — 2 consecutive weeks outside band, adjust ±100 kcal/day'
+          : driftTrigLadder.curOut ? 'Drift watch — 1st week outside band, no action yet'
+          : 'Stable ✓ — inside ±0.25%/wk band')
+        : (capLadder && capLadder.gainPct!=null
+          ? (capLadder.overCap ? '⚠ Above cap — trim surplus 100–150 kcal/day' : 'Within cap ✓ — hold course')
+          : 'Insufficient rolling data')
     },
     {
-      n:'5', title: mode==='cut'?'Calories last — only after rungs 1–4 clear': mode==='bulk'?'Calories: adjust ±100–200 kcal if rate off target':'Calories: adjust ±100 kcal if drift exceeds ±0.25%/wk',
-      sub: mode==='cut'?'Drop −100 to −150 kcal/day. Hold 10–14 days. Reassess rolling average. Do not reduce during recovery watch/intervention.':mode==='bulk'?'Add +150–200 kcal/day (carbs+fats) if gaining too slowly. Reduce 150–200 kcal if gaining too fast. Reassess in 7–10 days.':'Adjust ±100 kcal/day toward target drift. Hold 10–14 days before next adjustment.',
-      ok: st.stalled && recOk,
-      status: rs.calBlocked ? '🚫 Blocked — recovery intervention active' : st.stalled ? 'Stalled confirmed — drop 100 kcal, reassess in 10–14 days' : 'Hold — stall criteria not met'
+      n:'5', title: mode==='cut'?'Calories last — only after rungs 1–4 clear': mode==='bulk'?'Calories: trim surplus only if above the ≈'+SURPLUS_GAIN_CAP_PCT_WK+'%/wk cap':'Calories: adjust ±100 kcal if drift outside ±0.25%/wk for 2 weeks',
+      sub: mode==='cut'?'Drop −100 to −150 kcal/day. Hold 10–14 days. Reassess rolling average. Do not reduce during recovery watch/intervention.':mode==='bulk'?'Hold intake steady while gain is at or under the ≈'+SURPLUS_GAIN_CAP_PCT_WK+'%/wk exit-plan cap (≈1 lb/month). Reduce 100–150 kcal/day only if gaining above the cap. Reassess in 7–10 days.':'Adjust ±100 kcal/day toward target drift after 2 consecutive weeks outside the band. Hold 10–14 days before next adjustment.',
+      ok: mode==='bulk' ? !!(capLadder && capLadder.gainPct!=null && !capLadder.overCap)
+        : mode==='maint' ? (cv.rollingRate==null || !driftTrigLadder.trigger)
+        : (st.stalled && recOk),
+      status: mode==='bulk'
+        ? (capLadder && capLadder.gainPct!=null
+            ? (capLadder.overCap ? '⚠ Above cap — trim surplus 100–150 kcal/day' : 'Within cap ✓ — hold course')
+            : 'Insufficient rolling data')
+        : mode==='maint'
+        ? (rs.calBlocked ? '🚫 Blocked — recovery intervention active'
+          : (driftTrigLadder && driftTrigLadder.trigger) ? '⚠ Drift confirmed — adjust ±100 kcal/day, reassess in 10–14 days'
+          : 'Hold — drift criteria not met')
+        : (rs.calBlocked ? '🚫 Blocked — recovery intervention active' : st.stalled ? 'Stalled confirmed — drop 100 kcal, reassess in 10–14 days' : 'Hold — stall criteria not met')
     }
   ];
 
@@ -5493,7 +6518,7 @@ function renderSignalsSummary(){
 
   const signals = [];
   // Velocity — 2-week rolling rate
-  const cvSig = calcCutVelocity(latest.weight, saved.slice(0,-1));
+  const cvSig = calcCutVelocity(latest.weight, saved.slice(0,-1), (typeof D!=='undefined' && D.mode) || 'cut');
   const rr = cvSig.rollingRate;
   if(rr!=null){
     if(rr>=0.5&&rr<=1.0) signals.push({icon:'✅',text:`Rolling velocity ideal: −${rr.toFixed(2)}%/wk [2-wk avg]`,col:'var(--g)'});
@@ -5505,10 +6530,12 @@ function renderSignalsSummary(){
     const stSig = cvSig.shortTermRate;
     if(stSig!=null) signals.push({icon:'🟡',text:`Short-term Δ: ${stSig>=0?'−':'+'}${Math.abs(stSig).toFixed(2)}%/wk — direction only (need 4 wks for rolling rate)`,col:'var(--mu)'});
   }
-  // Protein
+  // Protein — v17 R2b: threshold follows the phase rule (cut 1g/lb, maint 0.8g/lb);
+  // flags below 90% of the phase target.
   if(latest.protein && latest.weight){
+    const sigPpl = proteinPerLb((typeof D!=='undefined' && D.mode) || 'cut');
     const gpl = latest.protein/latest.weight;
-    if(gpl<0.9) signals.push({icon:'⚠️',text:`Protein low: ${gpl.toFixed(2)}g/lb — target ≥1g/lb (${Math.round(latest.weight)}g)`,col:'var(--a)'});
+    if(gpl<0.9*sigPpl) signals.push({icon:'⚠️',text:`Protein low: ${gpl.toFixed(2)}g/lb — target ≥${sigPpl}g/lb (${Math.round(latest.weight*sigPpl)}g)`,col:'var(--a)'});
     else signals.push({icon:'✅',text:`Protein adequate: ${gpl.toFixed(2)}g/lb`,col:'var(--g)'});
   }
   // NEAT (steps + bike)
@@ -5534,9 +6561,9 @@ function renderSignalsSummary(){
       signals.push({icon:'✅',text:`HRV stable: ${latest.hrv} ms`,col:'var(--g)'});
   }
 
-  // Feature 2: W:W ratio signal
-  const wtwrLatest = (latest.weight&&latest.waist) ? latest.waist/latest.weight : null;
-  const wtwrPrev   = (prev.weight&&prev.waist) ? prev.waist/prev.weight : null;
+  // Feature 2: W:W ratio signal (F5: offset-adjusted waists, each by its own date)
+  const wtwrLatest = (latest.weight&&latest.waist) ? adjWaist(latest.waist,latest.date)/latest.weight : null;
+  const wtwrPrev   = (prev.weight&&prev.waist) ? adjWaist(prev.waist,prev.date)/prev.weight : null;
   if(wtwrLatest!=null){
     const delta = wtwrPrev!=null ? wtwrLatest-wtwrPrev : null;
     const mode  = D.mode||'cut';
@@ -5588,7 +6615,7 @@ function loadWeek(date, opts={}){
   } else {
     document.getElementById('photoPreview').style.display='none';
   }
-  window._importedSessions = null; window._pendingPhoto = null; updLoss();updVelocity();updProteinDynamic();updStepLever();chkRec();chkRecGate();updPG();updBodyDeltas(); applyModeUI();
+  window._importedSessions = null; window._importedLiftSrc = null; window._pendingPhoto = null; updLoss();updVelocity();updProteinDynamic();updStepLever();chkRec();chkRecGate();updPG();updBodyDeltas(); applyModeUI();
   markDirty(['summary','history','analytics']);
   renderApp('log');
   showSec('log',document.querySelector('.nt'));
@@ -5598,6 +6625,18 @@ function loadWeek(date, opts={}){
 }
 
 window.__selfTest = function __selfTest() {
+  // Top-level copy of the [Rule 8] safe-delta helper (also defined inside the
+  // export builder). The in-page self-test references delt() directly; without
+  // this hoisted copy it threw "delt is not defined" (pre-existing in v15).
+  // Pure function — the inner definition shadows this one where both exist,
+  // so app behavior is unchanged.
+  function delt(cur, prevWeek, prv, dec, unit){
+    if(prevWeek == null) return '  (n/a — first week)';
+    if(cur == null || prv == null || Number.isNaN(Number(cur)) || Number.isNaN(Number(prv))) return '';
+    const d = +(Number(cur)-Number(prv)).toFixed(dec);
+    const sign = d > 0 ? '+' : '';
+    return '  (Δ '+sign+d+(unit||'')+')';
+  }
   const out = { pass: true, checks: [] };
   const add = (ok, name, detail='') => {
     out.checks.push({ ok, name, detail });
@@ -5717,12 +6756,15 @@ window.__selfTest = function __selfTest() {
   add(calcAdherenceConfidence({}).conf === 'NONE', 'AdhConf: missing = NONE');
 
   // Group 6: MODE_CONFIG validation
+  // (v17: bulk/surplus uses the exit-plan cap as both target ceiling and max —
+  // maxRate === rateTargetHigh === 0.15 %BW/wk there, not a band above it)
   ['cut','maint','bulk'].forEach(m => {
     const cfg = MODE_CONFIG[m];
     add(cfg && typeof cfg === 'object', 'MODE_CONFIG: ' + m + ' exists');
     add(typeof cfg.rateTargetLow === 'number', 'MODE_CONFIG: ' + m + '.rateTargetLow is number');
     add(typeof cfg.maxRate === 'number', 'MODE_CONFIG: ' + m + '.maxRate is number');
-    add(cfg.maxRate > cfg.rateTargetHigh, 'MODE_CONFIG: ' + m + '.maxRate > rateTargetHigh');
+    add(m==='bulk' ? cfg.maxRate === SURPLUS_GAIN_CAP_PCT_WK : cfg.maxRate >= cfg.rateTargetHigh,
+      'MODE_CONFIG: ' + m + (m==='bulk' ? '.maxRate equals the surplus cap' : '.maxRate >= rateTargetHigh'));
   });
 
   // Group 7: canonical exercise map
@@ -5737,6 +6779,9 @@ window.__selfTest = function __selfTest() {
 
 
   // Group 8: regression coverage — waist/stall calibration
+  // 8a: 4-week fixture — the waist veto is UNAVAILABLE with fewer than 5 contiguous
+  // same-baseline weeks (documented engine behavior: waistFlat is null, not false).
+  // With the veto unavailable, a slow + adherent week reads as stalled.
   const regWeeks = [
     {date:'2026-04-26', mode:'cut', weight:186.0, waist:33.60, calories:2200, calorieTarget:2300, protein:186, steps:10500, bikeMin:10, stepTarget:10000, daysTracked:7},
     {date:'2026-05-03', mode:'cut', weight:185.3, waist:33.00, calories:2210, calorieTarget:2300, protein:185, steps:10400, bikeMin:12, stepTarget:10000, daysTracked:7},
@@ -5745,15 +6790,208 @@ window.__selfTest = function __selfTest() {
   ];
   const regCV = calcCutVelocity(regWeeks[3].weight, regWeeks.slice(0,3));
   const regSt = calcStallStatus(regCV, regWeeks[3].waist, regWeeks, {anchorDate:'2026-05-17', useLiveInputs:false});
-  const regRec = calcRecoveryBaselineConfidence(regWeeks, 3);
-  const regAdh = calcAdherenceConfidence(regWeeks[3]);
-  const regConf = calcStallConfidence(4, regRec, regAdh);
-  const regConfLabel = formatStallConfidenceLabel(regConf, regSt.stalled);
-  add(regSt.stalled === false, 'Regression: clean cut week not stalled');
-  add(/no stall detected/i.test(regConfLabel), 'Regression: stall_confidence label is context-aware when not stalled');
-  add(regSt.waistFlat === false, 'Regression: waistFlat false when 3-week trend delta is material');
-  const regWaistDelta = regWeeks[3].waist - regWeeks[2].waist;
+  add(regSt.waistFlat === null, 'Regression: waistFlat null (veto unavailable) with <5 waist weeks');
+  add(regSt.stalled === true, 'Regression: slow adherent week stalls when waist veto unavailable');
+  // 8b: 6-week fixture — material waist decline → waistFlat false → blocks the false stall.
+  const regWeeks6 = [
+    {date:'2026-04-19', mode:'cut', weight:187.2, waist:34.10, calories:2200, calorieTarget:2300, protein:187, steps:10500, bikeMin:10, stepTarget:10000, daysTracked:7},
+    {date:'2026-04-26', mode:'cut', weight:186.6, waist:33.80, calories:2200, calorieTarget:2300, protein:187, steps:10500, bikeMin:10, stepTarget:10000, daysTracked:7},
+    {date:'2026-05-03', mode:'cut', weight:186.0, waist:33.60, calories:2210, calorieTarget:2300, protein:186, steps:10400, bikeMin:12, stepTarget:10000, daysTracked:7},
+    {date:'2026-05-10', mode:'cut', weight:185.3, waist:33.00, calories:2190, calorieTarget:2300, protein:185, steps:10600, bikeMin:10, stepTarget:10000, daysTracked:7},
+    {date:'2026-05-17', mode:'cut', weight:184.6, waist:32.79, calories:2200, calorieTarget:2300, protein:185, steps:10800, bikeMin:10, stepTarget:10000, daysTracked:7},
+    {date:'2026-05-24', mode:'cut', weight:183.9, waist:32.38, calories:2200, calorieTarget:2300, protein:184, steps:10800, bikeMin:10, stepTarget:10000, daysTracked:7}
+  ];
+  const regCV6 = calcCutVelocity(regWeeks6[5].weight, regWeeks6.slice(0,5));
+  const regSt6 = calcStallStatus(regCV6, regWeeks6[5].waist, regWeeks6, {anchorDate:'2026-05-24', useLiveInputs:false});
+  add(regSt6.waistFlat === false, 'Regression: waistFlat false when 3-week trend delta is material (5+ weeks)');
+  add(regSt6.stalled === false, 'Regression: material waist decline blocks false stall');
+  const regRec6 = calcRecoveryBaselineConfidence(regWeeks6, 5);
+  const regAdh6 = calcAdherenceConfidence(regWeeks6[5]);
+  const regConf6 = calcStallConfidence(6, regRec6, regAdh6);
+  const regConfLabel6 = formatStallConfidenceLabel(regConf6, regSt6.stalled);
+  add(/no stall detected/i.test(regConfLabel6), 'Regression: stall_confidence label is context-aware when not stalled');
+  const regWaistDelta = regWeeks6[5].waist - regWeeks6[4].waist;
   add(Math.abs(regWaistDelta - (-0.41)) <= 0.05, 'Regression: waist 7-day avg delta matches immediate prior week (±0.05)');
+
+  // Group 8c (v17): waist offset applies only to pre-break history
+  const savedBreak = D.waistBaselineBreakDate, savedOff = D.waistBaselineOffsetIn;
+  try{
+    D.waistBaselineBreakDate = '2026-09-19'; D.waistBaselineOffsetIn = 1.3;
+    add(waistIsPreBreak('2026-09-12') === true, 'v17: 2026-09-12 is pre-break');
+    add(waistIsPreBreak('2026-09-19') === true, 'v17: WE 2026-09-19 stays old baseline (6 days old tape)');
+    add(waistIsPreBreak('2026-09-26') === false, 'v17: WE 2026-09-26 is first new-baseline week');
+    add(adjWaist(28.5,'2026-09-12') === 29.8, 'v17: offset +1.3 applies to pre-break waist');
+    add(adjWaist(28.5,'2026-09-26') === 28.5, 'v17: offset never touches post-break waist');
+    D.waistBaselineOffsetIn = 0;
+    add(adjWaist(28.5,'2026-09-12') === 28.5, 'v17: +0 offset preserves current behavior');
+  } finally {
+    D.waistBaselineBreakDate = savedBreak; D.waistBaselineOffsetIn = savedOff;
+  }
+
+  // Group 8d (v17): phase-aware velocity zones + surplus cap + 2-week drift gate
+  // v17 R2: history weeks must carry the mode stamp — mode-local velocity
+  // ignores weeks from other modes (modeless legacy weeks count as cut).
+  const mW = [{weight:172.0,mode:'maint'},{weight:171.9,mode:'maint'},{weight:171.8,mode:'maint'}];
+  const mCV = calcCutVelocity(171.7, mW, 'maint');
+  add(mCV.zone==='Stable ✓' && mCV.zoneCls==='vel-green', 'v17: maint zone Stable inside ±0.25% band');
+  const mCV2 = calcCutVelocity(170.0, mW, 'maint');
+  add(mCV2.zone==='Drifting' && mCV2.zoneCls==='vel-red', 'v17: maint zone Drifting at 0.31%/wk (zone only — action needs 2 wks)');
+  const mCV3 = calcCutVelocity(168.0, mW, 'maint');
+  add(mCV3.zone==='Drifting' && mCV3.zoneCls==='vel-red', 'v17: maint zone Drifting at 0.6%/wk');
+  const bW = [{weight:170.0,mode:'bulk'},{weight:170.2,mode:'bulk'},{weight:170.4,mode:'bulk'}];
+  const bCV = calcCutVelocity(172.2, bW, 'bulk');
+  add(bCV.zone==='Above cap — trim surplus' && bCV.zoneCls==='vel-red', 'v17: bulk zone Above cap at 0.35%/wk gain');
+  const bCV2 = calcCutVelocity(170.6, bW, 'bulk');
+  add(bCV2.zone==='Within cap ✓' && bCV2.zoneCls==='vel-green', 'v17: bulk zone Within cap at 0.12%/wk gain');
+  const bCV3 = calcCutVelocity(169.5, bW, 'bulk');
+  add(bCV3.zone==='Losing — check surplus' && bCV3.zoneCls==='vel-yellow', 'v17: bulk zone Losing when scale drops');
+  // v17 R2: a 0.4%/wk surplus gain is ALWAYS above the cap — never "ideal/hold"
+  const bCV4 = calcCutVelocity(172.72, [{weight:170,mode:'bulk'},{weight:170,mode:'bulk'},{weight:170,mode:'bulk'}], 'bulk');
+  add(bCV4.zone==='Above cap — trim surplus' && checkSurplusCap(bCV4.rollingRate).overCap===true,
+    'v17: 0.4%/wk gain always above cap, never ideal/hold');
+  const cCV = calcCutVelocity(171.7, [{weight:172.0},{weight:171.9},{weight:171.8}]);
+  add(cCV.zone==='Slow — monitor', 'v17: cut zone unchanged (default mode)');
+  const capOver = checkSurplusCap(bCV.rollingRate);
+  add(capOver.overCap === true && capOver.gainPct > 0.15, 'v17: surplus cap flags gain above ~1 lb/month');
+  const capUnder = checkSurplusCap(-0.1);
+  add(capUnder.overCap === false, 'v17: surplus cap passes gain below ~1 lb/month');
+  // v17 R2c: 2-consecutive-week drift gate — no action after a single week
+  const trig1 = evalMaintDriftTrigger(0.4, null);
+  add(trig1.trigger===false && trig1.curOut===true, 'v17: no drift action after a single outside-band week');
+  const trig2 = evalMaintDriftTrigger(0.4, 0.35);
+  add(trig2.trigger===true, 'v17: drift action after 2 consecutive outside-band weeks');
+  const trig3 = evalMaintDriftTrigger(0.1, 0.4);
+  add(trig3.trigger===false, 'v17: no drift action when current week is back in band');
+
+  // Group 8e (v17): TDEE estimator — synthetic recovery + flagging + provisional
+  const savedWeeksTDEE = D.weeks;
+  try{
+    D.weeks = [
+      {date:'2026-08-30', mode:'cut', weight:180, calories:2500, calorieTarget:2500, daysTracked:7},
+      {date:'2026-09-06', mode:'cut', weight:179, calories:2500, calorieTarget:2500, daysTracked:7},
+      {date:'2026-09-13', mode:'cut', weight:178, calories:2500, calorieTarget:2500, daysTracked:7},
+      {date:'2026-09-20', mode:'cut', weight:177, calories:2500, calorieTarget:2500, daysTracked:7}
+    ];
+    const tdee = calcTDEEEstimate('cut');
+    add(tdee.available && tdee.tdee===3000, 'v17: TDEE recovers 3000 from 1 lb/wk loss at 2500 intake');
+    add(tdee.band===200 && tdee.confidence==='HIGH' && tdee.nClean===4, 'v17: TDEE band ±200, HIGH confidence, 4 clean weeks');
+    // low tracked days → flagged + excluded from intake avg
+    D.weeks = [
+      {date:'2026-08-30', mode:'cut', weight:180, calories:2500, calorieTarget:2500, daysTracked:7},
+      {date:'2026-09-06', mode:'cut', weight:179, calories:2500, calorieTarget:2500, daysTracked:3},
+      {date:'2026-09-13', mode:'cut', weight:178, calories:2500, calorieTarget:2500, daysTracked:7},
+      {date:'2026-09-20', mode:'cut', weight:177, calories:2500, calorieTarget:2500, daysTracked:7}
+    ];
+    const tdee2 = calcTDEEEstimate('cut');
+    add(tdee2.available && tdee2.nClean===3 && tdee2.flagged.length===1
+      && /tracked days/.test(tdee2.flagged[0].reasons.join(' ')), 'v17: low-tracked-days week flagged + excluded');
+    // calorie-target change → flagged
+    D.weeks = [
+      {date:'2026-08-30', mode:'cut', weight:180, calories:2500, calorieTarget:2500, daysTracked:7},
+      {date:'2026-09-06', mode:'cut', weight:179, calories:2400, calorieTarget:2300, daysTracked:7},
+      {date:'2026-09-13', mode:'cut', weight:178, calories:2300, calorieTarget:2300, daysTracked:7}
+    ];
+    const tdee3 = calcTDEEEstimate('cut');
+    add(tdee3.available && tdee3.flagged.some(f=>/target changed/.test(f.reasons.join(' '))), 'v17: target-change week flagged');
+    // mode transition → TDEE is mode-local: the 1-week maint run is not
+    // estimable yet; the cut run still estimates (provisional, 2 clean weeks)
+    D.weeks = [
+      {date:'2026-09-06', mode:'cut', weight:179, calories:2300, calorieTarget:2300, daysTracked:7},
+      {date:'2026-09-13', mode:'cut', weight:178, calories:2300, calorieTarget:2300, daysTracked:7},
+      {date:'2026-09-20', mode:'maint', weight:178, calories:2500, calorieTarget:2500, daysTracked:7}
+    ];
+    const tdee4m = calcTDEEEstimate('maint');
+    add(tdee4m.available===false && /2 post-transition/.test(tdee4m.reason||''), 'v17: TDEE not available with <2 clean weeks in new mode');
+    const tdee4c = calcTDEEEstimate('cut', {wholeHistory:true});
+    add(tdee4c.available && tdee4c.provisional===true && tdee4c.nClean===2 && tdee4c.tdee===2800,
+      'v17: cut-phase TDEE still estimates from its own history (provisional, 2 clean, 2800)');
+  } finally {
+    D.weeks = savedWeeksTDEE;
+  }
+
+  // Group 8f (v17): body-comp log — DEXA persistence shape + caliper averages
+  const cal = sanitizeBodyCompEntry({type:'caliper', date:'2026-09-27',
+    chest:[10,12,11], abdomen:[20,22,21], thigh:[15,15,16], notes:'fasted'});
+  add(cal && cal.chestAvg===11 && cal.abdomenAvg===21 && cal.thighAvg===15.3 && cal.siteSum===47.3,
+    'v17: caliper 3-reading avgs + site sum (11 / 21 / 15.3, Σ 47.3)');
+  const dx = sanitizeBodyCompEntry({type:'dexa', date:'2026-09-27', bfPct:12.5, fatMassLb:21.5, leanMassLb:150.2});
+  add(dx && dx.type==='dexa' && dx.bfPct===12.5 && dx.fatMassLb===21.5 && dx.leanMassLb===150.2,
+    'v17: DEXA entry sanitizes to persistable shape');
+  add(sanitizeBodyCompEntry({type:'dexa', date:'not-a-date', bfPct:12}) === null,
+    'v17: body-comp entry with bad date rejected');
+  add(sanitizeBodyCompEntry(null) === null, 'v17: null body-comp entry rejected');
+
+  // Group 8g (v17 R2): full maintenance-bridge simulation —
+  // 5 cut weeks (−0.5 lb/wk) → mode switch → 2 transition weeks (+2 lb
+  // glycogen/water) → flat weeks at 2500 kcal
+  const savedWeeksBridge = D.weeks;
+  try{
+    const cutW = (date,weight)=>({date, mode:'cut', weight, calories:2000, calorieTarget:2000, daysTracked:7});
+    const mntW = (date,weight)=>({date, mode:'maint', weight, calories:2500, calorieTarget:2500, daysTracked:7});
+    const bridge = [
+      cutW('2026-08-23',178.5), cutW('2026-08-30',178.0), cutW('2026-09-06',177.5),
+      cutW('2026-09-13',177.0), cutW('2026-09-20',176.5),
+      mntW('2026-09-27',178.5), mntW('2026-10-04',179.0),
+      mntW('2026-10-11',179.0), mntW('2026-10-18',179.0)
+    ];
+    D.weeks = bridge;
+    const nullSt = {calAdhPct:null, protAdhPct:null, stpAdhPct:null};
+    const nullRs = {anyRed:false, watchActive:false};
+    // Transition week 1: explicitly labeled glycogen/water; no rate, no RATE action
+    const cvM1 = calcCutVelocity(178.5, bridge.slice(0,5), 'maint');
+    add(cvM1.inTransition===true && cvM1.zone==='Transition — glycogen/water',
+      'v17: bridge week 1 labeled Transition — glycogen/water');
+    add(cvM1.rollingRate===null, 'v17: no rolling rate during transition (history is another mode)');
+    const actM1 = calcWeeklyAction('maint', cvM1, nullSt, nullRs, [], bridge.slice(0,5), null);
+    add(actM1.actionCode==='NONE' && /MODE TRANSITION/.test(actM1.action),
+      'v17: no RATE action during transition week 1');
+    // Transition week 2: same
+    const cvM2 = calcCutVelocity(179.0, bridge.slice(0,6), 'maint');
+    add(cvM2.inTransition===true && cvM2.weeksInMode===2,
+      'v17: bridge week 2 still in transition (weeksInMode=2)');
+    const actM2 = calcWeeklyAction('maint', cvM2, nullSt, nullRs, [], bridge.slice(0,6), null);
+    add(actM2.actionCode==='NONE', 'v17: no RATE action during transition week 2');
+    // Bridge week 3: transition over, but rolling data insufficient → no false adjustment
+    const cvM3 = calcCutVelocity(179.0, bridge.slice(0,7), 'maint');
+    add(cvM3.inTransition===false && cvM3.rollingRate===null,
+      'v17: bridge week 3 out of transition, rolling rate still insufficient');
+    const actM3 = calcWeeklyAction('maint', cvM3, nullSt, nullRs, [], bridge.slice(0,7), null);
+    add(actM3.actionCode!=='RATE', 'v17: no false adjustment in bridge week 3');
+    // TDEE at bridge week 4: uses weeks 3–4 only → ≈2500 ±283, provisional
+    const tdeeB = calcTDEEEstimate('maint');
+    add(tdeeB.available && tdeeB.tdee===2500 && tdeeB.band===283,
+      'v17: bridge TDEE ≈2500 ±283 from weeks 3–4 only');
+    add(tdeeB.provisional===true && tdeeB.transitionWeeks.join(',')==='2026-09-27,2026-10-04',
+      'v17: bridge TDEE provisional, transition weeks named');
+    add(/2026-10-11/.test(tdeeB.provisionalReason||'') && /2026-10-18/.test(tdeeB.provisionalReason||''),
+      'v17: provisional reason names the included weeks');
+    // Cut-phase TDEE remains separately available
+    const tdeeBC = calcTDEEEstimate('cut', {wholeHistory:true});
+    add(tdeeBC.available && tdeeBC.tdee===2250 && tdeeBC.nClean===5,
+      'v17: cut-phase TDEE still available separately (2250, 5 clean weeks)');
+    // Protein equations: maint 0.8g/lb dynamic, cut 1g/lb retained
+    add(calcMaintProtein(172.5)===138, 'v17: maintenance protein 138g at 172.5 lb (0.8g/lb)');
+    add(proteinRuleLabel('maint')==='0.8g/lb maintenance', 'v17: maintenance rule label');
+    add(Math.round(172.5*CUT_PROTEIN_PER_LB)===173 && proteinRuleLabel('cut')==='1g/lb cut',
+      'v17: cut protein stays 1g/lb (173g at 172.5 lb)');
+    // Drift gate integration: 1 outside-band week → NONE; 2 consecutive → RATE
+    const driftW = [
+      mntW('2026-10-04',170.0), mntW('2026-10-11',170.0), mntW('2026-10-18',170.0),
+      mntW('2026-10-25',168.0), mntW('2026-11-01',166.5)
+    ];
+    const cvDA = calcCutVelocity(168.0, driftW.slice(0,3), 'maint');
+    add(Math.abs(cvDA.rollingRate)>MAINT_DRIFT_BAND_PCT, 'v17: drift scenario week A is outside the band');
+    const actDA = calcWeeklyAction('maint', cvDA, nullSt, nullRs, [],
+      driftW.slice(0,3), priorWeekRollingRate(driftW.slice(0,3), 'maint'));
+    add(actDA.actionCode==='NONE', 'v17: no maintenance action after only one outside-band week');
+    const cvDB = calcCutVelocity(166.5, driftW.slice(0,4), 'maint');
+    const actDB = calcWeeklyAction('maint', cvDB, nullSt, nullRs, [],
+      driftW.slice(0,4), priorWeekRollingRate(driftW.slice(0,4), 'maint'));
+    add(actDB.actionCode==='RATE' && /±100 kcal\/day/.test(actDB.action),
+      'v17: RATE ±100 kcal/day after two consecutive outside-band weeks');
+  } finally {
+    D.weeks = savedWeeksBridge;
+  }
 
   // Group 9: regression coverage — delt first-week vs missing-data semantics
   const testDeltaRender = delt(184.6, {weight:185.3}, 185.3, 1, ' lbs');
@@ -5762,6 +7000,212 @@ window.__selfTest = function __selfTest() {
   add(/n\/a — first week/i.test(testDeltaFirstWeek), 'Regression: delt shows first-week message when prev week missing');
   const testDeltaMissingData = delt(184.6, {weight:null}, null, 1, ' lbs');
   add(testDeltaMissingData === '', 'Regression: delt shows missing-data blank when prev week exists but metric missing');
+
+  // Group 10: A1 — waist trend needs contiguous weeks on one measurement baseline
+  const wGap = [
+    {date:'2026-09-05', weight:176.0, waist:29.40},
+    {date:'2026-09-12', weight:175.4, waist:29.30},
+    {date:'2026-09-19', weight:175.0, waist:null},
+    {date:'2026-09-26', weight:174.6, waist:29.10},
+    {date:'2026-10-03', weight:174.2, waist:29.05}
+  ];
+  const stGap = calcStallStatus({rollingRate:0.4, shortTermRate:0.4, W1:176, W2:174.6, W3:174.2}, 29.05, wGap,
+    {anchorDate:'2026-10-03', useLiveInputs:false, waistBreakDate:null});
+  add(stGap.waistTrend===null, 'A1: waist trend null across a data gap');
+  add(stGap.waistTruncated===true, 'A1: waist window flagged truncated at gap');
+  // A1 boundary: a week is NEW-baseline only if its FIRST day (WE minus 6d) is
+  // on/after the break. WE 9/19 (Sun 9/13–Sat 9/19) is old-baseline despite
+  // ending on the break date.
+  const wBreak = [
+    {date:'2026-09-05', weight:176.0, waist:29.40},
+    {date:'2026-09-12', weight:175.4, waist:29.30},
+    {date:'2026-09-19', weight:175.0, waist:29.25},
+    {date:'2026-09-26', weight:174.6, waist:27.85},
+    {date:'2026-10-03', weight:174.2, waist:27.80},
+    {date:'2026-10-10', weight:173.8, waist:27.75}
+  ];
+  const stBreak = calcStallStatus({rollingRate:0.4, shortTermRate:0.4, W1:176, W2:174.6, W3:174.2}, 27.85, wBreak,
+    {anchorDate:'2026-09-26', useLiveInputs:false, waistBreakDate:'2026-09-19'});
+  add(stBreak.waistTrend===null, 'A1: waist trend null when fewer than 3 weeks on new baseline');
+  add(stBreak.waistTruncated===true, 'A1: waist window flagged truncated at baseline break');
+  add(stBreak.waistBreakHit===true, 'A1: waist window flagged as stopped at baseline break');
+  add(stGap.waistBreakHit!==true, 'A1: plain gap is not flagged as a baseline break');
+  const stBreakBoundary = calcStallStatus({rollingRate:0.4, shortTermRate:0.4, W1:176, W2:175, W3:174.6}, 29.25, wBreak,
+    {anchorDate:'2026-09-19', useLiveInputs:false, waistBreakDate:'2026-09-19'});
+  add(stBreakBoundary.waistBreakHit!==true, 'A1: WE ending ON break date counts as old-baseline (week starts 9/13)');
+  add(stBreakBoundary.waistTrend!=null && Math.abs(stBreakBoundary.waistTrend-29.3167)<0.01, 'A1: WE 9/19 trend uses old-baseline weeks only');
+  const stBreakOk = calcStallStatus({rollingRate:0.4, shortTermRate:0.4, W1:176, W2:174.6, W3:174.2}, 27.75, wBreak,
+    {anchorDate:'2026-10-10', useLiveInputs:false, waistBreakDate:'2026-09-19'});
+  add(stBreakOk.waistTrend!=null && Math.abs(stBreakOk.waistTrend-27.80)<0.01, 'A1: waist trend computed from 3 contiguous new-baseline weeks only');
+  add(stBreakOk.waistBreakHit===true, 'A1: break still flagged once window reaches old baseline');
+
+  // Group 11: A3 — any single yellow metric is a WATCH (one shared calculation)
+  const rsA3 = calcRecoveryStatusFromData(57, 52, 7.5, [
+    {hrv:65, rhr:52, sleep:7.5}, {hrv:63, rhr:53, sleep:7.2}
+  ]);
+  add(rsA3.hrvLevel===1, 'A3: single HRV WATCH keeps hrvLevel 1');
+  add(rsA3.watchActive===true, 'A3: single yellow metric -> watchActive');
+  add(rsA3.statusLabel==='RECOVERY WATCH', 'A3: single yellow metric -> RECOVERY WATCH label');
+
+  // Group 12: A2 — machine-readable stall never asserts when confidence is LOW.
+  // Gated weeks export stalled=false, so the label reads "LOW (no stall detected)".
+  add(formatStallConfidenceLabel('LOW', false)==='LOW (no stall detected)',
+    'A2: gated stall exports LOW without asserting a stall');
+  add(formatStallConfidenceLabel('MED', true)==='MED',
+    'A2: confident stall label unchanged');
+
+  // Group 13: A5 — adherence confidence inferred from logged nutrition
+  add(calcAdherenceConfidence({calories:2200, protein:180}).conf==='MED', 'A5: nutrition logged, days missing -> inferred MED');
+  add(calcAdherenceConfidence({calories:2200}).inferred===true, 'A5: inference flagged as inferred');
+  add(calcAdherenceConfidence({}).conf==='NONE', 'A5: nothing logged -> NONE');
+  add(calcAdherenceConfidence({daysTracked:null, calories:2200}).low===false, 'A5: inferred MED does not flag low');
+
+  // Group 14: A6/A7 — Vitruvian equipment labels pass through unchanged
+  // Group 14: A6/A7 — Alex decision 2026-09-25: rename in Hevy. New Hevy
+  // titles map to the EXISTING history keys (no history split).
+  add(canonicalize('Incline Bench Press (Vitruvian)')==='Incline Bench Press (Dumbbell)', 'A6: new Hevy incline name maps to existing history key');
+  add(canonicalize('Romanian Deadlift (Vitruvian)')==='Romanian Deadlift (Barbell)', 'A7: new Hevy RDL name maps to existing history key');
+  add(canonicalize('Incline Bench Press (Dumbbell)')==='Incline Bench Press (Dumbbell)', 'A6: old Hevy incline name maps to the SAME key (no history split)');
+  add(canonicalize('Romanian Deadlift (Barbell)')==='Romanian Deadlift (Barbell)', 'A7: old Hevy RDL name maps to the SAME key (no history split)');
+  add(canonicalize('Incline Bench Press (Vitruvian)')===canonicalize('Incline Bench Press (Dumbbell)'), 'A6: old + new incline names canonicalize identically');
+  add(canonicalize('Romanian Deadlift (Vitruvian)')===canonicalize('Romanian Deadlift (Barbell)'), 'A7: old + new RDL names canonicalize identically');
+
+  // Group 19: R3 — rename reaches EVERY ingress; weighted/assisted stay separate
+  add(canonicalizeRename('Incline Bench Press (Vitruvian)')==='Incline Bench Press (Dumbbell)', 'R3: TRUE rename map covers new incline name');
+  add(canonicalizeRename('Romanian Deadlift (Vitruvian)')==='Romanian Deadlift (Barbell)', 'R3: TRUE rename map covers new RDL name');
+  add(canonicalizeRename('Incline Bench Press (Dumbbell)')==='Incline Bench Press (Dumbbell)', 'R3: old canonical keys pass through the TRUE rename map');
+  add(canonicalize('Chin Up (Weighted)')==='Chin Up (Weighted)', 'R3: weighted chin-up is NOT aliased to Chin Up');
+  add(canonicalize('Chin Up (Assisted)')==='Chin Up (Assisted)', 'R3: assisted chin-up is NOT aliased to Chin Up');
+  add(canonicalize('Weighted Chin Up')==='Weighted Chin Up', 'R3: "Weighted Chin Up" is NOT aliased to Chin Up');
+  // Import matcher AND session-analytics storage collapse to one key
+  const r3sets = [
+    {exercise_title:'Incline Bench Press (Vitruvian)', set_type:'working', weight_lbs:'100', reps:'10', rpe:'9'},
+    {exercise_title:'Incline Bench Press (Dumbbell)', set_type:'working', weight_lbs:'95', reps:'8', rpe:'9'}
+  ];
+  const r3ts = buildSessionTopSets(r3sets);
+  add(Object.keys(r3ts).length===1 && r3ts['Incline Bench Press (Dumbbell)']!==undefined, 'R3: renamed + old incline sets store under ONE canonical key (no split)');
+  add(r3ts['Incline Bench Press (Dumbbell)'] && r3ts['Incline Bench Press (Dumbbell)'].w===100, 'R3: merged canonical key keeps the better top set');
+  // Backup-load path canonicalizes stored ts keys identically
+  const r3loaded = canonicalizeSessionTs({d:'2026-09-20', t:'Upper Day (Home)', ts:{'Incline Bench Press (Vitruvian)':{w:100,r:10,rpe:9,e1rm:133.3},'Chin Up':{w:0,r:26,rpe:8.5,e1rm:null}}});
+  add(r3loaded.ts['Incline Bench Press (Dumbbell)']!==undefined && r3loaded.ts['Incline Bench Press (Vitruvian)']===undefined, 'R3: backup-load canonicalizes renamed ts key');
+  add(r3loaded.ts['Chin Up']!==undefined, 'R3: backup-load leaves unrelated keys untouched');
+  add(canonicalizeSessionTs({d:'2026-09-20', ts:{'Romanian Deadlift (Vitruvian)':{w:200,r:8}}}).ts['Romanian Deadlift (Barbell)']!==undefined, 'R3: backup-load canonicalizes renamed RDL key');
+  // Exercise-picker level: old and new names give identical data (no duplicates)
+  const r3oldSets = [{exercise_title:'Incline Bench Press (Dumbbell)', set_type:'working', weight_lbs:'95', reps:'8', rpe:'9'}];
+  const r3newSets = [{exercise_title:'Incline Bench Press (Vitruvian)', set_type:'working', weight_lbs:'100', reps:'10', rpe:'9'}];
+  const r3oldTop = getTopSetForExercise(r3oldSets, 'Incline Bench Press (Dumbbell)');
+  const r3newTop = getTopSetForExercise(r3newSets, 'Incline Bench Press (Dumbbell)');
+  const r3newTopRaw = getTopSetForExercise(r3newSets, 'Incline Bench Press (Vitruvian)');
+  add(r3oldTop && r3newTop && r3newTop.weight_lbs==='100', 'R3: picker finds renamed incline sets under the canonical key');
+  add(r3newTopRaw && r3newTopRaw.weight_lbs==='100', 'R3: picker also resolves a raw renamed query name to the canonical key');
+  // Weighted chin-up must not outrank the bodyweight top set
+  const r3chinMix = [
+    {exercise_title:'Chin Up', set_type:'working', weight_lbs:'0', reps:'26', rpe:'8.5'},
+    {exercise_title:'Chin Up (Weighted)', set_type:'working', weight_lbs:'45', reps:'8', rpe:'9'}
+  ];
+  const r3chinTop = getTopSetForExercise(r3chinMix, 'Chin Up');
+  add(r3chinTop && r3chinTop.reps==='26' && (parseFloat(r3chinTop.weight_lbs)||0)===0, 'R3: weighted chin-up does NOT outrank the 26-rep bodyweight top set');
+  const r3chinWTs = buildSessionTopSets(r3chinMix);
+  add(r3chinWTs['Chin Up']!==undefined && r3chinWTs['Chin Up (Weighted)']!==undefined && Object.keys(r3chinWTs).length===2, 'R3: bodyweight and weighted chin-ups store as TWO distinct exercises');
+  // B12: pure rename never duplicates; true alt equipment still surfaces
+  const r3b12Rename = collectAltEquipCands(
+    [{t:'Upper Day (Home)', d:'2026-09-20', ts:{'Incline Bench Press (Vitruvian)':{w:100,r:10,rpe:9,e1rm:133.3}}}],
+    {name:'Incline Bench Press (Dumbbell)'});
+  add(r3b12Rename.length===0, 'R3: B12 does not duplicate a pure rename');
+  const r3b12Alt = collectAltEquipCands(
+    [{t:'Push (Gym)', d:'2026-09-21', ts:{'Incline Bench Press (Smith)':{w:135,r:8,rpe:9,e1rm:171}}}],
+    {name:'Incline Bench Press (Dumbbell)'});
+  add(r3b12Alt.length===1 && r3b12Alt[0].ex==='Incline Bench Press (Smith)', 'R3: B12 still surfaces a true alt-equipment variant');
+  const r3b12Canon = collectAltEquipCands(
+    [{t:'Upper Day (Home)', d:'2026-09-20', ts:{'Incline Bench Press (Dumbbell)':{w:100,r:10,rpe:9,e1rm:133.3}}}],
+    {name:'Incline Bench Press (Dumbbell)'});
+  add(r3b12Canon.length===0, 'R3: B12 does not duplicate the canonical name itself');
+  // Muscle volume: sets logged under new names resolve to nonzero volume
+  const r3eff = getEffectiveMuscleMap();
+  add((r3eff[canonicalize('Incline Bench Press (Vitruvian)')]||[]).length>0, 'R3: renamed incline resolves to nonzero muscle groups');
+  add((r3eff[canonicalize('Romanian Deadlift (Vitruvian)')]||[]).length>0, 'R3: renamed RDL resolves to nonzero muscle groups');
+
+  // Group 24: R4 — session storage uses TRUE renames only; broad aliases never
+  // merge stored data
+  // (a) distinct equipment variants stay stored/charted as SEPARATE keys
+  const r4rdlSets = [
+    {exercise_title:'Romanian Deadlift (Barbell)', set_type:'working', weight_lbs:'200', reps:'8', rpe:'8'},
+    {exercise_title:'Romanian Deadlift (Dumbbell)', set_type:'working', weight_lbs:'80', reps:'10', rpe:'8'}
+  ];
+  const r4rdlTs = buildSessionTopSets(r4rdlSets);
+  add(r4rdlTs['Romanian Deadlift (Barbell)']!==undefined && r4rdlTs['Romanian Deadlift (Dumbbell)']!==undefined && Object.keys(r4rdlTs).length===2, 'R4: Romanian Deadlift (Dumbbell) stays stored/charted separately from Romanian Deadlift (Barbell)');
+  add(r4rdlTs['Romanian Deadlift (Dumbbell)'] && r4rdlTs['Romanian Deadlift (Dumbbell)'].w===80, 'R4: rename-mode matcher picks the correct top set per variant (no cross-match into Barbell)');
+  const r4srLoaded = canonicalizeSessionTs({d:'2026-09-20', ts:{'Seated Row (Machine)':{w:120,r:10},'Seated Cable Row - Bar Grip':{w:150,r:10}}});
+  add(Object.keys(r4srLoaded.ts).length===2 && r4srLoaded.ts['Seated Row (Machine)']!==undefined && r4srLoaded.ts['Seated Cable Row - Bar Grip']!==undefined, 'R4: backup-load keeps Seated Row (Machine) distinct from Seated Cable Row - Bar Grip');
+  // (b) a genuine alternate-equipment variant still surfaces via B12
+  const r4b12sh = collectAltEquipCands(
+    [{t:'Push (Gym)', d:'2026-09-21', ts:{'Shoulder Press (Machine)':{w:90,r:10,rpe:9,e1rm:120}}}],
+    {name:'Shoulder Press (Dumbbell)'});
+  add(r4b12sh.length===1 && r4b12sh[0].ex==='Shoulder Press (Machine)', 'R4: B12 surfaces a gym machine shoulder press as an alternate-equipment candidate (not hidden, not duplicated)');
+  // (c) the two TRUE renames still collapse to ONE key through buildSessionTopSets
+  const r4vitRdlSets = [
+    {exercise_title:'Romanian Deadlift (Vitruvian)', set_type:'working', weight_lbs:'180', reps:'8', rpe:'8'},
+    {exercise_title:'Romanian Deadlift (Barbell)', set_type:'working', weight_lbs:'200', reps:'8', rpe:'8'}
+  ];
+  const r4vitRdlTs = buildSessionTopSets(r4vitRdlSets);
+  add(Object.keys(r4vitRdlTs).length===1 && r4vitRdlTs['Romanian Deadlift (Barbell)']!==undefined, 'R4: Romanian Deadlift (Vitruvian) + old name collapse to ONE key through buildSessionTopSets');
+  const r4vitIncSets = [
+    {exercise_title:'Incline Bench Press (Vitruvian)', set_type:'working', weight_lbs:'100', reps:'10', rpe:'9'},
+    {exercise_title:'Incline Bench Press (Dumbbell)', set_type:'working', weight_lbs:'95', reps:'8', rpe:'9'}
+  ];
+  const r4vitIncTs = buildSessionTopSets(r4vitIncSets);
+  add(Object.keys(r4vitIncTs).length===1 && r4vitIncTs['Incline Bench Press (Dumbbell)']!==undefined, 'R4: Incline Bench Press (Vitruvian) + old name collapse to ONE key through buildSessionTopSets');
+  // (d) priority-lift picker behavior unchanged: still matches via the broad map
+  const r4pickSets = [{exercise_title:'RDL', set_type:'working', weight_lbs:'200', reps:'8', rpe:'8'}];
+  add(getTopSetForExercise(r4pickSets, 'Romanian Deadlift (Barbell)')!==null, 'R4: priority-lift picker still matches broad aliases (default mode unchanged)');
+  add(getTopSetForExercise(r4pickSets, 'Romanian Deadlift (Barbell)', 'rename')===null, 'R4: rename-mode matcher does NOT match broad aliases (confirms picker default is intact)');
+
+  // Group 15: A9 — no blended adherence across a prescription change
+  const adhChg = calcExportAdherence2Week([
+    {date:'2026-09-05', calories:2100, calorieTarget:2000, protein:180, weight:176, steps:15000, stepTarget:15000},
+    {date:'2026-09-12', calories:2200, calorieTarget:2143, protein:180, weight:175, steps:15000, stepTarget:15000}
+  ], 1);
+  add(adhChg.calorieTargetChanged===true, 'A9: target change detected');
+  add(adhChg.caloriePct===null, 'A9: blended pct suppressed on target change');
+  add(adhChg.calorieWeekly.length===2 && adhChg.calorieWeekly[0].pct===105, 'A9: per-week pcts reported');
+  const adhSame = calcExportAdherence2Week([
+    {date:'2026-09-05', calories:2100, calorieTarget:2000, protein:180, weight:176, steps:15000, stepTarget:15000},
+    {date:'2026-09-12', calories:2200, calorieTarget:2000, protein:180, weight:175, steps:15000, stepTarget:15000}
+  ], 1);
+  add(adhSame.calorieTargetChanged===false, 'A9: same target -> no change flag');
+  add(Math.abs(adhSame.caloriePct-107.5)<0.01, 'A9: same target -> blended pct computed');
+
+  // Group 16: A4 — zero target falls back; never renders "manual (0 kcal)"
+  add(resolveCalTarget([{calorieTarget:0}], 0, 2000)===2000, 'A4: zero target falls back to default — never manual (0 kcal)');
+  add(resolveCalTarget([{calorieTarget:2143}], 0, 2000)===2143, 'A4: explicit target used verbatim');
+
+  // Group 17: A8 — top set = best performance (max e1RM; tiebreak weight, reps)
+  const a8sets = [
+    {exercise_title:'Shoulder Press (Dumbbell)', set_type:'working', weight_lbs:'130', reps:'10', rpe:'8.5'},
+    {exercise_title:'Shoulder Press (Dumbbell)', set_type:'working', weight_lbs:'130', reps:'8', rpe:'9.5'}
+  ];
+  const a8top = getTopSetForExercise(a8sets, 'Shoulder Press (Dumbbell)');
+  add(a8top && a8top.reps==='10' && a8top.rpe==='8.5', 'A8: shoulder press top set is 130x10 @ 8.5 (best e1RM), not 130x8 @ 9.5');
+  const a8chin = [
+    {exercise_title:'Chin Up', set_type:'working', weight_lbs:'0', reps:'26', rpe:'8.5'},
+    {exercise_title:'Chin Up', set_type:'working', weight_lbs:'0', reps:'25', rpe:'9'}
+  ];
+  const a8chinTop = getTopSetForExercise(a8chin, 'Chin Up');
+  add(a8chinTop && a8chinTop.reps==='26', 'A8: chin-up top set is 26 reps (bodyweight tiebreak on reps), not 25 @ 9');
+  // A6/A7 matcher: renamed Hevy titles are found under the canonical history keys
+  const a6sets = [
+    {exercise_title:'Incline Bench Press (Vitruvian)', set_type:'working', weight_lbs:'100', reps:'10', rpe:'9'}
+  ];
+  add(getTopSetForExercise(a6sets, 'Incline Bench Press (Dumbbell)')!==null, 'A6: import matcher finds renamed Hevy incline under existing history key');
+  const a7sets = [
+    {exercise_title:'Romanian Deadlift (Vitruvian)', set_type:'working', weight_lbs:'200', reps:'10', rpe:'8.5'}
+  ];
+  add(getTopSetForExercise(a7sets, 'Romanian Deadlift (Barbell)')!==null, 'A7: import matcher finds renamed Hevy RDL under existing history key');
+  // Round 2: home working sessions keep their home classification (peaks stay
+  // gym-only) — the extraction fix means they are no longer dropped from lifts.
+  add(classifySession('Upper Day (Home)')==='home', 'R2: "Upper Day (Home)" classifies as home');
+  add(classifySession('Lower Day (Home)')==='home', 'R2: "Lower Day (Home)" classifies as home');
+  add(classifySession('Push Workout - Gym')==='gym', 'R2: gym session still classifies as gym');
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
