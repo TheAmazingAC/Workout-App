@@ -421,6 +421,23 @@ select option{background:var(--s2);}
     <div id="velAdherence" style="margin-bottom:8px"></div>
     <div id="velStall" style="margin-bottom:8px"></div>
     <div id="velAction"></div>
+    <div id="velGuardrails" style="margin-top:8px"></div>
+    <!-- v18: signal hierarchy — a reference key only. Tier 1 signals are what
+         Alex acts on; Tier 2 is context; Tier 3 is noise. Not a decision engine. -->
+    <div id="signalKey" style="margin-top:8px;font-size:9px;color:var(--mu);line-height:1.7;border-top:1px solid var(--bd);padding-top:6px">
+      <span style="text-transform:uppercase;letter-spacing:1px">Signal hierarchy</span> — reference key, not a decision engine<br>
+      <strong>Tier 1 · act:</strong> performance trend · waist trend · multi-week weight trend<br>
+      <strong>Tier 2 · context:</strong> HRV/RHR trends · sleep<br>
+      <strong>Tier 3 · noise — do not act:</strong> single-day scale weight · single HRV reading · subjective fluctuations
+    </div>
+  </div>
+
+  <!-- CUT HISTORY (v18) — permanent, data-derived summary. Rendered in every
+       mode so the history survives mode switches. Missing data is labeled. -->
+  <div class="card" id="cutHistoryCard">
+    <div class="ct">// Cut History — from logged data</div>
+    <p class="note">Derived from your actual logged cut weeks (first → last). Nothing estimated, nothing hardcoded. Missing data is labeled n/a.</p>
+    <div id="cutHistoryBody"></div>
   </div>
 
   <!-- WEEKLY TDEE ESTIMATE (v17 F2) -->
@@ -474,7 +491,7 @@ select option{background:var(--s2);}
     <p class="note">Global targets used in the Maintenance phase: next-week baselines, the velocity-card adherence panel, and the AI export. Protein is a dynamic equation — 0.8g/lb of current 7-day-average body weight (recomputed automatically, not a static number). Carbs are the caloric remainder — (kcal − protein×4 − fat×9) ÷ 4; hit RE-DERIVE CARBS after any change. Base plan: 2500 kcal · 60g fat · 15,000 step-eq.</p>
     <div class="fg fg3">
       <div class="field"><label>Calories (kcal/day)</label><input type="number" id="mtKcal" step="50" placeholder="2500"></div>
-      <div class="field"><label>Protein (g/day) — auto 0.8g/lb</label><input type="number" id="mtProt" step="5" placeholder="—" readonly style="opacity:.65" title="Computed from current 7-day-average weight — not editable"></div>
+      <div class="field"><label>Protein (g/day) — 0.8g/lb default, editable</label><input type="number" id="mtProt" step="5" placeholder="—" title="Default: 0.8g/lb equation. Type a value to override; empty to clear."><div class="note" id="mtProtWrap" style="margin-top:2px"></div></div>
       <div class="field"><label>Step-eq (per day)</label><input type="number" id="mtStep" step="500" placeholder="15000"></div>
     </div>
     <div class="fg fg3">
@@ -482,7 +499,7 @@ select option{background:var(--s2);}
       <div class="field"><label>Carbs (g/day)</label><input type="number" id="mtCarbs" step="5" placeholder="—"></div>
       <div class="field"><label>&nbsp;</label><button class="btn" onclick="deriveMaintCarbs()">RE-DERIVE CARBS</button></div>
     </div>
-    <div class="btn-row" style="margin-top:10px"><button class="btn btn-p" onclick="saveMaintTargets()">SAVE MAINTENANCE TARGETS</button></div>
+    <div class="btn-row" style="margin-top:10px"><button class="btn btn-p" onclick="saveMaintTargets()">SAVE MAINTENANCE TARGETS</button><button class="btn" onclick="resetProteinOverride('maint')" title="Clear your protein override and restore the live 0.8g/lb equation default">RESET PROTEIN TO EQUATION</button></div>
   </div>
 
   <div class="card">
@@ -512,7 +529,7 @@ select option{background:var(--s2);}
     </div>
     <div class="fg fg4">
       <div class="field"><label>Protein (g)</label><input type="number" id="prot" placeholder="185" oninput="updPG();updLoss();updVelocity()"></div>
-      <div class="field"><label>Auto Target (g)</label><input type="number" id="protTgt" placeholder="—" readonly style="color:var(--a2);cursor:default" title="Auto: phase protein rule × current bodyweight"></div>
+      <div class="field"><label>Auto Target (g) — editable</label><input type="number" id="protTgt" placeholder="—" onchange="commitWeeklyProteinOverride()" title="Default: phase protein rule × current bodyweight. Type a value to override for this mode; empty the field to reset to the equation."></div>
       <div class="field"><label>Fat avg (g)</label><input type="number" id="fat" placeholder="70" step="0.5"></div>
       <div class="field"><label>Carbs avg (g)</label><input type="number" id="carbs" placeholder="180" step="1"></div>
     </div>
@@ -937,6 +954,66 @@ function calcMaintProtein(refWeight){
     ? Number(refWeight) : currentAvgWeight();
   return (w!=null && w>0) ? Math.round(w*MAINT_PROTEIN_PER_LB) : null;
 }
+// ── v18: user-overridable protein target ──
+// Alex can type his own protein target; the per-mode equation stays the
+// default (shown as the field placeholder) and a reset restores it.
+// Overrides live in D.proteinOverrides {cut, maint}; bulk keeps its existing
+// per-site behavior (Alex's bulk protein decision is still open).
+function proteinEquationFor(mode, refWeight){
+  const w = (refWeight!=null && Number.isFinite(Number(refWeight)) && Number(refWeight)>0)
+    ? Number(refWeight) : currentAvgWeight();
+  if(w==null || w<=0) return null;
+  return Math.round(w*proteinPerLb(mode));
+}
+function proteinOverrideFor(mode){
+  const o = (typeof D!=='undefined' && D.proteinOverrides) ? D.proteinOverrides[mode] : null;
+  return (o!=null && Number.isFinite(Number(o)) && Number(o)>0) ? Math.round(Number(o)) : null;
+}
+// Effective protein target: Alex's override when set, else the live equation.
+function proteinTargetFor(mode, refWeight){
+  if(mode!=='cut' && mode!=='maint') return null;
+  const o = proteinOverrideFor(mode);
+  return o!=null ? o : proteinEquationFor(mode, refWeight);
+}
+function isProteinOverride(mode){ return proteinOverrideFor(mode)!=null; }
+function proteinTargetSource(mode){ return isProteinOverride(mode) ? 'override' : 'equation'; }
+// Human-readable source label for the weekly export.
+function proteinTargetSourceLabel(mode, refWeight){
+  const o = proteinOverrideFor(mode);
+  if(o!=null) return 'override '+o+'g';
+  const eq = proteinEquationFor(mode, refWeight);
+  return 'equation '+(eq!=null?eq+'g':'n/a')+' ('+proteinRuleLabel(mode)+')';
+}
+// ── v18 R2: adherence scoring follows the EFFECTIVE target ──
+// proteinScoreTarget: Alex's override when set, else the UNROUNDED phase
+// equation. Unrounded so no-override scoring is bit-identical to v17 (only
+// the displayed target is rounded). Bulk keeps the legacy 1g/lb equation
+// scoring — Alex's bulk protein decision is still open.
+function proteinScoreTarget(mode, refWeight){
+  const o = proteinOverrideFor(mode);
+  if(o!=null) return o;
+  const w = Number(refWeight);
+  return (Number.isFinite(w) && w>0) ? w*proteinPerLb(mode) : null;
+}
+// Protein adherence as % of the effective target. Null when unscorable.
+function proteinAdherencePct(proteinG, weightLb, mode){
+  if(proteinG==null) return null;
+  const tgt = proteinScoreTarget(mode, weightLb);
+  return tgt ? proteinG/tgt*100 : null;
+}
+// Clean-week protein gate: ≥90% of the effective target. No data → pass
+// (skipped), exactly as before.
+function proteinStreakOk(weekProtein, weekWeight, mode){
+  if(!(weekProtein&&weekWeight)) return true;
+  const o = proteinOverrideFor(mode);
+  return o!=null ? weekProtein >= 0.9*o
+                 : (weekProtein/weekWeight*100) >= 90*proteinPerLb(mode);
+}
+function resetProteinOverride(mode){
+  if(typeof D!=='undefined'){ D.proteinOverrides = D.proteinOverrides||{cut:null,maint:null}; D.proteinOverrides[mode]=null; save(); }
+  renderMaintTargets(); updProteinDynamic();
+  toast('Protein target reset to equation ('+proteinRuleLabel(mode)+')');
+}
 const DEFAULT_STATE = {
   schemaVersion:SCHEMA_VERSION,
   weeks:[],
@@ -979,6 +1056,9 @@ function cloneDefaultState(){
     // v17: deep-copy mutable defaults — a shared array/object reference would
     // let two cloned states mutate each other's bodyComp/maintTargets.
     maintTargets:{...DEFAULT_MAINT_TARGETS},
+    // v18: per-mode protein target overrides (g/day). null = use the phase
+    // equation; a number = Alex's persisted override.
+    proteinOverrides:{cut:null,maint:null},
     bodyComp:[]
   };
 }
@@ -1084,6 +1164,13 @@ function migrateWeek(w){
   week.tags = Array.isArray(rawWeek.tags) ? [...rawWeek.tags] : [];
   if(week.deload === true && !week.tags.includes('deload')) week.tags.push('deload');
   if(week.refeed === true && !week.tags.includes('refeed')) week.tags.push('refeed');
+  // v18 R2: modeless weeks predate the mode system. Tag them by documented
+  // phase dates so cut-history (and the mode-local engines) don't merge the
+  // 2025 cut, the Oct 2025–Feb 2026 bulk, and the 2026 cut into one span.
+  // Weeks outside the documented ranges are 'unmodeled' — NEVER defaulted to
+  // cut — and are excluded from cut-history derivation. Explicit modes always
+  // win; this only fills in weeks that never had one.
+  if(rawWeek.mode == null && week.date) week.mode = historicalPhaseMode(week.date);
   const lifts = Array.isArray(rawWeek.lifts) ? rawWeek.lifts : [];
   week.lifts = lifts.map(l => (l && typeof l === 'object') ? {...l} : {});
   while(week.lifts.length < 6) week.lifts.push({});
@@ -1105,6 +1192,11 @@ function migrateState(raw){
   // v17: partial maintTargets from an older backup merge over the defaults so
   // a missing field never produces an undefined target downstream.
   migrated.maintTargets = {...DEFAULT_MAINT_TARGETS, ...((raw.maintTargets && typeof raw.maintTargets==='object') ? raw.maintTargets : {})};
+  // v18: protein target overrides round-trip through backup/restore. Only
+  // finite positive numbers survive; anything else becomes null (equation).
+  const rawPo = (raw.proteinOverrides && typeof raw.proteinOverrides==='object') ? raw.proteinOverrides : {};
+  const cleanPo = k => { const n = Number(rawPo[k]); return (rawPo[k]!=null && Number.isFinite(n) && n>0) ? Math.round(n) : null; };
+  migrated.proteinOverrides = {cut: cleanPo('cut'), maint: cleanPo('maint')};
   return migrated;
 }
 
@@ -1146,9 +1238,9 @@ const SURPLUS_GAIN_CAP_PCT_WK = 0.15;
 // (declared above DEFAULT_STATE so cloneDefaultState/migrateState can use it)
 function getMaintTargets(){
   const base = Object.assign({}, DEFAULT_MAINT_TARGETS, (typeof D!=='undefined' && D.maintTargets) || {});
-  // v17 R2b: maintenance protein is the 0.8g/lb equation, recomputed from current
-  // weight — the stored static value is never the live target.
-  const p = calcMaintProtein();
+  // v18: maintenance protein = Alex's override when set, else the live 0.8g/lb
+  // equation (Alex's decision). The stored static value is only a fallback.
+  const p = proteinTargetFor('maint');
   if(p!=null) base.protein = p;
   return base;
 }
@@ -1185,6 +1277,22 @@ const MODE_CONFIG = {
     primaryPanels:['velocityCard','ladderCard'],
     signalPrimary:['strength','waistDrift','recovery','adherence'],
     protFloor:0.8, calAdhFloor:80, stpAdhFloor:70, protAdhFloor:85,
+  },
+  // v18 R3: 'unmodeled' = historical weeks from the undocumented 6/29/25–10/24/25
+  // gap (tagged by historicalPhaseMode on migration). This entry exists ONLY so
+  // no MODE_CONFIG[mode] lookup can ever throw on these weeks (round-2 crash:
+  // exporting WE 2025-07-05). It carries no rate zones — unmodeled weeks are
+  // rendered as data-only records (see the guard at the top of
+  // calcWeeklyAction); the action engine never runs for them.
+  unmodeled: {
+    label:'UNMODELED', logoCls:'UNMODELED', bannerCls:'unmodeled', heroCls:'mode-primary-unmodeled',
+    directionLabel:'—', rateTargetLow:null, rateTargetHigh:null, maxRate:null,
+    rateSign:'none', rateLabel:'n/a (phase undocumented)',
+    targetGuidance:'Unmodeled phase — data record only (6/29/25–10/24/25 undocumented)',
+    ladderTitle:'// No decision ladder (phase undocumented)',
+    ladderNote:'Phase undocumented — this week is a data record only.',
+    primaryPanels:['velocityCard'], signalPrimary:[],
+    protFloor:0.9, calAdhFloor:80, stpAdhFloor:80, protAdhFloor:90,
   }
 };
 
@@ -1334,8 +1442,23 @@ function setActiveTags(tags){
    - No localStorage writes
    ========================= */
 
-// v17 R2: week mode accessor — modeless weeks predate the mode system; they were all cut.
+// v17 R2: week mode accessor.
+// v18 R2: migrateWeek now tags modeless (pre-mode-system) weeks by documented
+// phase dates, so this 'cut' fallback only fires for weeks that never went
+// through migration (in-memory scratch); migrated history carries explicit modes.
 function weekModeOf(w){ return ((w && w.mode) || 'cut'); }
+// v18 R2: phase dates for tagging modeless weeks on migration. Documented
+// history: cut through ~6/28/2025, bulk ~10/25/2025 → 2/20/2026, cut from
+// 2/21/2026. The 6/29/25 → 10/24/25 gap is undocumented → 'unmodeled'
+// (excluded from cut history), never assumed cut. ISO date strings compare
+// lexicographically, so plain string comparison is exact here.
+function historicalPhaseMode(weekEndISO){
+  const d = String(weekEndISO);
+  if(d <= '2025-06-28') return 'cut';
+  if(d >= '2025-10-25' && d <= '2026-02-20') return 'bulk';
+  if(d >= '2026-02-21') return 'cut';
+  return 'unmodeled';
+}
 // v17 R2: mode-change run tracking shared by the drift engine and the TDEE estimator.
 // priorWeeks: earlier weeks in date order (current week excluded).
 // Returns the trailing run of weeks in `mode` (oldest→newest), whether a different
@@ -1451,7 +1574,8 @@ function zoneChipsFor(mode){
     {label:'⚠ >0.25%/wk drift (action after 2 wks)', zones:['Drifting']},
   ];
   if(mode==='bulk') return [
-    {label:'✓ ≤0.15%/wk within cap', zones:['Within cap ✓']},
+    // v18: lean-gain target band 0.10–0.15%/wk; the 0.15 cap is the top of the band.
+    {label:'✓ 0.10–0.15%/wk target · ≤0.15%/wk cap', zones:['Within cap ✓']},
     {label:'⚠ losing — check surplus', zones:['Losing — check surplus']},
     {label:'⚠ >0.15%/wk above cap', zones:['Above cap — trim surplus']},
   ];
@@ -1504,7 +1628,10 @@ function calcExportAdherence2Week(weeks, anchorIdx){
   const calTargetChanged = calEntries.length===2 && calEntries[0].target!==calEntries[1].target;
   const protEntries = pair.map(w=>{
     const prot = Number(w?.protein);
-    const protTgt = Number(w?.weight) * proteinPerLb(weekModeOf(w)); // rule-based: 1g/lb cut, 0.8g/lb maint
+    // v18 R2: score against the EFFECTIVE target (override when set, else the
+    // phase equation) — the export must never show "[override]" next to a %
+    // computed from the equation (the old A3 GREEN/WATCH contradiction class).
+    const protTgt = proteinScoreTarget(weekModeOf(w), Number(w?.weight));
     return (Number.isFinite(prot) && Number.isFinite(protTgt) && protTgt!==0) ? {actual:prot, target:protTgt} : null;
   }).filter(Boolean);
   const neatEntries = pair.map(w=>{
@@ -1654,9 +1781,14 @@ function calcStallStatus(cv, currentWaist, savedWeeks, opts={}){
     ? currentWeek.calories/calTarget*100
     : null;
 
-  const protAdhPct = (currentWeek && currentWeek.protein!=null && currentWeek.weight!=null && currentWeek.weight!==0)
-    ? currentWeek.protein/currentWeek.weight/proteinPerLb((opts&&opts.mode)||(typeof D!=='undefined'&&D.mode)||'cut')*100 // % of the phase protein rule
-    : null;
+  // v18 R2: % of the EFFECTIVE protein target (override when set, else the
+  // phase equation). Same mode resolution as before — only the target changed,
+  // so no-override results are identical to v17.
+  const protAdhMode = (opts&&opts.mode)||(typeof D!=='undefined'&&D.mode)||'cut';
+  const protAdhPct = proteinAdherencePct(
+    (currentWeek && currentWeek.protein!=null) ? currentWeek.protein : null,
+    currentWeek ? currentWeek.weight : null,
+    protAdhMode);
 
   const stpAdhPct = (currentWeek && currentWeek.steps!=null && currentWeek.stepTarget!=null && currentWeek.stepTarget!==0)
     ? calcNEAT(currentWeek.steps, currentWeek.bikeMin).totalEq/currentWeek.stepTarget*100
@@ -1706,6 +1838,17 @@ function calcStallStatus(cv, currentWaist, savedWeeks, opts={}){
 }
 
 function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks, priorRR){
+  // v18 R3: 'unmodeled' weeks (undocumented 6/29/25–10/24/25 gap) are data-only
+  // records — no rate zones, stall engine, or actions. Guarded BEFORE any
+  // MODE_CONFIG lookup: exporting one of these weeks used to crash with
+  // "Cannot read properties of undefined (reading 'protAdhFloor')" (round 2).
+  if(mode==='unmodeled'){
+    return {
+      action:'[UNMODELED PHASE — data record only] This week falls in the undocumented 6/29/25–10/24/25 gap. No targets or actions are computed for it.',
+      actionCode:'UNMODELED', priority:0, suppressed:true,
+      note:'Unmodeled phase — data record only; no rate zones, stall engine, or actions apply.'
+    };
+  }
   const cfg = MODE_CONFIG[mode];
   const tagList = tags || [];
   const suppressed = tagList.includes('illness') || tagList.includes('deload');
@@ -1933,18 +2076,20 @@ function calcAdherenceStreak(){
 
     // Adherence
     const calAdh  = (w.calories&&w.calorieTarget) ? w.calories/w.calorieTarget*100 : null;
-    const protAdh = (w.protein&&w.weight) ? w.protein/w.weight*100 : null;
     const neatAdh = w.steps!=null ? calcNEAT(w.steps,w.bikeMin).totalEq/(w.stepTarget||15000)*100 : null;
     const calOk  = calAdh==null  || calAdh>=90;
     // v17 R2b: protein streak threshold follows the phase rule (90% of 1g/lb cut, 90% of 0.8g/lb maint)
+    // v18 R2: …but Alex's override wins when set — the clean-week gate scores
+    // against the effective target (see proteinStreakOk). No-override path is
+    // the exact old expression, so historical streaks are unchanged.
     const protFloorPct = 90*proteinPerLb(mode);
-    const protOk = protAdh==null || protAdh>=protFloorPct;
+    const protOk = proteinStreakOk(w.protein, w.weight, mode);
     const neatOk = neatAdh==null || neatAdh>=80;
 
     if(velOk && recOk && calOk && protOk && neatOk){
       streak++;
     } else {
-      brokenReason = !velOk?'velocity off target':!recOk?'recovery red flag':!calOk?'calorie adherence <90%':!protOk?('protein adherence <'+Math.round(protFloorPct)+'%'):'NEAT adherence <80%';
+      brokenReason = !velOk?'velocity off target':!recOk?'recovery red flag':!calOk?'calorie adherence <90%':!protOk?(proteinOverrideFor(mode)!=null?'protein <90% of override target':'protein adherence <'+Math.round(protFloorPct)+'%'):'NEAT adherence <80%';
       break;
     }
   }
@@ -2284,8 +2429,10 @@ function calcNextWeekTargets(anchorDate=null){
   const baseBike  = latest.bikeMin || 0;
   // [Fix 3] Protein — cut: existing 1g/lb equation (kept); maintenance: 0.8g/lb of
   // body weight, dynamic from the week's 7-day-avg weight (Alex decision 2026-09-25)
-  const exactProt = wkMode==='maint' ? (calcMaintProtein(bw) ?? mtNWT.protein)
-    : wkMode === 'cut' ? Math.round(bw * CUT_PROTEIN_PER_LB) : Math.round(bw * 0.8);
+  // v18: next-week protein target follows Alex's override when set; otherwise the
+  // same per-mode equations as before (cut 1.0, maint 0.8, bulk 0.8).
+  const exactProt = proteinTargetFor(wkMode, bw) ?? (wkMode==='maint' ? (calcMaintProtein(bw) ?? mtNWT.protein)
+    : wkMode === 'cut' ? Math.round(bw * CUT_PROTEIN_PER_LB) : Math.round(bw * 0.8));
   const baseProt  = exactProt;
 
   // [Fix 2] Basis description — make clear what the starting point is
@@ -3245,9 +3392,11 @@ function renderApp(activeTabName){
   if(needsAnalytics) dirty.analytics = false;
 
   // v17: weekly TDEE estimate, body-comp log, maintenance targets (cheap — always render)
+  // v18: cut-history summary (memoized; renders in every mode)
   renderTDEE();
   renderBodyComp();
   renderMaintTargets();
+  renderCutHistory();
 }
 
 function getCurrentFormSnapshot(){
@@ -3320,6 +3469,9 @@ function saveWeek(){
     calorieTarget:v('calTgt')||v('calTgtInline')?parseInt(v('calTgt')||v('calTgtInline')):null,
     protein:v('prot')?parseInt(v('prot')):null,
     proteinTarget:v('protTgt')?parseInt(v('protTgt')):null,
+    // v18: record whether the saved protein target was the phase equation or
+    // Alex's override so the weekly export can label it honestly.
+    proteinTargetSource: isProteinOverride((typeof D!=='undefined'&&D.mode)||'cut') ? 'override' : 'equation',
     fat:nv('fat'),carbs:nv('carbs') ? parseInt(v('carbs')) : null,
     fiber:nv('fiber'),
     lifts, notes:v('notes'),
@@ -3897,8 +4049,13 @@ function genSummary(){
   const calLine = (wCals&&wCalTgt)
     ? wCals+' kcal (target: '+wCalTgt+', '+(wCals>wCalTgt?'+':'')+(wCals-wCalTgt)+' vs target)'
     : nd(wCals)+' kcal';
+  // v18: weekly-export protein source tag — only labels weeks that recorded it
+  // (v18+); pre-v18 weeks stay unlabeled rather than guessed.
+  const protSrcTag = (!w) ? ''
+    : w.proteinTargetSource==='override' ? ' [override]'
+    : w.proteinTargetSource==='equation' ? ' [equation]' : '';
   const protLine = wProt
-    ? (wProt+'g'+(wProtTgt?' / '+wProtTgt+'g target ('+Math.round(wProt/wProtTgt*100)+'%)':''))
+    ? (wProt+'g'+(wProtTgt?' / '+wProtTgt+'g target ('+Math.round(wProt/wProtTgt*100)+'%)'+protSrcTag:''))
     : '—';
 
   // ── NEAT ──
@@ -4260,10 +4417,12 @@ function genSummary(){
       if(!nwtExp) return '  Insufficient data (need ≥2 weeks)';
       const suppTag = nwtExp.suppressed ? ' [SUPPRESSED — held]' : '';
       // [Rule 7] Protein label: always rule-based — cut 1g/lb (existing), maint 0.8g/lb (dynamic equation)
+      // v18: appends [equation] or [override Ng] so the export says which was used.
       const protRuleTxt = wkMode==='maint' ? '0.8g/lb' : '1g/lb';
-      const protLabel = wWeight
+      const protLabel = (wWeight
         ? Math.round(nwtExp.protein)+'g/day [exact: '+Math.round(wWeight)+' lbs × '+protRuleTxt+' = '+Math.round(nwtExp.protein)+'g]'
-        : Math.round(nwtExp.protein)+'g/day ['+proteinRuleLabel(wkMode)+' — weight not logged]';
+        : Math.round(nwtExp.protein)+'g/day ['+proteinRuleLabel(wkMode)+' — weight not logged]')
+        +' ['+proteinTargetSource(wkMode)+(isProteinOverride(wkMode)?' '+proteinOverrideFor(wkMode)+'g':'')+']';
       // [Rule 7] Compliance goal during ADHERENCE / low confidence weeks
       const complianceGoal = (nwtExp.complianceMode)
         ? '\n  Compliance goal:   ≥5 tracked days + ≥'+Math.round(nwtExp.protein)+'g protein/day ('+proteinRuleLabel(wkMode)+')'
@@ -4279,6 +4438,18 @@ function genSummary(){
       ].filter(Boolean).join('\n');
     })(),
     '',
+    // v18: signal hierarchy reference key + permanent data-derived cut history.
+    // Guardrails section only on surplus weeks (status only, no prescription).
+    '── SIGNAL HIERARCHY (reference key — not a decision engine) ──',
+    'Tier 1 · act: performance trend · waist trend · multi-week weight trend',
+    'Tier 2 · context: HRV/RHR trends · sleep',
+    'Tier 3 · noise — do not act: single-day scale weight · single HRV reading · subjective fluctuations',
+    '',
+    '── CUT HISTORY (data-derived) ──',
+    cutHistoryExportLines(),
+    '',
+    ...(wkMode==='bulk' ? ['── SURPLUS GUARDRAILS (status only — no auto-prescription) ──',
+      surplusGuardrailsExportLines(cvSum.rollingRate, wWeight, D.weeks.slice(0,idx)), ''] : []),
     '── NOTES ──',
     wNotes||'None',
     '',
@@ -4317,7 +4488,20 @@ function genSummary(){
     'calorie_adherence_pct_2wk: '+pctMachine(adherenceComputed.caloriePct, 0),
     'calorie_adherence_target_changed_2wk: '+boolStr(adherenceWindow?.calorieTargetChanged===true),
     'protein_adherence_pct_2wk: '+pctMachine(adherenceComputed.proteinPct, 0),
-    'protein_rule:              '+proteinRuleLabel(wkMode)+(wkMode==='maint' && wWeight ? ' ['+Math.round(calcMaintProtein(wWeight)||0)+'g at '+Math.round(wWeight)+' lb avg]' : ''),
+    // v18: protein source — equation vs Alex's override.
+    'protein_rule:              '+proteinRuleLabel(wkMode)+' ['+proteinTargetSource(wkMode)+(isProteinOverride(wkMode)?' '+proteinOverrideFor(wkMode)+'g':(wkMode==='maint'&&wWeight?' '+Math.round(calcMaintProtein(wWeight)||0)+'g at '+Math.round(wWeight)+' lb avg':''))+']',
+    'signal_hierarchy:          T1=performance trend|waist trend|multi-week weight trend; T2=hrv/rhr trends|sleep; T3=noise: single-day scale|single hrv|subjective (do not act)',
+    'cut_history_available:     '+boolStr(calcCutHistorySummary().available),
+    'cut_history_span:          '+(()=>{const s=calcCutHistorySummary();return s.available?s.startDate+' to '+s.endDate+' ('+s.durationWeeks+' wks)':'n/a';})(),
+    'cut_history_total_loss_lb: '+(()=>{const s=calcCutHistorySummary();return s.available?String(s.totalLoss):'n/a';})(),
+    'cut_history_avg_lb_per_wk: '+(()=>{const s=calcCutHistorySummary();return s.available?String(s.avgRateLbWk):'n/a';})(),
+    'cut_history_waist_chg_in:  '+(()=>{const s=calcCutHistorySummary();return s.available?(s.waistChange!=null?String(s.waistChange):'n/a'):'n/a';})(),
+    'cut_history_strength_retained: '+(()=>{const s=calcCutHistorySummary();return s.available?(s.liftsRetained+'/'+s.liftsTracked+' lifts >=90pct'):'n/a';})(),
+    // v18: surplus guardrails — status only (bulk weeks).
+    ...(wkMode==='bulk' ? (()=>{const g=calcSurplusGuardrails(cvSum.rollingRate, wWeight, D.weeks.slice(0,idx));
+      return ['surplus_guardrail_weight:  '+g.weight.status+' — '+g.weight.label+' ('+g.weight.detail+')',
+              'surplus_guardrail_waist:   '+g.waist.status+' — '+g.waist.label+' ('+g.waist.detail+')',
+              'surplus_guardrail_strength: '+g.strength.status+' — '+g.strength.label+' ('+g.strength.detail+')'];})() : []),
     'neat_adherence_pct_2wk:    '+pctMachine(adherenceComputed.neatPct, 0),
     'neat_gap_step_eq:          '+String(Math.round(neatGapStepEq)),
     'phase_weight_change_lbs_to_anchor:   '+numMachine(phaseComputed.weightChange, 2),
@@ -4893,7 +5077,10 @@ function importHistorical(){
   let added=0,skipped=0;
   HIST_DATA.forEach(hw=>{
     if(existing.has(hw.date))skipped++;
-    else{D.weeks.push(hw);added++;}
+    // v18 R3: migrate on the way in (round-2 defect: pushing raw weeks skipped
+    // phase tagging, so cut history read 2025-02-22/83 wks until the next
+    // reload). migrateWeek is idempotent, so re-imports stay safe.
+    else{D.weeks.push(migrateWeek(hw));added++;}
   });
   D.weeks.sort((a,b)=>a.date.localeCompare(b.date));
   save();
@@ -5212,6 +5399,25 @@ function updVelocity(){
     }
   }
   document.getElementById('velAction').innerHTML = action;
+
+  // ── v18: lean-gain guardrails (surplus mode only) — status, never a prescription ──
+  const grEl = document.getElementById('velGuardrails');
+  if(grEl){
+    if(mode==='bulk'){
+      const gr = calcSurplusGuardrails(rr, cw, ctx.weeksThroughAnchor);
+      const gBadge = g => g.status==='ok'
+        ? '<span style="color:var(--g)">✓</span>'
+        : g.status==='watch' ? '<span style="color:var(--a)">⚠</span>' : '<span style="color:var(--mu)">—</span>';
+      const gCell = (name, g) =>
+        '<div><span style="color:var(--mu)">'+name+'</span><br>'+gBadge(g)+' '+escHtml(g.label)+
+        '<div style="font-size:9px;color:var(--mu)">'+escHtml(g.detail)+'</div></div>';
+      grEl.innerHTML =
+        '<div style="font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">Lean-gain guardrails — status only, no auto-prescription</div>'+
+        '<div class="fg fg3" style="font-size:11px">'+gCell('Weight',gr.weight)+gCell('Waist',gr.waist)+gCell('Strength',gr.strength)+'</div>';
+    } else {
+      grEl.innerHTML = '';
+    }
+  }
 }
 
 // v17 F1: surplus gain-cap evaluation — Alex's exit-plan cap (~1 lb/month).
@@ -5221,6 +5427,277 @@ function checkSurplusCap(rr){
   if(rr==null || !Number.isFinite(rr)) return {gainPct:null, overCap:false};
   const gain = -rr;
   return {gainPct:+gain.toFixed(2), overCap: gain > SURPLUS_GAIN_CAP_PCT_WK};
+}
+
+// ══════════════════════════════════════════
+// v18: LEAN-GAIN GUARDRAILS (surplus mode)
+// STATUS ONLY — these never prescribe calorie changes. Alex decides from the data.
+// ── Weight: target band 0.10–0.15 %BW/wk gained (the 0.15 cap is the top of
+// the band). Below band or losing = watch; above cap = watch (consistent with
+// the v17 cap zone naming).
+// ── Waist rule (explicit): in a lean-gain phase waist should rise much more
+// slowly than body weight. Flag when the 3-week waist trend exceeds +0.25 in
+// per lb gained. Below 0.1 lb/wk of gain the ratio is noise, so fall back to
+// an absolute +0.15 in/wk rise. Same-baseline waist data only (never across
+// the tape-change break).
+// ── Strength rule: a priority lift regresses when its recent (last 3 surplus
+// weeks) peak e1RM is below 90% of its pre-surplus baseline — the same 90%
+// threshold as the performance-drop check. v18 R2: the baseline is the last
+// SURPLUS_STRENGTH_BASELINE_WKS weeks before the surplus starts (end of cut +
+// bridge), NOT every set ever logged — an old bulk peak from a heavier
+// bodyweight would false-flag regression early in the surplus.
+// ≥2 regressed lifts = watch.
+const SURPLUS_TARGET_GAIN_LOW_PCT_WK = 0.10;
+const SURPLUS_WAIST_IN_PER_LB = 0.25;
+const SURPLUS_WAIST_ABS_IN_WK = 0.15;
+const SURPLUS_STRENGTH_REGRESS_FRAC = 0.9;
+const SURPLUS_STRENGTH_BASELINE_WKS = 6;
+
+function evalSurplusWeightGuardrail(gainPctWk){
+  // gainPctWk: %BW/wk gained (positive = gaining). calcCutVelocity's
+  // rollingRate is the negative of this (positive rr = losing).
+  if(gainPctWk==null || !Number.isFinite(gainPctWk))
+    return {status:'na', label:'—', detail:'insufficient weight data'};
+  if(gainPctWk < 0)
+    return {status:'watch', label:'Losing — check surplus', detail:'weight falling during surplus'};
+  if(gainPctWk < SURPLUS_TARGET_GAIN_LOW_PCT_WK)
+    return {status:'watch', label:'Below band', detail:gainPctWk.toFixed(2)+'%/wk — target 0.10–0.15%/wk'};
+  if(gainPctWk <= SURPLUS_GAIN_CAP_PCT_WK)
+    return {status:'ok', label:'In band ✓', detail:gainPctWk.toFixed(2)+'%/wk — target 0.10–0.15%/wk'};
+  return {status:'watch', label:'Above cap ⚠', detail:gainPctWk.toFixed(2)+'%/wk — cap 0.15%/wk'};
+}
+
+function surplusWaistTrendInWk(weeks){
+  // 3-week waist trend (in/wk): mean of the last 3 waist readings vs mean of
+  // the prior 3, on the same measurement baseline only (offset-adjusted).
+  // v18 R2: with only 4–5 points the prior block is short, so divide by the
+  // ACTUAL midpoint gap in weeks (from the week dates) instead of assuming a
+  // 3-week gap. Returns null when not computable.
+  const ws = (weeks||[]).filter(w=>w && w.waist!=null && Number.isFinite(Number(w.waist)) && Number(w.waist)>0 && w.date)
+    .slice().sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+  if(ws.length<4) return null;
+  const latestIsPre = waistIsPreBreak(ws[ws.length-1].date);
+  const same = ws.filter(w=>waistIsPreBreak(w.date)===latestIsPre);
+  if(same.length<4) return null;
+  const pts = same.map(w=>({v:adjWaist(Number(w.waist), w.date), t:new Date(String(w.date)+'T12:00:00Z').getTime()}));
+  const recent = pts.slice(-3), prior = pts.slice(-6,-3);
+  const mean = a=>a.reduce((s,x)=>s+x,0)/a.length;
+  const gapWk = (mean(recent.map(p=>p.t)) - mean(prior.map(p=>p.t)))/86400000/7;
+  if(!(gapWk>0)) return null;
+  return (mean(recent.map(p=>p.v))-mean(prior.map(p=>p.v)))/gapWk;
+}
+
+function evalSurplusWaistGuardrail(waistTrendInWk, gainLbWk){
+  if(waistTrendInWk==null || !Number.isFinite(waistTrendInWk))
+    return {status:'na', label:'—', detail:'insufficient same-baseline waist data'};
+  if(gainLbWk!=null && gainLbWk>0.1){
+    const ratio = waistTrendInWk/gainLbWk;
+    const d = 'waist '+(waistTrendInWk>=0?'+':'')+waistTrendInWk.toFixed(2)+' in/wk ≈ '+ratio.toFixed(2)+' in/lb gained (rule: >0.25 in/lb)';
+    return ratio > SURPLUS_WAIST_IN_PER_LB
+      ? {status:'watch', label:'Rising fast', detail:d}
+      : {status:'ok', label:'On pace ✓', detail:d};
+  }
+  if(waistTrendInWk > SURPLUS_WAIST_ABS_IN_WK)
+    return {status:'watch', label:'Rising', detail:'waist +'+waistTrendInWk.toFixed(2)+' in/wk while gaining ≤0.1 lb/wk'};
+  return {status:'ok', label:'Stable ✓', detail:'waist '+(waistTrendInWk>=0?'+':'')+waistTrendInWk.toFixed(2)+' in/wk'};
+}
+
+function liftIsRegressed(priorPeak, recentPeak){
+  return priorPeak>0 && recentPeak>0 && recentPeak < SURPLUS_STRENGTH_REGRESS_FRAC*priorPeak;
+}
+
+function calcSurplusStrengthGuardrail(weeks){
+  const bulkWeeks = (weeks||[]).filter(w=>w && weekModeOf(w)==='bulk' && w.date)
+    .slice().sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+  if(bulkWeeks.length<2) return {status:'na', label:'—', detail:'surplus phase just started'};
+  const bulkStart = String(bulkWeeks[0].date);
+  const recentFrom = String(bulkWeeks[Math.max(0, bulkWeeks.length-3)].date);
+  // v18 R2: pre-surplus baseline window — end of cut + bridge only (see
+  // SURPLUS_STRENGTH_BASELINE_WKS), never the whole lifting history.
+  const bulkStartT = new Date(bulkStart+'T12:00:00Z').getTime();
+  const baseFromT = bulkStartT - SURPLUS_STRENGTH_BASELINE_WKS*7*86400000;
+  const lifts = (typeof PRIORITY_LIFTS!=='undefined') ? PRIORITY_LIFTS : [];
+  let checked=0, regressed=0; const names=[];
+  lifts.forEach(pl=>{
+    const pts = getExerciseData(pl.name).filter(p=>p && p.e1rm && p.rpe && p.rpe>=7 && p.date);
+    const t = p => new Date(String(p.date)+'T12:00:00Z').getTime();
+    const prior = pts.filter(p=>{ const pt=t(p); return pt>=baseFromT && pt<bulkStartT; });
+    const recent = pts.filter(p=>String(p.date)>=recentFrom);
+    if(!prior.length || !recent.length) return;
+    checked++;
+    const priorPeak = Math.max.apply(null, prior.map(p=>p.e1rm));
+    const recentPeak = Math.max.apply(null, recent.map(p=>p.e1rm));
+    if(liftIsRegressed(priorPeak, recentPeak)){ regressed++; names.push(String(pl.name).split(' (')[0]); }
+  });
+  if(!checked) return {status:'na', label:'—', detail:'no priority-lift strength data'};
+  if(regressed>=2)
+    return {status:'watch', label:'Regressing', detail:regressed+' of '+checked+' lifts <90% of pre-surplus baseline (last '+SURPLUS_STRENGTH_BASELINE_WKS+' wks) ('+names.join(', ')+')'};
+  return {status:'ok', label:'Holding ✓', detail:checked+' lifts tracked, '+regressed+' regressing (<2)'};
+}
+
+function calcSurplusGuardrails(rr, refWeight, weeks){
+  const gainPctWk = (rr!=null && Number.isFinite(rr)) ? -rr : null;
+  const gainLbWk = (gainPctWk!=null && refWeight>0) ? gainPctWk/100*refWeight : null;
+  return {
+    weight: evalSurplusWeightGuardrail(gainPctWk),
+    waist: evalSurplusWaistGuardrail(surplusWaistTrendInWk(weeks), gainLbWk),
+    strength: calcSurplusStrengthGuardrail(weeks)
+  };
+}
+
+// v18: minimal HTML-escaping for guardrail/cut-history detail strings that can
+// carry user-entered text (lift names, body-comp notes).
+function escHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ══════════════════════════════════════════
+// v18: PERMANENT CUT-HISTORY SUMMARY
+// Derived from the MOST RECENT continuous run of cut weeks (most recent cut
+// week backwards until a non-cut mode breaks the run; trailing maint/bulk
+// weeks after a completed cut don't erase it) — never hardcoded, never merged
+// across phases. Diet-break/deload weeks are planned deviations WITHIN a phase,
+// so they count as part of the run whatever mode they were saved under (v18 R3
+// robustness fix; Alex's own vacation weeks are already cut-mode) — BUT only
+// when flanked by the run on both sides (v18 R4): a deload-tagged bulk week
+// sitting immediately BEFORE the cut's first week must not push the cut start
+// back, so any leading tagged weeks are trimmed until the run starts at the
+// first true cut week. A maint/bulk week without such a tag, or an 'unmodeled'
+// gap week, ends the run. Rendered in every mode so the history survives mode
+// switches. Missing data is labeled plainly instead of guessed.
+function cutRunWeeks(weeks){
+  const sorted = (weeks||[]).filter(w=>w && w.date)
+    .slice().sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+  // Start from the most recent CUT week — trailing maint/bulk weeks after a
+  // completed cut don't erase it — then walk backwards while the mode stays
+  // cut. A maint/bulk week or an 'unmodeled' gap week ends the run.
+  let end = sorted.length-1;
+  while(end>=0 && weekModeOf(sorted[end])!=='cut') end--;
+  const run = [];
+  for(let i=end;i>=0;i--){
+    const w = sorted[i];
+    const tags = Array.isArray(w.tags) ? w.tags : [];
+    const isBreakWeek = tags.includes('diet_break') || tags.includes('deload') || w.deload===true;
+    if(weekModeOf(w)==='cut' || isBreakWeek) run.unshift(w);
+    else break;
+  }
+  // v18 R4: a tagged non-cut week counts only when a cut week sits on both
+  // sides of it. The scan starts from the most recent true cut week (later
+  // side guaranteed), so trim any leading tagged weeks: the run must start at
+  // the first true cut week. A pre-cut deload-tagged bulk week can otherwise
+  // merge in and push the cut start back.
+  while(run.length && weekModeOf(run[0])!=='cut') run.shift();
+  return run;
+}
+function calcCutHistorySummary(){
+  const weeks = (typeof D!=='undefined' && Array.isArray(D.weeks)) ? D.weeks : [];
+  const cutWeeks = cutRunWeeks(weeks).filter(w=>w.weight!=null);
+  if(cutWeeks.length<2) return {available:false, reason:'fewer than 2 logged cut weeks in the current cut run'};
+  const first = cutWeeks[0], last = cutWeeks[cutWeeks.length-1];
+  const spanDays = Math.round((new Date(String(last.date)+'T12:00:00Z') - new Date(String(first.date)+'T12:00:00Z'))/86400000);
+  const durationWeeks = Math.max(1, Math.round(spanDays/7));
+  const totalLoss = +(Number(first.weight) - Number(last.weight)).toFixed(1);
+  // Waist: same-baseline endpoints only (never across the tape-change break).
+  const waistPts = cutWeeks.filter(w=>w.waist!=null && Number.isFinite(Number(w.waist)) && Number(w.waist)>0);
+  const latestIsPre = waistPts.length ? waistIsPreBreak(waistPts[waistPts.length-1].date) : false;
+  const sameBase = waistPts.filter(w=>waistIsPreBreak(w.date)===latestIsPre);
+  let waistChange=null, waistNote='';
+  if(sameBase.length>=2){
+    const ws = adjWaist(Number(sameBase[0].waist), sameBase[0].date);
+    const we = adjWaist(Number(sameBase[sameBase.length-1].waist), sameBase[sameBase.length-1].date);
+    waistChange = +(ws-we).toFixed(2);
+    waistNote = sameBase[0].date+' → '+sameBase[sameBase.length-1].date+(latestIsPre?' (pre-tape-change baseline)':' (current tape baseline)');
+  } else {
+    waistNote = 'n/a — insufficient same-baseline waist data';
+  }
+  // Strength retained: per priority lift, peak e1RM in the first 4 weeks of the
+  // current cut run vs peak e1RM in the last 4 weeks of the run (top sets, RPE≥7 only).
+  const d0 = new Date(String(first.date)+'T12:00:00Z').getTime();
+  const d1 = new Date(String(last.date)+'T12:00:00Z').getTime();
+  const lifts = [];
+  ((typeof PRIORITY_LIFTS!=='undefined')?PRIORITY_LIFTS:[]).forEach(pl=>{
+    const pts = getExerciseData(pl.name).filter(p=>p && p.e1rm && p.rpe && p.rpe>=7 && p.date);
+    const t = p => new Date(String(p.date)+'T12:00:00Z').getTime();
+    const early = pts.filter(p=>t(p) <= d0+28*86400000);
+    const late = pts.filter(p=>t(p) >= d1-28*86400000);
+    if(!early.length || !late.length) return;
+    const ePeak = Math.max.apply(null, early.map(p=>p.e1rm));
+    const lPeak = Math.max.apply(null, late.map(p=>p.e1rm));
+    lifts.push({name:String(pl.name).split(' (')[0], early:ePeak, late:lPeak, pct:Math.round(lPeak/ePeak*100)});
+  });
+  const retained = lifts.filter(l=>l.pct>=90).length;
+  // DEXA entries on record (the body-comp log is global, any mode).
+  const dexa = getBodyComp().filter(e=>e && e.type==='dexa')
+    .map(e=>({date:e.date, bfPct:e.bfPct, fatMassLb:e.fatMassLb, leanMassLb:e.leanMassLb}));
+  return {
+    available:true,
+    startDate:first.date, endDate:last.date,
+    startWeight:Number(first.weight), endWeight:Number(last.weight),
+    durationWeeks, totalLoss,
+    avgRateLbWk:+(totalLoss/durationWeeks).toFixed(3),
+    waistChange, waistNote,
+    lifts, liftsRetained:retained, liftsTracked:lifts.length,
+    dexa
+  };
+}
+
+const _sgn = x => (x>0?'−':x<0?'+':'')+Math.abs(x);
+
+let _cutHistCache = {sig:null, val:null};
+function renderCutHistory(){
+  const el = document.getElementById('cutHistoryBody');
+  if(!el) return;
+  const sig = (typeof D!=='undefined' && Array.isArray(D.weeks))
+    ? D.weeks.length+'|'+D.weeks.map(w=>w.date+':'+(w.mode||'')+':'+(w.weight==null?'':w.weight)+':'+(w.waist==null?'':w.waist)).join(',')
+    : 'none';
+  // getExerciseData reads the global HEVY_DATA too — include its session count
+  // so imported Hevy sessions invalidate the cache as well.
+  const hevySig = (typeof HEVY_DATA!=='undefined' && HEVY_DATA.sessions) ? HEVY_DATA.sessions.length : 0;
+  const fullSig = sig+'|hevy:'+hevySig;
+  if(_cutHistCache.sig!==fullSig){ _cutHistCache = {sig:fullSig, val:calcCutHistorySummary()}; }
+  const s = _cutHistCache.val;
+  if(!s.available){ el.innerHTML = '<p class="note">Cut history: '+escHtml(s.reason)+'.</p>'; return; }
+  const liftRows = s.lifts.length
+    ? s.lifts.map(l=>'<div>'+escHtml(l.name)+': '+l.early+' → '+l.late+' e1RM ('+l.pct+'%'+(l.pct>=90?' ✓':'')+')</div>').join('')
+    : '<div style="color:var(--mu)">n/a — no comparable top sets (RPE≥7) in first/last 4 cut weeks</div>';
+  const dexaRows = s.dexa.length
+    ? s.dexa.map(d=>'<div>'+escHtml(d.date)+': '+(d.bfPct!=null?d.bfPct+'% BF':'n/a')+(d.leanMassLb!=null?' · lean '+d.leanMassLb+' lb':'')+(d.fatMassLb!=null?' · fat '+d.fatMassLb+' lb':'')+'</div>').join('')
+    : '<div style="color:var(--mu)">n/a — no DEXA entries logged</div>';
+  el.innerHTML =
+    '<div class="fg fg3" style="font-size:11px;margin-bottom:6px">'+
+    '<div><span style="color:var(--mu)">Span</span><br>'+escHtml(s.startDate)+' → '+escHtml(s.endDate)+'<div style="font-size:9px;color:var(--mu)">'+s.durationWeeks+' weeks</div></div>'+
+    '<div><span style="color:var(--mu)">Weight</span><br>'+s.startWeight+' → '+s.endWeight+' lb<div style="font-size:9px;color:var(--mu)">'+_sgn(s.totalLoss)+' lb total · '+_sgn(s.avgRateLbWk)+' lb/wk avg</div></div>'+
+    '<div><span style="color:var(--mu)">Waist</span><br>'+(s.waistChange!=null?(_sgn(s.waistChange)+' in'):'n/a')+'<div style="font-size:9px;color:var(--mu)">'+escHtml(s.waistNote)+'</div></div>'+
+    '</div>'+
+    '<div style="font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin:6px 0 3px">Strength retained (first 4 vs last 4 weeks of this cut, e1RM)'+(s.liftsTracked?' — '+s.liftsRetained+'/'+s.liftsTracked+' ≥90%':'')+'</div>'+
+    '<div style="font-size:11px;line-height:1.7">'+liftRows+'</div>'+
+    '<div style="font-size:10px;color:var(--mu);text-transform:uppercase;letter-spacing:1px;margin:6px 0 3px">DEXA on record</div>'+
+    '<div style="font-size:11px;line-height:1.7">'+dexaRows+'</div>';
+}
+
+// v18: weekly-export text for the cut-history summary.
+function cutHistoryExportLines(){
+  const s = calcCutHistorySummary();
+  if(!s.available) return 'n/a — '+s.reason;
+  const L = [
+    'Span: '+s.startDate+' → '+s.endDate+' ('+s.durationWeeks+' weeks)',
+    'Weight: '+s.startWeight+' → '+s.endWeight+' lb ('+_sgn(s.totalLoss)+' lb total, '+_sgn(s.avgRateLbWk)+' lb/wk avg)',
+    'Waist: '+(s.waistChange!=null ? _sgn(s.waistChange)+' in ('+s.waistNote+')' : s.waistNote)
+  ];
+  L.push('Strength retained: '+(s.lifts.length
+    ? s.liftsRetained+'/'+s.liftsTracked+' lifts ≥90% — '+s.lifts.map(l=>l.name+' '+l.pct+'%').join(', ')
+    : 'n/a — no comparable top sets (RPE≥7) in first/last 4 weeks of this cut'));
+  L.push('DEXA: '+(s.dexa.length
+    ? s.dexa.map(d=>d.date+' '+(d.bfPct!=null?d.bfPct+'% BF':'n/a')).join(' · ')
+    : 'n/a — none logged'));
+  return L.join('\n');
+}
+
+// v18: weekly-export text for the surplus guardrails (bulk weeks only).
+function surplusGuardrailsExportLines(rollingRate, refWeight, weeksThroughAnchor){
+  const g = calcSurplusGuardrails(rollingRate, refWeight, weeksThroughAnchor);
+  const f = x => x.label+' — '+x.detail;
+  return 'Weight:   '+f(g.weight)+'\nWaist:    '+f(g.waist)+'\nStrength: '+f(g.strength);
 }
 
 // ══════════════════════════════════════════
@@ -5467,20 +5944,44 @@ function renderBodyComp(){
 // ══════════════════════════════════════════
 function renderMaintTargets(){
   const mt = getMaintTargets();
-  sv('mtKcal', mt.kcal); sv('mtProt', mt.protein); sv('mtFat', mt.fat);
+  sv('mtKcal', mt.kcal);
+  // v18: protein field is editable — placeholder always shows the live equation
+  // default; the value shows Alex's override when one is set. Never clobber
+  // the field while Alex is typing in it.
+  const mtProtEl = document.getElementById('mtProt');
+  const eq = proteinEquationFor('maint');
+  const ov = proteinOverrideFor('maint');
+  if(mtProtEl){
+    if(eq!=null) mtProtEl.placeholder = eq+'g';
+    if(document.activeElement!==mtProtEl) sv('mtProt', ov!=null ? ov : (mt.protein||''));
+  }
+  const wrap = document.getElementById('mtProtWrap');
+  if(wrap) wrap.innerHTML = ov!=null
+    ? '<span style="color:var(--a1)">override '+ov+'g — equation default is '+(eq!=null?eq+'g':'n/a')+'</span>'
+    : 'Default: '+(eq!=null?eq+'g':'n/a')+' (0.8g/lb) — type to override';
+  sv('mtFat', mt.fat);
   sv('mtCarbs', mt.carbs); sv('mtStep', mt.stepEq);
 }
 function deriveMaintCarbs(){
-  const kcal=nv('mtKcal')||0, p=nv('mtProt')||0, f=nv('mtFat')||0;
+  // v18: fall back to the effective protein target when the field is empty
+  // (the equation default shows as a placeholder, not a value).
+  const kcal=nv('mtKcal')||0, p=nv('mtProt')||proteinTargetFor('maint')||0, f=nv('mtFat')||0;
   const c=Math.round((kcal - p*4 - f*9)/4);
   if(c>0){ sv('mtCarbs', c); toast('Carbs re-derived: '+c+'g'); }
   else toast('Check kcal/protein/fat — derived carbs ≤ 0');
 }
 function saveMaintTargets(){
-  D.maintTargets = {kcal:nv('mtKcal')||2500, protein:nv('mtProt')||175, fat:nv('mtFat')||60,
+  // v18: a typed protein value becomes a persisted override for maintenance;
+  // empty clears the override (back to the equation).
+  const pv = nv('mtProt');
+  if(typeof D!=='undefined'){
+    D.proteinOverrides = D.proteinOverrides||{cut:null,maint:null};
+    D.proteinOverrides.maint = (pv!=null && pv>0) ? Math.round(pv) : null;
+  }
+  D.maintTargets = {kcal:nv('mtKcal')||2500, protein:proteinTargetFor('maint') ?? (nv('mtProt')||175), fat:nv('mtFat')||60,
     carbs:nv('mtCarbs')||315, stepEq:nv('mtStep')||15000};
-  save(); renderMaintTargets();
-  toast('Maintenance targets saved ✓');
+  save(); renderMaintTargets(); updProteinDynamic();
+  toast('Maintenance targets saved ✓'+(isProteinOverride('maint')?' (protein override '+proteinOverrideFor('maint')+'g)':''));
 }
 
 // ══════════════════════════════════════════
@@ -5560,26 +6061,46 @@ function updProteinDynamic(){
   const protInEl = document.getElementById('protTgt');
   const wrap = document.getElementById('protDynWrap');
   if(!bw){ wrap.style.display='none'; return; }
-  // v17 R2b: auto target follows the phase rule — cut 1g/lb (existing), maint 0.8g/lb (dynamic equation)
+  // v18: effective target = Alex's override when set, else the phase equation
+  // (cut 1g/lb, maint 0.8g/lb dynamic). Identical to v17 when no override set.
   const pdMode = (typeof D!=='undefined' && D.mode) || 'cut';
   const ppl = proteinPerLb(pdMode);
-  const autoTgt = Math.round(bw*ppl); // g per lb of bodyweight
-  protInEl.title = 'Auto: '+ppl+'g × current bodyweight ('+proteinRuleLabel(pdMode)+')';
-  sv('protTgt', autoTgt);
+  const autoTgt = proteinTargetFor(pdMode, bw) ?? Math.round(bw*ppl); // g per lb of bodyweight
+  const effPpl = autoTgt/bw; // equals ppl unless Alex overrode
+  const srcTag = isProteinOverride(pdMode) ? ' (override)' : '';
+  protInEl.title = 'Target: '+proteinTargetSourceLabel(pdMode, bw)+(isProteinOverride(pdMode)?' — empty the field to reset to the equation':' — type a value to override for this mode');
+  protInEl.placeholder = String(proteinEquationFor(pdMode, bw)||'');
+  // Never clobber the field while Alex is typing an override in it.
+  if(document.activeElement!==protInEl) sv('protTgt', autoTgt);
   // Show g/lb stat
   const prot = nv('prot');
   wrap.style.display = 'block';
   const phaseWord = pdMode==='cut' ? 'cut' : pdMode==='maint' ? 'maintenance' : 'surplus';
-  if(!prot){ wrap.innerHTML = `<div style="font-size:10px;color:var(--mu)">Protein target auto-set to <strong style="color:var(--a2)">${autoTgt}g</strong> (${ppl}g × ${bw} lbs bodyweight). Enter protein intake above.</div>`; return; }
+  if(!prot){ wrap.innerHTML = `<div style="font-size:10px;color:var(--mu)">Protein target <strong style="color:var(--a2)">${autoTgt}g</strong> (${proteinRuleLabel(pdMode)}${srcTag}). Enter protein intake above.</div>`; return; }
   const gPerLb = prot / bw;
-  const gCol = gPerLb >= 0.9*ppl ? 'var(--g)' : gPerLb >= 0.8*ppl ? 'var(--a)' : 'var(--a3)';
-  const gFlag = gPerLb < 0.9*ppl ? ' ⚠ Below '+(0.9*ppl).toFixed(2)+'g/lb — muscle retention at risk during '+phaseWord : ' ✓ Adequate for '+phaseWord;
+  const gCol = gPerLb >= 0.9*effPpl ? 'var(--g)' : gPerLb >= 0.8*effPpl ? 'var(--a)' : 'var(--a3)';
+  const gFlag = gPerLb < 0.9*effPpl ? ' ⚠ Below '+(0.9*effPpl).toFixed(2)+'g/lb — muscle retention at risk during '+phaseWord : ' ✓ Adequate for '+phaseWord;
   wrap.innerHTML = `<div style="font-size:10px;padding:8px 12px;background:var(--s2);border-radius:7px">
     <span style="color:var(--mu)">Protein/lb: </span><strong style="color:${gCol}">${gPerLb.toFixed(2)} g/lb</strong>
     <span style="color:${gPerLb<0.9?'var(--a)':'var(--mu)'}"> ${gFlag}</span>
-    <span style="color:var(--mu);margin-left:8px">Target: ${autoTgt}g</span>
+    <span style="color:var(--mu);margin-left:8px">Target: ${autoTgt}g${srcTag}</span>
   </div>`;
   updPG();
+}
+// v18: the weekly protein-target field is editable — typing a value commits a
+// persisted override for the current mode; emptying the field resets to the
+// phase equation.
+function commitWeeklyProteinOverride(){
+  const mode = (typeof D!=='undefined' && D.mode) || 'cut';
+  const val = nv('protTgt');
+  if(typeof D!=='undefined'){
+    D.proteinOverrides = D.proteinOverrides||{cut:null,maint:null};
+    if(mode==='cut'||mode==='maint') D.proteinOverrides[mode] = (val!=null && val>0) ? Math.round(val) : null;
+  }
+  save(); renderMaintTargets(); updProteinDynamic();
+  toast(isProteinOverride(mode)
+    ? 'Protein override saved: '+proteinOverrideFor(mode)+'g ('+mode+')'
+    : 'Protein target reset to equation ('+proteinRuleLabel(mode)+')');
 }
 
 // ══════════════════════════════════════════
@@ -6368,9 +6889,11 @@ function renderDecisionLadder(){
   const neat = calcNEAT(stp, bike);
   const stpOk = neat.totalEq >= stpTgt - 1000;
   const bikeKcalDay = neat.bikeKcal;
-  const protPerLb = proteinPerLb(mode);
-  const protTgt = bw ? Math.round(bw*protPerLb) : null;
-  const protOk = prot && protTgt && (prot/bw) >= 0.9*protPerLb;
+  // v18 R2: ladder scores against the EFFECTIVE target (override when set);
+  // identical to v17 when no override is set.
+  const protEffTgt = bw ? proteinScoreTarget(mode, bw) : null;
+  const protTgt = protEffTgt!=null ? Math.round(protEffTgt) : null;
+  const protOk = prot && protEffTgt && prot >= 0.9*protEffTgt;
 
   // Recovery uses calcRecoveryStatus
   const rs = calcRecoveryStatus({savedWeeks: ctx.priorWeeks});
@@ -6402,7 +6925,7 @@ function renderDecisionLadder(){
     },
     {
       n:'2', title: mode==='maint' ? 'Protein ≥0.8g/lb bodyweight' : 'Protein ≥1g/lb bodyweight',
-      sub:'Current: '+(prot?prot+'g':'—')+' · Target: '+(protTgt?protTgt+'g ('+proteinRuleLabel(mode)+')':'set bodyweight')+' · Under-eating protein = muscle loss, not fat loss.',
+      sub:'Current: '+(prot?prot+'g':'—')+' · Target: '+(protTgt?protTgt+'g'+(isProteinOverride(mode)?' (override)':' ('+proteinRuleLabel(mode)+')'):'set bodyweight')+' · Under-eating protein = muscle loss, not fat loss.',
       ok: protOk,
       status: prot&&bw ? (prot/bw).toFixed(2)+' g/lb '+(protOk?'✓':'— increase protein') : 'No data'
     },
@@ -6533,9 +7056,12 @@ function renderSignalsSummary(){
   // Protein — v17 R2b: threshold follows the phase rule (cut 1g/lb, maint 0.8g/lb);
   // flags below 90% of the phase target.
   if(latest.protein && latest.weight){
-    const sigPpl = proteinPerLb((typeof D!=='undefined' && D.mode) || 'cut');
+    // v18: threshold follows Alex's override when set, else the phase rule.
+    const sigMode = (typeof D!=='undefined' && D.mode) || 'cut';
+    const sigTgt = proteinTargetFor(sigMode, latest.weight) ?? Math.round(latest.weight*proteinPerLb(sigMode));
+    const sigPpl = sigTgt/latest.weight;
     const gpl = latest.protein/latest.weight;
-    if(gpl<0.9*sigPpl) signals.push({icon:'⚠️',text:`Protein low: ${gpl.toFixed(2)}g/lb — target ≥${sigPpl}g/lb (${Math.round(latest.weight*sigPpl)}g)`,col:'var(--a)'});
+    if(gpl<0.9*sigPpl) signals.push({icon:'⚠️',text:`Protein low: ${gpl.toFixed(2)}g/lb — target ≥${sigPpl.toFixed(2)}g/lb (${sigTgt}g${isProteinOverride(sigMode)?' override':''})`,col:'var(--a)'});
     else signals.push({icon:'✅',text:`Protein adequate: ${gpl.toFixed(2)}g/lb`,col:'var(--g)'});
   }
   // NEAT (steps + bike)
@@ -7206,6 +7732,310 @@ window.__selfTest = function __selfTest() {
   add(classifySession('Upper Day (Home)')==='home', 'R2: "Upper Day (Home)" classifies as home');
   add(classifySession('Lower Day (Home)')==='home', 'R2: "Lower Day (Home)" classifies as home');
   add(classifySession('Push Workout - Gym')==='gym', 'R2: gym session still classifies as gym');
+
+  // Group 20: v18 — lean-gain guardrails, signal hierarchy, cut history, protein override
+  // 20a: weight guardrail band 0.10–0.15 %BW/wk
+  add(evalSurplusWeightGuardrail(0.12).status==='ok' && /In band/.test(evalSurplusWeightGuardrail(0.12).label),
+    'v18: +0.12%/wk gain is in the lean-gain band');
+  add(evalSurplusWeightGuardrail(0.10).status==='ok' && evalSurplusWeightGuardrail(0.15).status==='ok',
+    'v18: band edges 0.10/0.15 are in band');
+  add(evalSurplusWeightGuardrail(0.05).status==='watch' && /Below band/.test(evalSurplusWeightGuardrail(0.05).label),
+    'v18: +0.05%/wk is below band (watch)');
+  add(evalSurplusWeightGuardrail(0.40).status==='watch' && /Above cap/.test(evalSurplusWeightGuardrail(0.40).label),
+    'v18: +0.40%/wk is above cap');
+  add(evalSurplusWeightGuardrail(0.151).status==='watch',
+    'v18: just above 0.15 is above cap');
+  add(evalSurplusWeightGuardrail(-0.10).status==='watch' && /Losing/.test(evalSurplusWeightGuardrail(-0.10).label),
+    'v18: losing in surplus is a watch');
+  add(evalSurplusWeightGuardrail(null).status==='na',
+    'v18: missing rate reads n/a, not ok');
+  // 20b: waist guardrail (explicit rule: >0.25 in per lb gained)
+  add(evalSurplusWaistGuardrail(0.30, 1.0).status==='watch' && /Rising fast/.test(evalSurplusWaistGuardrail(0.30, 1.0).label),
+    'v18: waist +0.30 in/wk at 1.0 lb/wk gain (>0.25 in/lb) is a watch');
+  add(evalSurplusWaistGuardrail(0.10, 1.0).status==='ok' && /On pace/.test(evalSurplusWaistGuardrail(0.10, 1.0).label),
+    'v18: waist +0.10 in/wk at 1.0 lb/wk gain is on pace');
+  add(evalSurplusWaistGuardrail(0.20, 0.05).status==='watch',
+    'v18: waist +0.20 in/wk with negligible gain falls back to absolute rule (watch)');
+  add(evalSurplusWaistGuardrail(null, 1.0).status==='na',
+    'v18: missing waist trend reads n/a, not ok');
+  // 20c: strength guardrail pure parts (90% threshold)
+  add(liftIsRegressed(200, 175)===true, 'v18: 175 < 90% of 200 = regressed');
+  add(liftIsRegressed(200, 185)===false, 'v18: 185 ≥ 90% of 200 = holding');
+  // 20d: full guardrail path — 0.40%/wk gain reads above cap consistently
+  const gr040 = calcSurplusGuardrails(-0.40, 175, []);
+  add(gr040.weight.status==='watch' && /Above cap/.test(gr040.weight.label),
+    'v18: 0.40%/wk gain reads above cap through the full guardrail path');
+  add(gr040.waist.status==='na' && gr040.strength.status==='na',
+    'v18: guardrails report n/a (not ok) with no data');
+  // 20e: signal hierarchy key present in DOM with tier labels
+  const skEl = document.getElementById('signalKey');
+  add(!!skEl && /Tier 1/.test(skEl.textContent) && /Tier 2/.test(skEl.textContent) && /Tier 3/.test(skEl.textContent),
+    'v18: signal hierarchy key present with Tier 1/2/3 labels');
+  add(!!skEl && /do not act/i.test(skEl.textContent) && /not a decision engine/i.test(skEl.textContent),
+    'v18: signal key states Tier 3 is noise and the key is not a decision engine');
+  // 20f: cut history derived from data (never hardcoded)
+  const savedWeeksHist = D.weeks, savedPoHist = D.proteinOverrides;
+  // waist fixtures run on one baseline — pin the break date so the real
+  // stored value cannot split the fixture window.
+  const savedWbd = D.waistBaselineBreakDate;
+  try{
+    D.waistBaselineBreakDate = null;
+    D.weeks = [
+      {date:'2026-02-21', mode:'cut', weight:200, waist:34.0},
+      {date:'2026-02-28', mode:'cut', weight:199, waist:33.8},
+      {date:'2026-03-07', mode:'cut', weight:198, waist:33.6},
+      {date:'2026-09-12', mode:'cut', weight:172, waist:28.5}
+    ];
+    const hs = calcCutHistorySummary();
+    add(hs.available===true, 'v18: cut history available from 4 cut weeks');
+    add(hs.startDate==='2026-02-21' && hs.endDate==='2026-09-12',
+      'v18: cut history start/end dates from data');
+    add(hs.startWeight===200 && hs.endWeight===172,
+      'v18: cut history start/end weights from data');
+    add(Math.abs(hs.totalLoss-28)<0.01, 'v18: cut history total loss 28 lb');
+    add(hs.durationWeeks>=28, 'v18: cut history duration spans ~7 months ('+hs.durationWeeks+' wks)');
+    add(Math.abs(hs.avgRateLbWk - hs.totalLoss/hs.durationWeeks)<0.001,
+      'v18: cut history avg rate = total loss / duration');
+    add(hs.waistChange!=null && Math.abs(hs.waistChange-5.5)<0.01,
+      'v18: cut history waist change 5.5 in from endpoints');
+    // gap labeling: no waist data at all
+    D.weeks = [
+      {date:'2026-02-21', mode:'cut', weight:200},
+      {date:'2026-09-12', mode:'cut', weight:172}
+    ];
+    const hs2 = calcCutHistorySummary();
+    add(hs2.available===true && /n\/a/i.test(hs2.waistNote||''),
+      'v18: missing waist data labeled n/a, not guessed');
+    // fewer than 2 cut weeks → unavailable
+    D.weeks = [{date:'2026-09-12', mode:'cut', weight:172}];
+    add(calcCutHistorySummary().available===false,
+      'v18: cut history unavailable with <2 cut weeks');
+    // mode switches do not erase it: maint/bulk weeks present, history still derives
+    D.weeks = [
+      {date:'2026-02-21', mode:'cut', weight:200, waist:34.0},
+      {date:'2026-09-12', mode:'cut', weight:172, waist:28.5},
+      {date:'2026-09-19', mode:'maint', weight:173, waist:28.6},
+      {date:'2026-09-26', mode:'bulk', weight:174, waist:28.7}
+    ];
+    const hs3 = calcCutHistorySummary();
+    add(hs3.available===true && hs3.startDate==='2026-02-21' && hs3.endDate==='2026-09-12',
+      'v18: cut history survives mode switches (maint/bulk weeks ignored)');
+  } finally { D.weeks = savedWeeksHist; D.proteinOverrides = savedPoHist; D.waistBaselineBreakDate = savedWbd; }
+  // 20g: protein override — equation default, persistence, reset, labels
+  try{
+    D.proteinOverrides = {cut:null, maint:null};
+    add(proteinTargetFor('maint', 172.5)===138,
+      'v18: maintenance protein defaults to equation (138g at 172.5 lb)');
+    add(proteinTargetFor('cut', 172.5)===173,
+      'v18: cut protein defaults to equation (173g at 172.5 lb)');
+    add(isProteinOverride('maint')===false && proteinTargetSource('maint')==='equation',
+      'v18: no override by default (source = equation)');
+    D.proteinOverrides.maint = 160;
+    add(proteinTargetFor('maint', 172.5)===160,
+      'v18: maintenance override persists (160g beats the equation)');
+    add(isProteinOverride('maint')===true && proteinTargetSource('maint')==='override',
+      'v18: override flagged as source');
+    add(/override 160g/.test(proteinTargetSourceLabel('maint', 172.5)),
+      'v18: human export label says "override 160g"');
+    add(/equation/.test(proteinTargetSourceLabel('cut', 172.5)),
+      'v18: human export label says "equation" when no override');
+    add(proteinTargetFor('bulk', 172.5)===null,
+      'v18: bulk keeps existing per-site behavior (no override path)');
+    D.proteinOverrides.maint = null;
+    add(proteinTargetFor('maint', 172.5)===138,
+      'v18: reset restores the equation default');
+    // migrateState round-trips the override; junk is sanitized to null
+    const mig = migrateState({schemaVersion:3, proteinOverrides:{cut:200, maint:'junk'}, weeks:[], bodyComp:[]});
+    add(mig.proteinOverrides.cut===200 && mig.proteinOverrides.maint===null,
+      'v18: backup/restore round-trips protein overrides, junk sanitized');
+  } finally { D.proteinOverrides = savedPoHist; }
+  // Group 20 R2: Claude round-1 defects — mixed-history migration, adherence
+  // scoring against the effective target, waist trend gap math, strength window
+  // 20h: modeless history gets phase-tagged on migration; cut history covers
+  // the most recent cut run only (regression: untagged weeks all read as cut)
+  try{
+    const rawHist = [
+      {date:'2025-02-22', weight:192.5, waist:35.0},              // 2025 cut
+      {date:'2025-08-02', weight:185.0, waist:33.5},              // undocumented gap → unmodeled
+      {date:'2025-11-01', weight:180.0, waist:33.0},              // bulk
+      {date:'2026-01-10', weight:199.0, waist:36.0},              // bulk peak
+      {date:'2026-02-21', weight:197.5, waist:35.8},              // recent cut starts
+      {date:'2026-09-05', weight:173.0, waist:28.6, deload:true}, // deload stays in run
+      {date:'2026-09-12', weight:172.0, waist:28.5}
+    ];
+    const migWeeks = rawHist.map(migrateWeek);
+    add(migWeeks[0].mode==='cut' && migWeeks[2].mode==='bulk' && migWeeks[3].mode==='bulk',
+      'v18r2: migration tags 2025 weeks cut and Oct25–Feb26 weeks bulk');
+    add(migWeeks[1].mode==='unmodeled',
+      'v18r2: undocumented gap weeks are unmodeled, never defaulted to cut');
+    add(migWeeks[4].mode==='cut' && migWeeks[6].mode==='cut',
+      'v18r2: post-2/21/26 modeless weeks tagged cut');
+    add(migrateWeek({date:'2026-01-10', mode:'cut', weight:186}).mode==='cut',
+      'v18r2: explicit week modes are never re-tagged');
+    D.waistBaselineBreakDate = null;
+    D.weeks = migWeeks;
+    const hsR = calcCutHistorySummary();
+    add(hsR.available===true && hsR.startDate==='2026-02-21' && hsR.endDate==='2026-09-12',
+      'v18r2: cut history covers the most recent cut run only (starts 2026-02-21, not 2025-02-22)');
+    add(Math.abs(hsR.totalLoss-(197.5-172))<0.01,
+      'v18r2: recent-run total loss excludes the 2025 cut and the bulk');
+    add(hsR.durationWeeks>=28 && hsR.durationWeeks<40,
+      'v18r2: recent-run duration ~29 weeks ('+hsR.durationWeeks+'), not 83');
+  } finally { D.weeks = savedWeeksHist; D.proteinOverrides = savedPoHist; D.waistBaselineBreakDate = savedWbd; }
+  // 20i: adherence scores against the EFFECTIVE target (Claude: 175g at 171 lb
+  // must read ~102% with no override and ~95% with a 185g override)
+  try{
+    D.proteinOverrides = {cut:null, maint:null};
+    add(proteinScoreTarget('cut',171)===171, 'v18r2: no-override score target is the equation (171g at 171 lb)');
+    add(proteinScoreTarget('cut',171)===171*proteinPerLb('cut'), 'v18r2: no-override scoring bit-identical to the v17 formula');
+    D.proteinOverrides.cut = 185;
+    add(proteinScoreTarget('cut',171)===185, 'v18r2: override wins for scoring (185g)');
+    add(Math.abs(proteinAdherencePct(175,171,'cut')-175/185*100)<0.001,
+      'v18r2: 175g at 171 lb with 185g override ≈95% ('+proteinAdherencePct(175,171,'cut').toFixed(1)+'%)');
+    D.proteinOverrides.cut = null;
+    add(Math.abs(proteinAdherencePct(175,171,'cut')-175/171*100)<0.001,
+      'v18r2: 175g at 171 lb with no override ≈102% ('+proteinAdherencePct(175,171,'cut').toFixed(1)+'%)');
+    add(proteinAdherencePct(null,171,'cut')===null && proteinAdherencePct(175,null,'cut')===null && proteinAdherencePct(175,0,'cut')===null,
+      'v18r2: unscorable protein adherence reads null');
+    add(proteinStreakOk(160,171,'cut')===true, 'v18r2: 160g at 171 lb passes the clean-week gate with no override (93.6% ≥ 90%)');
+    D.proteinOverrides.cut = 185;
+    add(proteinStreakOk(160,171,'cut')===false, 'v18r2: 160g fails the clean-week gate against a 185g override (<166.5g)');
+    add(proteinStreakOk(170,171,'cut')===true, 'v18r2: 170g passes against the 185g override (≥166.5g)');
+    D.proteinOverrides.cut = null;
+    add(proteinStreakOk(null,171,'cut')===true && proteinStreakOk(160,null,'cut')===true,
+      'v18r2: missing protein data skips the streak gate, as before');
+    let parity=true;
+    [[150,160,'cut'],[175,171,'cut'],[140,172.5,'maint'],[200,200,'cut'],[90,150,'maint'],[153.9,171,'cut']].forEach(c=>{
+      if(proteinStreakOk(c[0],c[1],c[2])!==((c[0]/c[1]*100)>=90*proteinPerLb(c[2]))) parity=false;
+    });
+    add(parity, 'v18r2: no-override streak gate matches the v17 expression on all sweep cases');
+    // site-1 integration: 2-week export adherence through the real path
+    const adhWeeks = [
+      {date:'2026-09-05', mode:'cut', weight:171, protein:175, calories:2000, calorieTarget:2000, steps:15000, stepTarget:15000},
+      {date:'2026-09-12', mode:'cut', weight:171, protein:175, calories:2000, calorieTarget:2000, steps:15000, stepTarget:15000}
+    ];
+    D.proteinOverrides = {cut:null, maint:null};
+    const adh0 = calcExportAdherence2Week(adhWeeks, 1);
+    add(!!adh0 && Math.abs(adh0.proteinPct-175/171*100)<0.01,
+      'v18r2: export 2-wk protein adherence ≈102% with no override');
+    D.proteinOverrides.cut = 185;
+    const adh1 = calcExportAdherence2Week(adhWeeks, 1);
+    add(!!adh1 && Math.abs(adh1.proteinPct-175/185*100)<0.01,
+      'v18r2: export 2-wk protein adherence ≈95% with 185g override');
+    D.proteinOverrides.cut = null;
+  } finally { D.proteinOverrides = savedPoHist; }
+  // 20j: waist trend divides by the actual midpoint gap on 4–5 point inputs
+  try{
+    D.waistBaselineBreakDate = null;
+    const w4 = [
+      {date:'2026-09-19', waist:30.0},
+      {date:'2026-09-26', waist:30.1},
+      {date:'2026-10-03', waist:30.2},
+      {date:'2026-10-10', waist:30.3}
+    ];
+    const t4 = surplusWaistTrendInWk(w4);
+    // recent mean 30.2 (midpoint 2026-10-03), prior 30.0 at 2026-09-19 → 2-wk
+    // gap → 0.2/2 = 0.10 in/wk (the old /3 gave 0.067)
+    add(t4!=null && Math.abs(t4-0.10)<0.001,
+      'v18r2: 4-point waist trend divides by the actual 2-wk gap (got '+(t4==null?'null':t4.toFixed(4))+')');
+    const w6 = [
+      {date:'2026-09-05', waist:30.0},
+      {date:'2026-09-12', waist:30.1},
+      {date:'2026-09-19', waist:30.2},
+      {date:'2026-09-26', waist:30.3},
+      {date:'2026-10-03', waist:30.4},
+      {date:'2026-10-10', waist:30.5}
+    ];
+    const t6 = surplusWaistTrendInWk(w6);
+    add(t6!=null && Math.abs(t6-0.10)<0.001, 'v18r2: 6-point waist trend unchanged (0.10 in/wk)');
+    add(surplusWaistTrendInWk(w4.slice(0,3))===null, 'v18r2: <4 waist points still n/a');
+  } finally { D.waistBaselineBreakDate = savedWbd; }
+  // 20k: strength guardrail baseline = last 6 weeks before the surplus (named
+  // constant), not the whole lifting history
+  try{
+    D.waistBaselineBreakDate = null;
+    D.weeks = [
+      {date:'2026-01-10', mode:'bulk', weight:199, lifts:[{name:'Romanian Deadlift (Barbell)', weight:315, reps:5, rpe:9}]},
+      {date:'2026-09-19', mode:'cut', weight:173, lifts:[{name:'Romanian Deadlift (Barbell)', weight:275, reps:5, rpe:9}]},
+      {date:'2026-09-26', mode:'cut', weight:172, lifts:[{name:'Romanian Deadlift (Barbell)', weight:275, reps:5, rpe:9}]},
+      {date:'2026-10-03', mode:'bulk', weight:172.5, lifts:[{name:'Romanian Deadlift (Barbell)', weight:270, reps:5, rpe:9}]},
+      {date:'2026-10-10', mode:'bulk', weight:173, lifts:[{name:'Romanian Deadlift (Barbell)', weight:270, reps:5, rpe:9}]}
+    ];
+    const sg = calcSurplusStrengthGuardrail(D.weeks);
+    // RDL e1RM: old peak 367.5 (outside window) vs window peak 320.8 vs recent
+    // 315 → 98% = holding. Old logic: 315/367.5 = 86% = false "regressed".
+    add(sg.status==='ok', 'v18r2: strength guardrail uses the 6-wk pre-surplus window (old 315×5 peak ignored, got '+sg.status+')');
+    add(SURPLUS_STRENGTH_BASELINE_WKS===6, 'v18r2: baseline window is a named constant (6 wks)');
+  } finally { D.weeks = savedWeeksHist; D.waistBaselineBreakDate = savedWbd; }
+
+  // Group 21: v18 R3 — Claude round-2 defects
+  // 21a: unmodeled weeks can never crash a config lookup and export as
+  // data-only records (regression: WE 2025-07-05 threw on protAdhFloor)
+  try{
+    add(!!(MODE_CONFIG && MODE_CONFIG.unmodeled),
+      'v18r3: MODE_CONFIG.unmodeled exists (config-lookup crash insurance)');
+    let umRes = null, umThrew = false;
+    try{ umRes = calcWeeklyAction('unmodeled', null, null, null, [], [], null); }
+    catch(e){ umThrew = true; }
+    add(!umThrew && !!umRes && umRes.actionCode==='UNMODELED' && /data record only/i.test(umRes.action),
+      'v18r3: unmodeled week action is a data-only record, no throw');
+  } finally {}
+  // 21b: importHistorical migrates on the way in (regression: raw push left
+  // weeks modeless until a reload, resurrecting the 2025-02-22/83-wk merge)
+  try{
+    const _toast = window.toast, _renderHistory = window.renderHistory;
+    window.toast = function(){}; window.renderHistory = function(){};
+    D.weeks = [];
+    try{
+      importHistorical();
+      add(D.weeks.every(w=>w && w.mode!=null),
+        'v18r3: importHistorical leaves no week modeless (no reload needed)');
+      const umCount = D.weeks.filter(w=>w.mode==='unmodeled').length;
+      add(umCount>0, 'v18r3: gap weeks tagged unmodeled at import ('+umCount+' weeks)');
+      const impRun = cutRunWeeks(D.weeks);
+      add(impRun.length>0 && impRun[0].date==='2026-02-21',
+        'v18r3: cut history starts 2026-02-21 immediately after import (got '+(impRun.length?impRun[0].date:'none')+')');
+    } finally { window.toast = _toast; window.renderHistory = _renderHistory; }
+  } finally { D.weeks = savedWeeksHist; }
+  // 21c: diet-break/deload weeks count as part of the cut run whatever mode
+  // they were saved under; an untagged maintenance week still breaks it
+  try{
+    const tagRunBroken = cutRunWeeks([
+      {date:'2026-02-21', mode:'cut', weight:197.5},
+      {date:'2026-05-23', mode:'maint', weight:180, tags:['deload','travel']},
+      {date:'2026-05-30', mode:'maint', weight:180},
+      {date:'2026-09-12', mode:'cut', weight:172}
+    ]);
+    add(tagRunBroken.length===1 && tagRunBroken[0].date==='2026-09-12',
+      'v18r3: untagged maintenance-mode week breaks the cut run');
+    const tagRunKept = cutRunWeeks([
+      {date:'2026-02-21', mode:'cut', weight:197.5},
+      {date:'2026-05-23', mode:'maint', weight:180, tags:['deload','travel']},
+      {date:'2026-06-06', mode:'cut', weight:178, tags:['diet_break']},
+      {date:'2026-08-01', mode:'maint', weight:179, deload:true},
+      {date:'2026-09-12', mode:'cut', weight:172}
+    ]);
+    add(tagRunKept.length===5 && tagRunKept[0].date==='2026-02-21',
+      'v18r3: diet_break/deload-tagged weeks stay in-run whatever their mode (incl. deload boolean)');
+  } finally {}
+  // 21d (v18r4): a deload-tagged bulk week immediately BEFORE the cut's first
+  // week must not push the cut start back (Claude's synthetic edge case)
+  try{
+    const preCutTagged = cutRunWeeks([
+      {date:'2026-02-14', mode:'bulk', weight:199, tags:['deload']},
+      {date:'2026-02-21', mode:'cut', weight:197.5},
+      {date:'2026-09-12', mode:'cut', weight:172}
+    ]);
+    add(preCutTagged.length===2 && preCutTagged[0].date==='2026-02-21',
+      'v18r4: deload-tagged bulk week before the cut does not move the cut start (got '+(preCutTagged.length?preCutTagged[0].date:'none')+')');
+    const bothSidesKept = cutRunWeeks([
+      {date:'2026-02-21', mode:'cut', weight:197.5},
+      {date:'2026-05-23', mode:'maint', weight:180, tags:['diet_break']},
+      {date:'2026-09-12', mode:'cut', weight:172}
+    ]);
+    add(bothSidesKept.length===3 && bothSidesKept[0].date==='2026-02-21',
+      'v18r4: tagged break week flanked by cut weeks stays in-run');
+  } finally {}
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
