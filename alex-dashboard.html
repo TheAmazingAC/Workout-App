@@ -918,6 +918,38 @@ select option{background:var(--s2);}
 
 <script>
 // ══════════════════════════════════════════
+// v21 — STABILITY RECODE (behavior-preserving; export schema stays v19)
+// Contract: for every state the app itself can produce (and every
+// well-formed backup/CSV), v21 renders, stores and exports byte-identically
+// to v20. Changes only affect inputs where v20 threw or corrupted state:
+//  • safeCall(): orchestration-level fault isolation (render lists, init,
+//    tab switches, load/save refresh). One failing panel no longer aborts
+//    every panel queued after it — e.g. the Summary week picker still
+//    populates. Never used inside calc engines or the export builder.
+//  • replaceChart()/renderMuscleChart(): skip the chart when Chart.js (CDN)
+//    is unavailable instead of throwing, so the non-chart parts still render.
+//  • importData(): weeks merge into a copy (mergeBackupWeeks) and commit only
+//    after the merge+sort succeeds — a malformed backup can no longer leave
+//    D half-merged for the next save() to persist.
+//  • upsertHevySessions(): analytics copy of each stored session gets a ts
+//    map and string title (normalizeHevySession) — a ts-less session from a
+//    backup used to abort init and break every lift-reading panel.
+//  • migrateState(): a stored global mode outside cut/maint/bulk loads as
+//    'cut' (the app's existing default) instead of crashing applyModeUI.
+//  • __selfTest(): restores localStorage and the input fields/status lines
+//    it touches, so running it can't leave fixture values in the maintenance
+//    card or weekly protein field for a later Save to persist.
+//  • escHtml() on CSV/backup-sourced text sinks (session titles, exercise
+//    names, body-comp notes, history tags/mode) — identical DOM for normal
+//    text; markup in imported text renders as literal text.
+//  • Dead/duplicate code removed (no callers): calcPhaseWeeks,
+//    getCurrentPhaseRef, getRunwayProjectionDate, nb, sb, dead locals;
+//    genSummary reuses its already-computed velocity/stall/recovery objects
+//    and evaluates the cut-history summary once; getDeficitLevel and
+//    getPrevDeficitLevel share one helper. save() returns the write result.
+// ══════════════════════════════════════════
+
+// ══════════════════════════════════════════
 // EMBEDDED DATA
 // ══════════════════════════════════════════
 const HIST_DATA = [{"date":"2025-02-22","weight":192.5,"waist":null,"hrv":null,"rhr":null,"sleep":7.25,"steps":10228,"calories":2109,"calorieTarget":null,"protein":183,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":228.0,"reps":10,"rpe":9.5},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":151,"fat":74.3,"fiber":21.9},{"date":"2025-03-01","weight":189.0,"waist":null,"hrv":null,"rhr":null,"sleep":7.75,"steps":10199,"calories":1852,"calorieTarget":null,"protein":203,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":217.0,"reps":15,"rpe":9.5},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":133,"fat":55.2,"fiber":32.0},{"date":"2025-03-08","weight":186.0,"waist":null,"hrv":null,"rhr":null,"sleep":7.98,"steps":7596,"calories":1958,"calorieTarget":null,"protein":194,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":173.0,"reps":12,"rpe":10.0},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":150,"fat":62.8,"fiber":32.4},{"date":"2025-03-15","weight":185.8,"waist":null,"hrv":null,"rhr":null,"sleep":7.37,"steps":22583,"calories":2505,"calorieTarget":null,"protein":221,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":206.0,"reps":15,"rpe":10.0},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":228,"fat":90.5,"fiber":56.8},{"date":"2025-03-22","weight":184.2,"waist":null,"hrv":null,"rhr":null,"sleep":7.58,"steps":35972,"calories":3085,"calorieTarget":null,"protein":244,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":80.0,"reps":10,"rpe":6.0},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":275,"fat":107.0,"fiber":86.8},{"date":"2025-03-29","weight":183.0,"waist":null,"hrv":null,"rhr":null,"sleep":7.37,"steps":22380,"calories":3001,"calorieTarget":null,"protein":245,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":278,"fat":112.0,"fiber":76.6},{"date":"2025-04-05","weight":178.3,"waist":null,"hrv":null,"rhr":null,"sleep":7.28,"steps":15005,"calories":2411,"calorieTarget":null,"protein":219,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":140.0,"reps":10,"rpe":10.0},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":221,"fat":79.0,"fiber":55.3},{"date":"2025-04-12","weight":178.3,"waist":null,"hrv":null,"rhr":null,"sleep":7.7,"steps":16168,"calories":2356,"calorieTarget":null,"protein":213,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":231.5,"reps":15,"rpe":9.5},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":212,"fat":80.2,"fiber":54.9},{"date":"2025-04-19","weight":178.0,"waist":null,"hrv":null,"rhr":null,"sleep":7.43,"steps":19158,"calories":2629,"calorieTarget":null,"protein":231,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":70.0,"reps":10,"rpe":9.0},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":254,"fat":98.5,"fiber":53.5},{"date":"2025-04-26","weight":176.6,"waist":null,"hrv":null,"rhr":null,"sleep":7.45,"steps":18443,"calories":2790,"calorieTarget":null,"protein":231,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":257,"fat":109.0,"fiber":56.1},{"date":"2025-05-03","weight":177.8,"waist":null,"hrv":null,"rhr":null,"sleep":7.72,"steps":17603,"calories":2699,"calorieTarget":null,"protein":225,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":266,"fat":97.8,"fiber":51.1},{"date":"2025-05-10","weight":178.8,"waist":null,"hrv":null,"rhr":null,"sleep":7.95,"steps":15238,"calories":2709,"calorieTarget":null,"protein":182,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":160.0,"reps":10,"rpe":9.0},{"name":"Shoulder Press (Dumbbell)","weight":90.0,"reps":10,"rpe":9.0},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":246,"fat":111.0,"fiber":31.7},{"date":"2025-05-17","weight":180.0,"waist":null,"hrv":null,"rhr":null,"sleep":7.37,"steps":15545,"calories":2661,"calorieTarget":null,"protein":203,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":246,"fat":93.7,"fiber":35.9},{"date":"2025-05-24","weight":180.2,"waist":null,"hrv":null,"rhr":null,"sleep":7.88,"steps":19163,"calories":2479,"calorieTarget":null,"protein":196,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":249,"fat":86.1,"fiber":51.1},{"date":"2025-05-31","weight":177.1,"waist":null,"hrv":null,"rhr":null,"sleep":8.33,"steps":16256,"calories":2479,"calorieTarget":null,"protein":188,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":0,"reps":10,"rpe":10.0},{"name":"Seated Cable Row - Bar Grip","weight":115.0,"reps":10,"rpe":9.5}],"notes":"","_historical":true,"carbs":245,"fat":106.0,"fiber":59.7},{"date":"2025-06-07","weight":178.4,"waist":null,"hrv":null,"rhr":null,"sleep":7.35,"steps":18706,"calories":3032,"calorieTarget":null,"protein":221,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":293,"fat":115.0,"fiber":56.0},{"date":"2025-06-14","weight":176.6,"waist":null,"hrv":null,"rhr":null,"sleep":8.05,"steps":17489,"calories":2971,"calorieTarget":null,"protein":209,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":275,"fat":107.0,"fiber":49.4},{"date":"2025-06-21","weight":176.7,"waist":null,"hrv":null,"rhr":null,"sleep":7.97,"steps":13933,"calories":2855,"calorieTarget":null,"protein":223,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":252,"fat":98.8,"fiber":53.0},{"date":"2025-06-28","weight":175.6,"waist":null,"hrv":null,"rhr":null,"sleep":7.25,"steps":16572,"calories":3135,"calorieTarget":null,"protein":239,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":162.0,"reps":10,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":0,"reps":14,"rpe":10.0},{"name":"Seated Cable Row - Bar Grip","weight":135.0,"reps":10,"rpe":9.5}],"notes":"","_historical":true,"carbs":263,"fat":124.0,"fiber":61.8},{"date":"2025-07-05","weight":177.1,"waist":null,"hrv":null,"rhr":null,"sleep":7.58,"steps":14116,"calories":3140,"calorieTarget":null,"protein":213,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":154.0,"reps":8,"rpe":10.0},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":0,"reps":13,"rpe":10.0},{"name":"Seated Cable Row - Bar Grip","weight":142.5,"reps":10,"rpe":9.5}],"notes":"","_historical":true,"carbs":294,"fat":125.0,"fiber":56.7},{"date":"2025-07-12","weight":177.7,"waist":null,"hrv":null,"rhr":null,"sleep":7.97,"steps":16939,"calories":3235,"calorieTarget":null,"protein":224,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":160.0,"reps":10,"rpe":10.0},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":0,"reps":18,"rpe":9.5},{"name":"Seated Cable Row - Bar Grip","weight":150.0,"reps":9,"rpe":9.5}],"notes":"","_historical":true,"carbs":287,"fat":111.0,"fiber":53.1},{"date":"2025-07-19","weight":176.3,"waist":null,"hrv":null,"rhr":null,"sleep":8.07,"steps":15932,"calories":3005,"calorieTarget":null,"protein":185,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":160.0,"reps":9,"rpe":10.0},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":152.5,"reps":12,"rpe":9.5}],"notes":"","_historical":true,"carbs":307,"fat":98.1,"fiber":38.8},{"date":"2025-07-26","weight":177.4,"waist":null,"hrv":null,"rhr":null,"sleep":7.13,"steps":17700,"calories":3225,"calorieTarget":null,"protein":202,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":157.0,"reps":10,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":165.0,"reps":12,"rpe":9.5}],"notes":"","_historical":true,"carbs":367,"fat":97.0,"fiber":42.6},{"date":"2025-08-02","weight":176.8,"waist":null,"hrv":null,"rhr":null,"sleep":7.57,"steps":17159,"calories":3080,"calorieTarget":null,"protein":190,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":162.0,"reps":9,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":9,"rpe":9.0},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":175.0,"reps":10,"rpe":9.0}],"notes":"","_historical":true,"carbs":356,"fat":96.8,"fiber":42.3},{"date":"2025-08-09","weight":null,"waist":null,"hrv":null,"rhr":null,"sleep":null,"steps":18341,"calories":3189,"calorieTarget":null,"protein":223,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":171.0,"reps":10,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":7,"rpe":10.0},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":185.0,"reps":10,"rpe":8.0},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":180.0,"reps":10,"rpe":9.5}],"notes":"","_historical":true,"carbs":388,"fat":94.8,"fiber":58.2},{"date":"2025-08-16","weight":null,"waist":null,"hrv":null,"rhr":null,"sleep":null,"steps":10514,"calories":3359,"calorieTarget":null,"protein":235,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":309,"fat":110.0,"fiber":30.3},{"date":"2025-08-23","weight":null,"waist":null,"hrv":null,"rhr":null,"sleep":null,"steps":12878,"calories":3197,"calorieTarget":null,"protein":214,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":140.0,"reps":10,"rpe":7.5},{"name":"Shoulder Press (Dumbbell)","weight":130.0,"reps":10,"rpe":7.5},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":150.0,"reps":10,"rpe":7.0}],"notes":"","_historical":true,"carbs":323,"fat":98.2,"fiber":24.8},{"date":"2025-08-30","weight":182.4,"waist":null,"hrv":null,"rhr":null,"sleep":7.05,"steps":17078,"calories":2545,"calorieTarget":null,"protein":202,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":163.0,"reps":9,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":150.0,"reps":9,"rpe":8.5},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":242.5,"reps":12,"rpe":8.5},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":180.0,"reps":10,"rpe":9.5}],"notes":"","_historical":true,"carbs":270,"fat":80.4,"fiber":33.8},{"date":"2025-09-06","weight":178.1,"waist":null,"hrv":null,"rhr":null,"sleep":7.72,"steps":14126,"calories":2524,"calorieTarget":null,"protein":183,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":164.0,"reps":9,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":9,"rpe":9.5},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":264.5,"reps":12,"rpe":9.0},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":180.0,"reps":10,"rpe":9.0}],"notes":"","_historical":true,"carbs":284,"fat":76.4,"fiber":35.7},{"date":"2025-09-13","weight":178.2,"waist":null,"hrv":null,"rhr":null,"sleep":7.72,"steps":16387,"calories":2641,"calorieTarget":null,"protein":213,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":174.0,"reps":10,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":10,"rpe":9.5},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":264.55,"reps":13,"rpe":9.0},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":190.0,"reps":10,"rpe":9.0}],"notes":"","_historical":true,"carbs":277,"fat":79.6,"fiber":27.6},{"date":"2025-09-20","weight":176.7,"waist":null,"hrv":null,"rhr":null,"sleep":7.82,"steps":16901,"calories":2721,"calorieTarget":null,"protein":210,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":176.0,"reps":10,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":6,"rpe":9.5},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":286.6,"reps":12,"rpe":9.5},{"name":"Chin Up","weight":0,"reps":18,"rpe":8.5},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":326,"fat":79.7,"fiber":41.6},{"date":"2025-09-27","weight":177.2,"waist":null,"hrv":null,"rhr":null,"sleep":7.5,"steps":15818,"calories":2812,"calorieTarget":null,"protein":223,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":179.0,"reps":10,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":8,"rpe":9.5},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":286.6,"reps":11,"rpe":9.5},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":299,"fat":84.2,"fiber":53.9},{"date":"2025-10-04","weight":176.1,"waist":null,"hrv":null,"rhr":null,"sleep":7.87,"steps":10763,"calories":2690,"calorieTarget":null,"protein":177,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":180.0,"reps":8,"rpe":9.0},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":5,"rpe":9.5},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":250,"fat":87.9,"fiber":22.6},{"date":"2025-10-11","weight":178.5,"waist":null,"hrv":null,"rhr":null,"sleep":7.6,"steps":12194,"calories":2783,"calorieTarget":null,"protein":214,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":180.0,"reps":10,"rpe":9.0},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":8,"rpe":9.0},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":286.6,"reps":15,"rpe":9.0},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":270,"fat":94.4,"fiber":44.4},{"date":"2025-10-18","weight":179.0,"waist":null,"hrv":null,"rhr":null,"sleep":7.82,"steps":11820,"calories":2517,"calorieTarget":null,"protein":194,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":181.0,"reps":10,"rpe":9.0},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":9,"rpe":9.0},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":248,"fat":85.1,"fiber":38.4},{"date":"2025-10-25","weight":180.0,"waist":null,"hrv":null,"rhr":null,"sleep":8.25,"steps":10113,"calories":2714,"calorieTarget":null,"protein":209,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":282,"fat":84.5,"fiber":40.8},{"date":"2025-11-01","weight":182.1,"waist":null,"hrv":null,"rhr":null,"sleep":7.37,"steps":14598,"calories":2977,"calorieTarget":null,"protein":184,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":170.0,"reps":8,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":140.0,"reps":6,"rpe":9.5},{"name":"Romanian Deadlift (Barbell)","weight":262.0,"reps":10,"rpe":8.5},{"name":"Leg Extension (Machine)","weight":286.6,"reps":15,"rpe":8.5},{"name":"Chin Up","weight":0,"reps":20,"rpe":9.0},{"name":"Seated Cable Row - Bar Grip","weight":175.0,"reps":8,"rpe":9.0}],"notes":"","_historical":true,"carbs":355,"fat":101.0,"fiber":45.1},{"date":"2025-11-08","weight":184.3,"waist":33.65,"hrv":null,"rhr":null,"sleep":7.77,"steps":12399,"calories":3105,"calorieTarget":null,"protein":198,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":170.0,"reps":9,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":265.0,"reps":10,"rpe":8.5},{"name":"Leg Extension (Machine)","weight":286.6,"reps":15,"rpe":9.0},{"name":"Chin Up","weight":0,"reps":20,"rpe":9.0},{"name":"Seated Cable Row - Bar Grip","weight":195.0,"reps":11,"rpe":9.0}],"notes":"","_historical":true,"carbs":417,"fat":87.1,"fiber":36.6},{"date":"2025-11-15","weight":186.0,"waist":33.8,"hrv":null,"rhr":null,"sleep":7.42,"steps":15222,"calories":3242,"calorieTarget":null,"protein":205,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":171.0,"reps":8,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":10,"rpe":9.0},{"name":"Romanian Deadlift (Barbell)","weight":270.0,"reps":10,"rpe":8.0},{"name":"Leg Extension (Machine)","weight":286.6,"reps":15,"rpe":9.0},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":200.0,"reps":11,"rpe":9.0}],"notes":"","_historical":true,"carbs":427,"fat":100.7,"fiber":45.8},{"date":"2025-11-22","weight":188.4,"waist":33.8,"hrv":null,"rhr":null,"sleep":7.47,"steps":14819,"calories":3336,"calorieTarget":null,"protein":210,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":172.0,"reps":8,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":120.0,"reps":8,"rpe":9.0},{"name":"Romanian Deadlift (Barbell)","weight":275.0,"reps":10,"rpe":8.0},{"name":"Leg Extension (Machine)","weight":292.11,"reps":14,"rpe":9.0},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":442,"fat":98.9,"fiber":51.1},{"date":"2025-11-29","weight":188.8,"waist":33.93,"hrv":null,"rhr":null,"sleep":7.82,"steps":9422,"calories":3191,"calorieTarget":null,"protein":202,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":187.0,"reps":10,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":170.0,"reps":8,"rpe":9.0},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":391,"fat":98.6,"fiber":48.4},{"date":"2025-12-06","weight":191.7,"waist":34.04,"hrv":null,"rhr":null,"sleep":7.85,"steps":4626,"calories":3187,"calorieTarget":null,"protein":204,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":174.0,"reps":9,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":130.0,"reps":8,"rpe":9.0},{"name":"Romanian Deadlift (Barbell)","weight":281.0,"reps":10,"rpe":8.0},{"name":"Leg Extension (Machine)","weight":292.11,"reps":17,"rpe":8.5},{"name":"Chin Up","weight":0,"reps":16,"rpe":9.5},{"name":"Seated Cable Row - Bar Grip","weight":190.0,"reps":9,"rpe":9.0}],"notes":"","_historical":true,"carbs":386,"fat":101.0,"fiber":36.7},{"date":"2025-12-13","weight":191.5,"waist":34.01,"hrv":null,"rhr":null,"sleep":7.57,"steps":13207,"calories":3215,"calorieTarget":null,"protein":196,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":393,"fat":103.7,"fiber":43.6},{"date":"2025-12-20","weight":191.4,"waist":33.97,"hrv":null,"rhr":null,"sleep":7.63,"steps":9398,"calories":3170,"calorieTarget":null,"protein":174,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":160.0,"reps":8,"rpe":8.0},{"name":"Shoulder Press (Dumbbell)","weight":150.0,"reps":8,"rpe":7.0},{"name":"Romanian Deadlift (Barbell)","weight":283.0,"reps":10,"rpe":8.0},{"name":"Leg Extension (Machine)","weight":292.11,"reps":15,"rpe":8.5},{"name":"Chin Up","weight":0,"reps":15,"rpe":9.5},{"name":"Seated Cable Row - Bar Grip","weight":175.0,"reps":9,"rpe":9.0}],"notes":"","_historical":true,"carbs":402,"fat":102.7,"fiber":32.8},{"date":"2025-12-27","weight":192.6,"waist":34.12,"hrv":null,"rhr":null,"sleep":8.18,"steps":8257,"calories":2951,"calorieTarget":null,"protein":178,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":175.0,"reps":10,"rpe":8.0},{"name":"Shoulder Press (Dumbbell)","weight":150.0,"reps":8,"rpe":7.0},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":361,"fat":94.9,"fiber":23.1},{"date":"2026-01-03","weight":194.7,"waist":34.18,"hrv":null,"rhr":null,"sleep":null,"steps":8853,"calories":2892,"calorieTarget":null,"protein":140,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":175.0,"reps":10,"rpe":8.0},{"name":"Shoulder Press (Dumbbell)","weight":150.0,"reps":8,"rpe":7.0},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":360,"fat":94.7,"fiber":34.5},{"date":"2026-01-10","weight":196.7,"waist":34.29,"hrv":null,"rhr":null,"sleep":7.77,"steps":8719,"calories":2897,"calorieTarget":null,"protein":150,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":170.0,"reps":10,"rpe":9.0},{"name":"Shoulder Press (Dumbbell)","weight":120.0,"reps":8,"rpe":8.5},{"name":"Romanian Deadlift (Barbell)","weight":285.0,"reps":10,"rpe":8.5},{"name":"Leg Extension (Machine)","weight":264.55,"reps":16,"rpe":8.0},{"name":"Chin Up","weight":0,"reps":16,"rpe":9.5},{"name":"Seated Cable Row - Bar Grip","weight":175.0,"reps":9,"rpe":9.0}],"notes":"","_historical":true,"carbs":386,"fat":88.3,"fiber":40.1},{"date":"2026-01-17","weight":198.0,"waist":34.31,"hrv":null,"rhr":null,"sleep":7.5,"steps":10095,"calories":3178,"calorieTarget":null,"protein":182,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":174.0,"reps":9,"rpe":9.0},{"name":"Shoulder Press (Dumbbell)","weight":130.0,"reps":8,"rpe":8.0},{"name":"Romanian Deadlift (Barbell)","weight":260.0,"reps":10,"rpe":7.0},{"name":"Leg Extension (Machine)","weight":264.55,"reps":16,"rpe":8.0},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":195.0,"reps":10,"rpe":8.5}],"notes":"","_historical":true,"carbs":403,"fat":93.2,"fiber":30.3},{"date":"2026-01-24","weight":197.6,"waist":34.33,"hrv":null,"rhr":null,"sleep":7.28,"steps":14848,"calories":3268,"calorieTarget":null,"protein":175,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":190.0,"reps":10,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":130.0,"reps":10,"rpe":8.5},{"name":"Romanian Deadlift (Barbell)","weight":275.0,"reps":10,"rpe":7.5},{"name":"Leg Extension (Machine)","weight":275.58,"reps":16,"rpe":8.5},{"name":"Chin Up","weight":0,"reps":16,"rpe":9.5},{"name":"Seated Cable Row - Bar Grip","weight":175.0,"reps":9,"rpe":9.0}],"notes":"","_historical":true,"carbs":424,"fat":98.6,"fiber":30.7},{"date":"2026-01-31","weight":199.0,"waist":34.38,"hrv":null,"rhr":null,"sleep":7.52,"steps":10887,"calories":3208,"calorieTarget":null,"protein":197,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":190.0,"reps":10,"rpe":9.0},{"name":"Shoulder Press (Dumbbell)","weight":130.0,"reps":10,"rpe":8.5},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":275.58,"reps":16,"rpe":9.0},{"name":"Chin Up","weight":0,"reps":16,"rpe":9.5},{"name":"Seated Cable Row - Bar Grip","weight":195.0,"reps":9,"rpe":9.0}],"notes":"","_historical":true,"carbs":392,"fat":78.7,"fiber":21.9},{"date":"2026-02-07","weight":199.1,"waist":34.35,"hrv":null,"rhr":null,"sleep":7.67,"steps":11200,"calories":2999,"calorieTarget":null,"protein":179,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":190.0,"reps":8,"rpe":9.0},{"name":"Shoulder Press (Dumbbell)","weight":110.0,"reps":8,"rpe":9.0},{"name":"Romanian Deadlift (Barbell)","weight":275.0,"reps":10,"rpe":8.0},{"name":"Leg Extension (Machine)","weight":275.58,"reps":17,"rpe":8.5},{"name":"Chin Up","weight":0,"reps":15,"rpe":9.5},{"name":"Seated Cable Row - Bar Grip","weight":190.0,"reps":10,"rpe":9.0}],"notes":"","_historical":true,"carbs":403,"fat":81.3,"fiber":28.7},{"date":"2026-02-14","weight":198.4,"waist":34.33,"hrv":null,"rhr":null,"sleep":8.95,"steps":6334,"calories":2696,"calorieTarget":null,"protein":184,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Shoulder Press (Dumbbell)","weight":null,"reps":null,"rpe":null},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":315,"fat":86.2,"fiber":20.7},{"date":"2026-02-21","weight":198.0,"waist":34.36,"hrv":null,"rhr":null,"sleep":7.22,"steps":10827,"calories":2738,"calorieTarget":null,"protein":174,"proteinTarget":null,"lifts":[{"name":"Incline Bench Press (Dumbbell)","weight":175.0,"reps":8,"rpe":9.5},{"name":"Shoulder Press (Dumbbell)","weight":130.0,"reps":10,"rpe":8.0},{"name":"Romanian Deadlift (Barbell)","weight":null,"reps":null,"rpe":null},{"name":"Leg Extension (Machine)","weight":null,"reps":null,"rpe":null},{"name":"Chin Up","weight":null,"reps":null,"rpe":null},{"name":"Seated Cable Row - Bar Grip","weight":null,"reps":null,"rpe":null}],"notes":"","_historical":true,"carbs":291,"fat":99.3,"fiber":18.2}];
@@ -1232,6 +1264,11 @@ function migrateState(raw){
   const rawPo = (raw.proteinOverrides && typeof raw.proteinOverrides==='object') ? raw.proteinOverrides : {};
   const cleanPo = k => { const n = Number(rawPo[k]); return (rawPo[k]!=null && Number.isFinite(n) && n>0) ? Math.round(n) : null; };
   migrated.proteinOverrides = {cut: cleanPo('cut'), maint: cleanPo('maint')};
+  // v21: the global mode drives every MODE_CONFIG lookup in the UI. A stored
+  // value outside cut/maint/bulk (corrupted/hand-edited storage) used to throw
+  // in applyModeUI and break tab navigation; it now loads as 'cut', the same
+  // default every `D.mode || 'cut'` site already assumes. Valid modes untouched.
+  if(!['cut','maint','bulk'].includes(migrated.mode)) migrated.mode = 'cut';
   return migrated;
 }
 
@@ -1258,7 +1295,8 @@ function writeJSON(key, obj) {
 
 let D = cloneDefaultState();
 D = migrateState(readJSON(SK, null));
-function save(){writeJSON(SK,D);}
+// v21: returns the write result (callers may ignore it; behavior unchanged).
+function save(){return writeJSON(SK,D);}
 
 // ══════════════════════════════════════════
 // MODE SYSTEM
@@ -1467,9 +1505,9 @@ function applyModeUI(){
   const tt = document.getElementById('trendTitle');
   if(tt) tt.textContent = '// '+({cut:'Cut',maint:'Maintenance',bulk:'Surplus'}[m]||'Cut')+' Trends';
   // Transition card
-  renderTransitionCard();
+  safeCall('renderTransitionCard', renderTransitionCard);
   if(!D.weeks.some(w=>w.date===v('wDate'))) sv('phaseRef', m);
-  // Re-render command center with mode context
+  // Re-render command center with mode context (v21: panels isolated inside)
   renderCommandCenter();
 }
 
@@ -1694,10 +1732,8 @@ function calcCutVelocity(currentWeight, savedWeeks, mode){
     else { zone='Too Fast — muscle risk'; zoneCls='vel-red'; }
   }
 
-  // 3-week waist trend
-  const allWaist = savedWeeks.filter(w=>w.waist);
-  const Wst0 = currentWeight!=null ? (savedWeeks[savedWeeks.length]?.waist ?? null) : null; // will be passed separately
-  // (waist passed in separately — see calcStallStatus)
+  // Waist trend lives in calcStallStatus (v21: removed two dead locals here —
+  // unused, and `savedWeeks.filter(w=>w.waist)` threw on a null entry).
 
   return { W0, W1, W2, W3, rollingRate, shortTermRate, zone, zoneCls,
            // v17 R2: mode-local drift state for the action engine / card / export
@@ -2117,7 +2153,6 @@ function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks, priorRR){
 
   // ── 4. PERFORMANCE ────────────────────────────────────────────────
   // Use existing strength retention data — check saved weeks for 2+ lifts <90%
-  const recentLifts = (savedWeeks.slice(-1)[0]?.lifts)||[];
   // Performance drop check via calcWeeklyAction context (no new math — reads D.weeks)
   const perf = checkPerformanceDrop(mode);
   if(perf.flag){
@@ -2341,12 +2376,10 @@ function getPhaseBlockForWeek(selectedWeekDate){
   return { phaseRef, startWeek, endWeek, weeksInPhase, weightChange, avgPacePerWeek };
 }
 
-function getCurrentPhaseRef(){
-  if(!Array.isArray(D.weeks) || !D.weeks.length) return D.mode || 'cut';
-  const latest = [...D.weeks].sort((a,b)=>a.date.localeCompare(b.date)).slice(-1)[0];
-  return getWeekPhaseRef(latest);
-}
-
+// v21: removed getCurrentPhaseRef() and calcPhaseWeeks() — no callers. They were
+// alternative "current phase" / "weeks in phase" rules (calcPhaseWeeks also
+// skipped weightless weeks and broke on >8-day gaps) that disagreed with the
+// live one below; leaving them invited wiring the wrong rule in later.
 function getWeeksInCurrentPhase(anchorDate=null){
   const sortedWeeks = [...(D.weeks||[])]
     .filter(w=>w && w.date)
@@ -2365,36 +2398,6 @@ function getWeeksInCurrentPhase(anchorDate=null){
   for(let i=anchorIdx;i>=0;i--){
     if(getWeekPhaseRef(sortedWeeks[i])!==anchorPhaseRef) break;
     count++;
-  }
-  return count;
-}
-
-function calcPhaseWeeks(weeksArray, currentIdx){
-  // [Rule 1] Count consecutive prior weeks with same effective phase ref as selected week,
-  // contiguous by week-ending dates (gap ≤8 days), ignoring weeks missing weight.
-  if(!weeksArray.length || currentIdx < 0) return 0;
-  const ref = weeksArray[currentIdx];
-  if(!ref) return 0;
-  const currentPhaseRef = getWeekPhaseRef(ref);
-
-  // Build the chain walking backwards from currentIdx (inclusive)
-  let count = 0;
-  let prevDate = null;
-  for(let i = currentIdx; i >= 0; i--){
-    const w = weeksArray[i];
-    if(!w) continue;
-    // Must have weight
-    if(!w.weight) continue;
-    // Must be same effective phase ref
-    const wm = getWeekPhaseRef(w);
-    if(wm !== currentPhaseRef) break;
-    // Must be contiguous — gap ≤8 days from last counted week (allow 1-day slop)
-    if(prevDate !== null){
-      const gap = (new Date(prevDate) - new Date(w.date)) / 86400000;
-      if(gap > 8) break;
-    }
-    count++;
-    prevDate = w.date;
   }
   return count;
 }
@@ -2514,14 +2517,18 @@ function calcAdherenceConfidence(week){
   return {conf:'LOW', label:dt+' days tracked — low confidence', inferred:false, low:true};
 }
 
-function getDeficitLevel(anchorDate=null){
+// v21: getDeficitLevel / getPrevDeficitLevel were two copies of the same
+// 3-week deficit classifier differing only in the end index. One scope helper
+// + one classifier keep them in lockstep (identical arithmetic, same order).
+function deficitScopeWeeks(anchorDate){
   const wks = [...D.weeks]
     .filter(w=>w.weight&&w.calories)
     .sort((a,b)=>a.date.localeCompare(b.date));
   const endIdx = anchorDate ? wks.findIndex(w=>w.date===anchorDate) : (wks.length-1);
-  const scoped = endIdx >= 0 ? wks.slice(0, endIdx+1) : [];
-  if(scoped.length < 3) return null;
-  const i = scoped.length-1;
+  return endIdx >= 0 ? wks.slice(0, endIdx+1) : [];
+}
+// Classify the deficit of the 3-week window ending at scoped[i] (i ≥ 2).
+function deficitLevelAt(scoped, i){
   const trio = scoped.slice(i-2, i+1);
   const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
   const wkLoss  = scoped[i-1].weight - scoped[i].weight;
@@ -2535,25 +2542,16 @@ function getDeficitLevel(anchorDate=null){
   return 'aggressive';
 }
 
+function getDeficitLevel(anchorDate=null){
+  const scoped = deficitScopeWeeks(anchorDate);
+  if(scoped.length < 3) return null;
+  return deficitLevelAt(scoped, scoped.length-1);
+}
+
 function getPrevDeficitLevel(anchorDate=null){
-  const wks = [...D.weeks]
-    .filter(w=>w.weight&&w.calories)
-    .sort((a,b)=>a.date.localeCompare(b.date));
-  const endIdx = anchorDate ? wks.findIndex(w=>w.date===anchorDate) : (wks.length-1);
-  const scoped = endIdx >= 0 ? wks.slice(0, endIdx+1) : [];
+  const scoped = deficitScopeWeeks(anchorDate);
   if(scoped.length < 4) return null;
-  const i = scoped.length-2;
-  const trio = scoped.slice(i-2, i+1);
-  const avgCal = trio.reduce((s,w)=>s+w.calories,0)/3;
-  const wkLoss  = scoped[i-1].weight - scoped[i].weight;
-  const wkLoss2 = scoped[i-2].weight - scoped[i-1].weight;
-  const avgWkLoss = (wkLoss+wkLoss2)/2;
-  const tdee = avgCal + (avgWkLoss*3500/7);
-  const def = Math.round(tdee - avgCal);
-  if(def <= 0) return null;
-  if(def <= 500) return 'conservative';
-  if(def <= 700) return 'moderate';
-  return 'aggressive';
+  return deficitLevelAt(scoped, scoped.length-2);
 }
 
 function isKneeGateActive(anchorDate=null){
@@ -2833,24 +2831,15 @@ function calcDietBreakCandidate(){
   }
 
   // Trigger 2: Performance drop 2 clean weeks in a row
+  // v21 (comment corrected, logic unchanged): this trigger uses the CURRENT
+  // performance flag only — checkPerformanceDrop reads the global e1RM history
+  // and cannot be re-run per week, so persistence across the 2nd week is NOT
+  // verified here; the reason text tells Alex to verify it manually. (Removed
+  // dead locals that computed per-week lift coverage and were never read.)
   if(!reason){
-    // checkPerformanceDrop reads D.weeks globally — approximate with e1RM history
-    // We check if performance flag is currently ON (current cut state)
     const perfNow = checkPerformanceDrop('cut');
-    // And check if the prior clean week also would have had performance flag
-    // (proxy: look at last 2 weeks of Hevy data — if 2+ lifts were below 90% in each)
-    // Since we can't re-run per-week, we use current flag + direction as signal
     if(perfNow.flag){
-      // Also need to confirm it's been persistent — check if 2 consecutive cut weeks had any low perf
-      // Use saved perf data from weekly lifts if available
-      const w1lifts = last2[0].lifts || [];
-      const w2lifts = last2[1].lifts || [];
-      // If both weeks have 2+ lifts with no data (skipped) or very low rpe, treat as candidate
-      const w1LowData = w1lifts.filter(l => l.weight && l.reps && l.rpe && l.rpe >= 7).length < 2;
-      const w2LowData = w2lifts.filter(l => l.weight && l.reps && l.rpe && l.rpe >= 7).length < 2;
-      if(perfNow.flag){
-        reason = 'Performance drop detected (2+ priority lifts <90% peak). Verify 2nd consecutive week manually.';
-      }
+      reason = 'Performance drop detected (2+ priority lifts <90% peak). Verify 2nd consecutive week manually.';
     }
   }
 
@@ -2919,8 +2908,10 @@ function renderActionSummary(){
   // [C] Phase gate: suppress stall language if < 4 weeks in phase
   const savedIdx = saved.length - 1;
   const phaseWksAS = getWeeksInCurrentPhase();
-  const recBaseAS2 = calcRecoveryBaselineConfidence(saved, savedIdx);
-  const stallConfAS = calcStallConfidence(phaseWksAS, recBaseAS2, adhConfAS);
+  // [B] Recovery baseline confidence (v21: computed once — the old recBaseAS2
+  // was an identical second call with the same arguments)
+  const recBaseAS = calcRecoveryBaselineConfidence(saved, savedIdx);
+  const stallConfAS = calcStallConfidence(phaseWksAS, recBaseAS, adhConfAS);
   const stallGatedAS = phaseWksAS < 4 || stallConfAS === 'LOW';
   if(stallGatedAS && result.action && (result.action.includes('STALLED') || result.action.includes('stall'))){
     result = {
@@ -2938,9 +2929,6 @@ function renderActionSummary(){
       note: result.note + ' [Adherence confidence LOW — suppressed]'
     };
   }
-
-  // [B] Recovery baseline confidence
-  const recBaseAS = calcRecoveryBaselineConfidence(saved, savedIdx);
 
   card.style.display='block';
 
@@ -2982,8 +2970,16 @@ function syncCalorieTargets(source){
   else activityInput.value = weekInput.value;
 }
 function nv(id){const x=parseFloat(v(id));return isNaN(x)?null:x;}
-function nb(id){return document.getElementById(id)?.checked||false;}
-function sb(id,val){const e=document.getElementById(id);if(e)e.checked=!!val;}
+// v21: removed nb()/sb() checkbox helpers — no callers.
+// v21: fault isolation for ORCHESTRATION code only (render lists, init steps,
+// tab switches, post-load/post-save refreshes). Runs fn; on an exception it
+// logs to the console and returns false instead of letting one panel's
+// failure abort every renderer queued after it. Returns true on success.
+// Never wrap calc engines or the export builder — those must fail loudly.
+function safeCall(label, fn){
+  try { fn(); return true; }
+  catch(e){ try { console.error('[alex-dashboard] '+label+' failed:', e); } catch(_){} return false; }
+}
 const CHART_OPTS = {responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:'#1a1a26',borderColor:'#2a2a3a',borderWidth:1,titleColor:'#6b6b8a',bodyColor:'#f0f0f8'}},scales:{x:{ticks:{color:'#6b6b8a',font:{family:'DM Mono',size:9}},grid:{color:'#1a1a26'}},y:{ticks:{color:'#6b6b8a',font:{family:'DM Mono',size:9}},grid:{color:'#2a2a3a'}}}};
 function chartOpts(extra={}){return {...CHART_OPTS,...extra,plugins:{...CHART_OPTS.plugins,...(extra.plugins||{})}};}
 const charts = {};
@@ -2992,6 +2988,9 @@ function replaceChart(key, ctx, cfg) {
   if (charts[key]) {
     try { charts[key].destroy(); } catch(e) {}
   }
+  // v21: Chart.js loads from a CDN; offline it is undefined. Skip the chart
+  // (the rest of the panel still renders) instead of throwing a ReferenceError.
+  if (typeof Chart !== 'function') { delete charts[key]; return null; }
   charts[key] = new Chart(ctx, cfg);
   return charts[key];
 }
@@ -3023,6 +3022,19 @@ function rebuildHevyVolumeFromSessions(){
   HEVY_DATA.vol = vol;
 }
 
+// v21: the analytics copy of one incoming session. Every consumer of
+// HEVY_DATA.sessions (exercise picker, lift/e1RM charts, session log, muscle
+// volume, performance/strength checks) assumes a top-set map (ts) and a string
+// title; a session restored from a hand-edited backup without them used to
+// abort init and break every lift-reading panel. Valid sessions pass through
+// unchanged (same keys, same ts reference). Stored week data is not modified.
+function normalizeHevySession(s, d){
+  const ses = {...s, d};
+  if(!ses.ts || typeof ses.ts !== 'object') ses.ts = {};
+  if(typeof ses.t !== 'string') ses.t = String(ses.t);
+  return ses;
+}
+
 function upsertHevySessions(sessions){
   const normalizedExisting = HEVY_DATA.sessions.map(s=>{
     const d = parseHevyDate(s?.d||'');
@@ -3033,7 +3045,7 @@ function upsertHevySessions(sessions){
     if(!s||!s.t) return;
     const d = parseHevyDate(s.d||'');
     if(!d) return;
-    byKey.set(d+'||'+s.t, {...s, d});
+    byKey.set(d+'||'+s.t, normalizeHevySession(s, d));
   });
   HEVY_DATA.sessions = [...byKey.values()].sort((a,b)=>a.d.localeCompare(b.d));
   rebuildHevyVolumeFromSessions();
@@ -3060,17 +3072,19 @@ function mergeStoredSessions(){
 }
 
 window.onload = ()=>{
-  mergeStoredSessions();
+  // v21: init steps are isolated — a failure in one (e.g. malformed stored
+  // session data) no longer skips every step after it.
+  safeCall('mergeStoredSessions', mergeStoredSessions);
   sv('wDate', new Date().toISOString().split('T')[0]);
   sv('phaseRef', D.mode || 'cut');
   if(D.targetWeight) sv('targetWt', D.targetWeight);
-  buildPrimaryMuscleMap();
+  safeCall('buildPrimaryMuscleMap', buildPrimaryMuscleMap);
   _countingMethod = D.countingMethod||'all';
   if(_countingMethod==='primary'){ document.getElementById('countPrimaryBtn')?.classList.add('active'); document.getElementById('countAllBtn')?.classList.remove('active'); }
   sv('stepTgt', 15000);
-  buildLiftRows();
-  buildExSelectors();
-  checkImportBanner();
+  safeCall('buildLiftRows', buildLiftRows);
+  safeCall('buildExSelectors', buildExSelectors);
+  safeCall('checkImportBanner', checkImportBanner);
   if(D.defHeight) sv('defHt', D.defHeight);
   if(D.defAge) sv('defAge', D.defAge);
   if(D.defAct) sv('defAct', D.defAct);
@@ -3085,12 +3099,15 @@ function showSec(name, btn){
   document.querySelectorAll('.nt').forEach(t=>t.classList.remove('active'));
   document.getElementById('sec-'+name)?.classList.add('active');
   if(btn)btn.classList.add('active');
-  if(name==='trends')renderTrends();
-  if(name==='training')renderTraining();
-  if(name==='analytics')renderAnalytics();
-  if(name==='history'){renderHistory();checkImportBanner();}
-  applyModeUI();
-  if(name==='summary')populateSumSel();
+  // v21: isolated so a failing panel can't block the rest — in v20 any throw
+  // inside applyModeUI's command-center render skipped populateSumSel and
+  // left the Summary week picker (the export entry point) empty.
+  if(name==='trends')safeCall('renderTrends', renderTrends);
+  if(name==='training')safeCall('renderTraining', renderTraining);
+  if(name==='analytics')safeCall('renderAnalytics', renderAnalytics);
+  if(name==='history')safeCall('renderHistory', ()=>{renderHistory();checkImportBanner();});
+  safeCall('applyModeUI', applyModeUI);
+  if(name==='summary')safeCall('populateSumSel', populateSumSel);
 }
 
 // ══════════════════════════════════════════
@@ -3535,26 +3552,30 @@ function renderApp(activeTabName){
   if(wbn) wbn.textContent = D.waistBaselineBreakDate
     ? 'Trends stop at '+D.waistBaselineBreakDate+'. Offset +'+(D.waistBaselineOffsetIn||0)+' in applied to pre-break history (editable above).'
     : 'No break set — trends compute across all contiguous weeks.';
-  if(dirty.summary){ populateSumSel(); dirty.summary = false; }
-  if(dirty.history){ renderHistory(); checkImportBanner(); dirty.history = false; }
+  // v21: every renderer is isolated. A dirty flag is cleared only when its
+  // renderer returned normally — if it throws, the flag stays dirty (as in
+  // v20, where the throw skipped the reset), so the next renderApp retries.
+  if(dirty.summary){ safeCall('populateSumSel', ()=>{ populateSumSel(); dirty.summary = false; }); }
+  if(dirty.history){ safeCall('renderHistory', ()=>{ renderHistory(); checkImportBanner(); dirty.history = false; }); }
 
   const needsAnalytics = dirty.analytics;
+  let analyticsOk = true;
   if(needsAnalytics){
-    renderActionSummary();
-    renderMetaPanel();
+    if(!safeCall('renderActionSummary', renderActionSummary)) analyticsOk = false;
+    if(!safeCall('renderMetaPanel', renderMetaPanel)) analyticsOk = false;
   }
 
-  if(activeTabName==='trends' && dirty.trends){ renderTrends(); dirty.trends = false; }
-  if(activeTabName==='training' && dirty.training){ renderTraining(); dirty.training = false; }
-  if(activeTabName==='analytics' && needsAnalytics){ renderAnalytics(); }
-  if(needsAnalytics) dirty.analytics = false;
+  if(activeTabName==='trends' && dirty.trends){ safeCall('renderTrends', ()=>{ renderTrends(); dirty.trends = false; }); }
+  if(activeTabName==='training' && dirty.training){ safeCall('renderTraining', ()=>{ renderTraining(); dirty.training = false; }); }
+  if(activeTabName==='analytics' && needsAnalytics){ if(!safeCall('renderAnalytics', renderAnalytics)) analyticsOk = false; }
+  if(needsAnalytics && analyticsOk) dirty.analytics = false;
 
   // v17: weekly TDEE estimate, body-comp log, maintenance targets (cheap — always render)
   // v18: cut-history summary (memoized; renders in every mode)
-  renderTDEE();
-  renderBodyComp();
-  renderMaintTargets();
-  renderCutHistory();
+  safeCall('renderTDEE', renderTDEE);
+  safeCall('renderBodyComp', renderBodyComp);
+  safeCall('renderMaintTargets', renderMaintTargets);
+  safeCall('renderCutHistory', renderCutHistory);
 }
 
 function getCurrentFormSnapshot(){
@@ -3655,7 +3676,9 @@ function saveWeek(){
   } else D.weeks.push(entry);
   D.weeks.sort((a,b)=>a.date.localeCompare(b.date));
   save();
-  mergeStoredSessions();
+  // v21: the week is already persisted here; an analytics-merge failure must
+  // not skip the UI refresh, the snapshot reset and the confirmation below.
+  safeCall('mergeStoredSessions', mergeStoredSessions);
   window._pendingPhoto=null;
   const activeSec = document.querySelector('.sec.active')?.id || '';
   const activeTab = activeSec.replace('sec-','');
@@ -3918,17 +3941,18 @@ function showImportModal(){
     // Show top sets for priority lifts found in this session
     const found = PRIORITY_LIFTS.map(pl=>{
       const top = getTopSetForExercise(s.sets, pl.name);
-      return top ? `${pl.name}: ${top.weight_lbs||'BW'}lbs × ${top.reps} @ RPE ${top.rpe}` : null;
+      // v21: CSV text is escaped (identical output for normal text)
+      return top ? `${pl.name}: ${escHtml(String(top.weight_lbs||'BW'))}lbs × ${escHtml(String(top.reps))} @ RPE ${escHtml(String(top.rpe))}` : null;
     }).filter(Boolean);
     const peakNote = s.type==='home' ? ' · excl. from peaks' : s.type==='deload' ? ' · fully excluded' : ' · sets peaks';
     return `<div class="ses-row ${s.type}" onclick="toggleSesRow(${idx})">
       <input type="checkbox" id="sesChk${idx}" ${s.included?'checked':''} onclick="event.stopPropagation();toggleSesRow(${idx},true)" style="margin-top:3px">
       <div style="flex:1;min-width:0">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px">
-          <div style="font-size:12px;font-weight:600;line-height:1.3">${s.title}</div>
+          <div style="font-size:12px;font-weight:600;line-height:1.3">${escHtml(String(s.title))}</div>
           <div style="flex-shrink:0"><span class="ses-type ${s.type}">${typeLabel}</span></div>
         </div>
-        <div style="font-size:10px;color:var(--mu);margin-top:2px">${shortDate}${peakNote}</div>
+        <div style="font-size:10px;color:var(--mu);margin-top:2px">${escHtml(String(shortDate))}${peakNote}</div>
         ${found.length?`<div class="ses-lifted">${found.join(' · ')}</div>`:''}
       </div>
     </div>`;
@@ -4020,13 +4044,15 @@ function confirmHevyImport(){
   upsertHevySessions(window._importedSessions);
   // Imported sessions are staged in _importedSessions for saveWeek, but analytics reads HEVY_DATA now.
   // Re-render here so volume charts update immediately after confirm instead of waiting for a later save.
-  if(document.getElementById('sec-training')?.classList.contains('active')) renderTraining();
+  // v21: isolated — a render failure no longer leaves the import modal open
+  // with the status line and confirmation skipped.
+  if(document.getElementById('sec-training')?.classList.contains('active')) safeCall('renderTraining', renderTraining);
   if(document.getElementById('sec-analytics')?.classList.contains('active')){
     if(document.getElementById('av-volume')?.style.display!=='none'){
-      renderVolume();
-      renderMuscleChart();
+      safeCall('renderVolume', renderVolume);
+      safeCall('renderMuscleChart', renderMuscleChart);
     } else {
-      renderAnalytics();
+      safeCall('renderAnalytics', renderAnalytics);
     }
   }
 
@@ -4370,11 +4396,12 @@ function genSummary(){
           : 'Not stalled';
 
   // ── Tiebreakers ──
-  const cvTb = calcCutVelocity(wWeight, D.weeks.slice(0,idx), wkMode);
-  const stTb = calcStallStatus(cvTb, wWaist, D.weeks, {anchorDate:w.date, useLiveInputs:false, mode:wkMode});
-  const rsTb = calcRecoveryStatusFromData(wHRV, wRHR, wSleep, D.weeks.slice(0,idx).filter(x=>x.hrv||x.rhr||x.sleep));
-  const baseTbResult = calcWeeklyAction(wkMode, cvTb, stTb, rsTb, wTags, D.weeks.slice(0,idx+1), priorWeekRollingRate(D.weeks.slice(0,idx), wkMode));
-  const tbResult = applyTiebreakers(baseTbResult, cvTb, stTb, rsTb, D.weeks.slice(0,idx+1), wkMode);
+  // v21: cvSum / stSum / rs above were computed from exactly these inputs by
+  // the same pure functions — reuse them (the old cvTb/stTb/rsTb were
+  // byte-identical recomputations that could silently drift if one copy
+  // were edited without the other).
+  const baseTbResult = calcWeeklyAction(wkMode, cvSum, stSum, rs, wTags, D.weeks.slice(0,idx+1), priorWeekRollingRate(D.weeks.slice(0,idx), wkMode));
+  const tbResult = applyTiebreakers(baseTbResult, cvSum, stSum, rs, D.weeks.slice(0,idx+1), wkMode);
 
   // [Rule 5 + Fix 1] RECOVERY is always primary when any metric is RED.
   // All other triggers become secondary modifiers.
@@ -4453,6 +4480,9 @@ function genSummary(){
     rollingRate: rr,
     shortTermRate: stRate
   };
+  // v21: the cut-history summary is pure and was evaluated 7× below (1 human
+  // block + 6 machine lines, each re-walking the full Hevy history). Once.
+  const chsExp = calcCutHistorySummary();
 
   const lines = [
     '📊 WEEKLY HEALTH SUMMARY — '+wkMode.toUpperCase()+' PHASE'+(flags?' '+flags:''),
@@ -4623,7 +4653,7 @@ function genSummary(){
     'Tier 3 · noise — do not act: single-day scale weight · single HRV reading · subjective fluctuations',
     '',
     '── CUT HISTORY (data-derived) ──',
-    cutHistoryExportLines(),
+    cutHistoryExportLines(chsExp),
     '',
     ...(wkMode==='bulk' ? ['── SURPLUS GUARDRAILS (status only — no auto-prescription) ──',
       surplusGuardrailsExportLines(cvSum.rollingRate, wWeight, D.weeks.slice(0,idx)), ''] : []),
@@ -4683,12 +4713,12 @@ function genSummary(){
     // v18: protein source — equation vs Alex's override.
     'protein_rule:              '+proteinRuleLabel(wkMode)+' ['+proteinTargetSource(wkMode)+(isProteinOverride(wkMode)?' '+proteinOverrideFor(wkMode)+'g':(wkMode==='maint'&&wWeight?' '+Math.round(calcMaintProtein(wWeight)||0)+'g at '+Math.round(wWeight)+' lb avg':''))+']',
     'signal_hierarchy:          T1=performance trend|waist trend|multi-week weight trend; T2=hrv/rhr trends|sleep; T3=noise: single-day scale|single hrv|subjective (do not act)',
-    'cut_history_available:     '+boolStr(calcCutHistorySummary().available),
-    'cut_history_span:          '+(()=>{const s=calcCutHistorySummary();return s.available?s.startDate+' to '+s.endDate+' ('+s.durationWeeks+' wks)':'n/a';})(),
-    'cut_history_total_loss_lb: '+(()=>{const s=calcCutHistorySummary();return s.available?String(s.totalLoss):'n/a';})(),
-    'cut_history_avg_lb_per_wk: '+(()=>{const s=calcCutHistorySummary();return s.available?String(s.avgRateLbWk):'n/a';})(),
-    'cut_history_waist_chg_in:  '+(()=>{const s=calcCutHistorySummary();return s.available?(s.waistChange!=null?String(s.waistChange):'n/a'):'n/a';})(),
-    'cut_history_strength_retained: '+(()=>{const s=calcCutHistorySummary();return s.available?(s.liftsRetained+'/'+s.liftsTracked+' lifts >=90pct'):'n/a';})(),
+    'cut_history_available:     '+boolStr(chsExp.available),
+    'cut_history_span:          '+(()=>{const s=chsExp;return s.available?s.startDate+' to '+s.endDate+' ('+s.durationWeeks+' wks)':'n/a';})(),
+    'cut_history_total_loss_lb: '+(()=>{const s=chsExp;return s.available?String(s.totalLoss):'n/a';})(),
+    'cut_history_avg_lb_per_wk: '+(()=>{const s=chsExp;return s.available?String(s.avgRateLbWk):'n/a';})(),
+    'cut_history_waist_chg_in:  '+(()=>{const s=chsExp;return s.available?(s.waistChange!=null?String(s.waistChange):'n/a'):'n/a';})(),
+    'cut_history_strength_retained: '+(()=>{const s=chsExp;return s.available?(s.liftsRetained+'/'+s.liftsTracked+' lifts >=90pct'):'n/a';})(),
     // v18: surplus guardrails — status only (bulk weeks).
     ...(wkMode==='bulk' ? (()=>{const g=calcSurplusGuardrails(cvSum.rollingRate, wWeight, D.weeks.slice(0,idx));
       return ['surplus_guardrail_weight:  '+g.weight.status+' — '+g.weight.label+' ('+g.weight.detail+')',
@@ -4745,8 +4775,9 @@ const MCFG={
 };
 
 function renderTrends(){
-  showTrend('weight', document.querySelector('#trendTabs .ctab'));
-  renderSnap();
+  // v21: the snapshot card no longer depends on the chart rendering first
+  safeCall('showTrend', ()=>showTrend('weight', document.querySelector('#trendTabs .ctab')));
+  safeCall('renderSnap', renderSnap);
 }
 
 function showTrend(metric, btn){
@@ -4956,10 +4987,11 @@ function renderSessions(){
   if(!recent.length){document.getElementById('sesLog').innerHTML='<div class="empty"><div class="empty-icon">📋</div>No sessions.</div>';return;}
   const muscleBadge={push:'<span style="color:var(--a)">push</span>',pull:'<span style="color:var(--a2)">pull</span>',legs:'<span style="color:var(--g)">legs</span>',upper:'<span style="color:var(--w)">upper</span>',mobility:'<span style="color:var(--pur)">mobility</span>',other:'<span style="color:var(--mu)">other</span>'};
   document.getElementById('sesLog').innerHTML=recent.map(s=>{
-    const topStr=Object.entries(s.ts).slice(0,3).map(([ex,d])=>`${ex}: ${d.w||'BW'}lbs×${d.r||'?'}`).join('  ·  ');
+    // v21: session titles / exercise names come from CSV or backups — escaped
+    const topStr=Object.entries(s.ts).slice(0,3).map(([ex,d])=>`${escHtml(String(ex))}: ${escHtml(String(d.w||'BW'))}lbs×${escHtml(String(d.r||'?'))}`).join('  ·  ');
     return`<div class="hi" style="display:block;padding:11px 0;">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-        <div style="font-size:12px">${s.t}</div>
+        <div style="font-size:12px">${escHtml(String(s.t))}</div>
         <div style="font-size:10px;color:var(--mu)">${fmtDShort(s.d)}</div>
       </div>
       <div style="font-size:10px;color:var(--mu)">${muscleBadge[s.m]||muscleBadge.other} · vol: ${(s.vol/1000).toFixed(0)}k lbs</div>
@@ -4980,10 +5012,11 @@ function showAnalView(view, btn){
   document.getElementById('av-'+view).style.display='block';
   document.querySelectorAll('#sec-analytics .stab').forEach(t=>t.classList.remove('active'));
   if(btn)btn.classList.add('active');
+  // v21: isolated renders (command-center panels are isolated inside)
   if(view==='command')renderCommandCenter();
-  if(view==='volume'){renderVolume();renderMuscleChart();}
-  if(view==='macros')renderMacros();
-  if(view==='deficit'){updDeficit();renderDeficitChart();renderRefeedLog();}
+  if(view==='volume'){safeCall('renderVolume', renderVolume);safeCall('renderMuscleChart', renderMuscleChart);}
+  if(view==='macros')safeCall('renderMacros', renderMacros);
+  if(view==='deficit'){safeCall('updDeficit', updDeficit);safeCall('renderDeficitChart', renderDeficitChart);safeCall('renderRefeedLog', renderRefeedLog);}
 }
 
 
@@ -5112,10 +5145,10 @@ function renderMuscleChart(){
 
   const vals = weeks.map(w=>(muscVol[w]||0)/1000);
   const col = MUSCLE_COLORS[muscle]||'#47b8ff';
-  const cutIdx = weeks.findIndex(w=>w>='2026-02-21');
   destroyChart('musc');
   const ctx = document.getElementById('muscChart').getContext('2d');
-  const annotations = cutIdx>=0?[{type:'line',xMin:cutIdx,xMax:cutIdx,borderColor:'#e8ff4780',borderWidth:2,borderDash:[6,4],label:{display:true,content:'Cut Start',color:'#e8ff47',font:{size:9}}}]:[];
+  // (v21: removed an unused cut-start "annotations" config — no annotation
+  // plugin is loaded, it was never passed to the chart)
   // Feature 5: static floor annotation line
   const MUSCLE_FLOORS={'Shoulders':6000,'Biceps':3500,'Triceps':4000,'Upper Back':9000,'Lower Back':3000,'Glutes':9000,'Quads':8000,'Hamstrings':6000,'Calves':3500,'Abdominals':2500};
   const floorVal = (MUSCLE_FLOORS[muscle]||0)/1000;
@@ -5125,6 +5158,7 @@ function renderMuscleChart(){
   const bulkBase = D.bulkVolBaseline && D.bulkVolBaseline[muscle] ? D.bulkVolBaseline[muscle]/1000 : null;
   const bulkDS = bulkBase ? [{label:'Bulk baseline',data:weeks.map(()=>bulkBase),borderColor:'#47ff8a60',borderWidth:1,borderDash:[8,4],pointRadius:0,fill:false,type:'line'}] : [];
 
+  if(typeof Chart !== 'function') return; // v21: Chart.js unavailable (offline) — skip, don't throw
   charts['musc'] = new Chart(ctx,{
     type:'bar',
     data:{labels,datasets:[{label:muscle+' volume (k lbs)',data:vals,backgroundColor:col+'60',borderColor:col,borderWidth:1,borderRadius:3},...floorDS,...bulkDS]},
@@ -5153,10 +5187,8 @@ function renderVolume(){
   const vals=weeks.map(w=>(vol[w][key]||0)/1000);
   const colors={total:'#e8ff47',push:'#47b8ff',pull:'#47ff8a',legs:'#ff9f47'};
   const col=colors[volMetric]||'#e8ff47';
-  // Mark cut start
-  const cutIdx=weeks.findIndex(w=>w>='2026-02-21');
+  // (v21: removed an unused cut-start "annotations" config — never passed to the chart)
   const ctx=document.getElementById('volChart').getContext('2d');
-  const annotations=cutIdx>=0?[{type:'line',xMin:cutIdx,xMax:cutIdx,borderColor:'#e8ff4780',borderWidth:2,borderDash:[6,4],label:{display:true,content:'Cut Start',color:'#e8ff47',font:{size:9}}}]:[];
   replaceChart('vol',ctx,{type:'bar',data:{labels,datasets:[{label:volMetric+' volume',data:vals,backgroundColor:col+'60',borderColor:col,borderWidth:1,borderRadius:3}]},options:{...chartOpts(),plugins:{...CHART_OPTS.plugins},scales:{x:{ticks:{color:'#6b6b8a',font:{family:'DM Mono',size:9},maxRotation:45},grid:{color:'#1a1a26'}},y:{ticks:{color:'#6b6b8a',font:{family:'DM Mono',size:9},callback:v=>v+'k'},grid:{color:'#2a2a3a'}}}}});
   // Sessions count chart
   const sesVals=weeks.map(w=>vol[w].n||0);
@@ -5326,18 +5358,19 @@ function renderHistory(){
     const isRefeed = w.refeed||wTags.includes('refeed');
     const isDeload = w.deload||wTags.includes('deload');
     const extraTags = wTags.filter(t=>t!=='refeed'&&t!=='deload');
+    // v21: mode/tags/values can arrive from backups — escaped (identical for normal values)
     const modeBadge = w.mode&&w.mode!=='cut'
-      ? `<span style="display:inline-block;background:rgba(107,107,138,.12);color:var(--mu);border:1px solid var(--b);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:1px;margin-left:5px">${w.mode.toUpperCase()}</span>` : '';
+      ? `<span style="display:inline-block;background:rgba(107,107,138,.12);color:var(--mu);border:1px solid var(--b);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:1px;margin-left:5px">${escHtml(String(w.mode).toUpperCase())}</span>` : '';
     return `<div class="hi" onclick="loadWeek('${w.date}')">
       <div>
         <div style="font-size:12px;margin-bottom:2px">${fmtD(w.date)}${isRefeed?'<span class="refeed-badge">REFEED</span>':''}${isDeload?'<span style="display:inline-block;background:rgba(71,184,255,.12);color:var(--a2);border:1px solid var(--a2);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:1px;margin-left:5px">DELOAD</span>':''}${modeBadge}${w._historical?'<span style="font-size:9px;color:var(--mu);margin-left:6px">hist</span>':''}</div>
-        <div style="font-size:10px;color:var(--mu)">${(w.lifts||[]).filter(l=>l.weight).length} lifts${extraTags.map(t=>' <span style="font-size:8px;color:var(--mu)">#'+t+'</span>').join('')} &middot; ${w.photo?'📷 ':''}${w.notes?'📝 ':''}</div>
+        <div style="font-size:10px;color:var(--mu)">${(w.lifts||[]).filter(l=>l.weight).length} lifts${extraTags.map(t=>' <span style="font-size:8px;color:var(--mu)">#'+escHtml(String(t))+'</span>').join('')} &middot; ${w.photo?'📷 ':''}${w.notes?'📝 ':''}</div>
       </div>
       <div class="hact">
         <div class="hm">
-          <div style="color:var(--t)">${w.weight??'—'}<span style="color:var(--mu)"> lbs</span></div>
-          <div style="color:var(--t)">${w.waist??'—'}<span style="color:var(--mu)">"</span></div>
-          <div style="color:var(--t)">${w.sleep??'—'}<span style="color:var(--mu)">h</span></div>
+          <div style="color:var(--t)">${escHtml(String(w.weight??'—'))}<span style="color:var(--mu)"> lbs</span></div>
+          <div style="color:var(--t)">${escHtml(String(w.waist??'—'))}<span style="color:var(--mu)">"</span></div>
+          <div style="color:var(--t)">${escHtml(String(w.sleep??'—'))}<span style="color:var(--mu)">h</span></div>
         </div>
         <button class="hdel" onclick="deleteWeek('${w.date}', event)" title="Delete week">Delete</button>
       </div>
@@ -5383,6 +5416,31 @@ function exportData(){
   toast('Backup exported ✓');
 }
 
+// v21: pure merge of backup weeks into a COPY of the current weeks — the exact
+// v20 merge rules (dateless weeks skipped; same date → imported data wins but
+// the local photo is kept; new dates appended; then sorted by date). Throws on
+// malformed input (e.g. a non-string date breaks the sort) BEFORE anything is
+// committed; the input array and its week objects are never mutated.
+function mergeBackupWeeks(currentWeeks, importedWeeks){
+  const weeks = (currentWeeks||[]).slice();
+  let added = 0, updated = 0, skipped = 0;
+  (importedWeeks||[]).forEach(iw => {
+    if(!iw.date){ skipped++; return; }
+    const idx = weeks.findIndex(w => w.date === iw.date);
+    if(idx >= 0){
+      // Merge: keep local photo, prefer imported data for everything else
+      const localPhoto = weeks[idx].photo;
+      weeks[idx] = {...iw, photo: localPhoto || iw.photo || null};
+      updated++;
+    } else {
+      weeks.push(iw);
+      added++;
+    }
+  });
+  weeks.sort((a,b) => a.date.localeCompare(b.date));
+  return {weeks, added, updated, skipped};
+}
+
 function importData(e){
   const file = e.target.files[0]; if(!file) return;
   const reader = new FileReader();
@@ -5393,21 +5451,14 @@ function importData(e){
         showBackupStatus('✗ Invalid backup file — no weeks array found', 'var(--a3)'); return;
       }
       const imported = migrateState(parsed);
-      let added = 0, updated = 0, skipped = 0;
-      imported.weeks.forEach(iw => {
-        if(!iw.date){ skipped++; return; }
-        const idx = D.weeks.findIndex(w => w.date === iw.date);
-        if(idx >= 0){
-          // Merge: keep local photo, prefer imported data for everything else
-          const localPhoto = D.weeks[idx].photo;
-          D.weeks[idx] = {...iw, photo: localPhoto || iw.photo || null};
-          updated++;
-        } else {
-          D.weeks.push(iw);
-          added++;
-        }
-      });
-      D.weeks.sort((a,b) => a.date.localeCompare(b.date));
+      // v21: merge into a COPY and commit only after the merge + sort succeed.
+      // v20 mutated D.weeks in place, so a malformed backup (e.g. a non-string
+      // date) threw mid-merge, showed "Could not parse", and left D half-merged
+      // for the next unrelated save() to persist — after which every saveWeek
+      // sort threw. Same merge rules, same order, same counts.
+      const merged = mergeBackupWeeks(D.weeks, imported.weeks);
+      const added = merged.added, updated = merged.updated, skipped = merged.skipped;
+      D.weeks = merged.weeks;
       // Also restore deficit settings if present
       if(imported.defHeight) D.defHeight = imported.defHeight;
       if(imported.defAge) D.defAge = imported.defAge;
@@ -5434,8 +5485,10 @@ function importData(e){
       }
       if(imported.waistBaselineOffsetIn!=null) D.waistBaselineOffsetIn = Number(imported.waistBaselineOffsetIn)||0;
       save();
-      renderHistory();
-      checkImportBanner();
+      // v21: isolated — the import is already committed and saved; a history
+      // render failure used to fall into the catch below and report
+      // "Could not parse file" for an import that had succeeded.
+      safeCall('renderHistory', ()=>{ renderHistory(); checkImportBanner(); });
       const msg = `✓ Import complete: ${added} new weeks added, ${updated} updated${skipped?' ('+skipped+' skipped)':''}`;
       showBackupStatus(msg, 'var(--g)');
       toast(`Imported ${added + updated} weeks ✓`);
@@ -5876,8 +5929,10 @@ function renderCutHistory(){
 }
 
 // v18: weekly-export text for the cut-history summary.
-function cutHistoryExportLines(){
-  const s = calcCutHistorySummary();
+// v21: optionally takes an already-computed summary (genSummary passes its
+// single evaluation); with no argument it computes one, exactly as before.
+function cutHistoryExportLines(summary){
+  const s = summary || calcCutHistorySummary();
   if(!s.available) return 'n/a — '+s.reason;
   const L = [
     'Span: '+s.startDate+' → '+s.endDate+' ('+s.durationWeeks+' weeks)',
@@ -6113,14 +6168,14 @@ function renderBodyComp(){
       return '<div style="background:var(--s2);border-radius:8px;padding:9px 12px;margin-bottom:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center">'
         + '<div>⚓ <strong>DEXA</strong> · '+e.date+' — '+(e.bfPct!=null?e.bfPct+'% BF':'')
         + (e.fatMassLb!=null?' · '+e.fatMassLb+' lb fat':'')+(e.leanMassLb!=null?' · '+e.leanMassLb+' lb lean':'')
-        + (e.notes?' <span style="color:var(--mu)">('+e.notes+')</span>':'')
+        + (e.notes?' <span style="color:var(--mu)">('+escHtml(e.notes)+')</span>':'') // v21: free text escaped
         + '<div style="font-size:9px;color:var(--mu)">calibration anchor — compare against waist/weight trend</div></div>'
         + del + '</div>';
     }
     return '<div style="background:var(--s2);border-radius:8px;padding:9px 12px;margin-bottom:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center">'
       + '<div>📏 <strong>Calipers</strong> · '+e.date+' — chest '+(e.chestAvg??'—')+' · abdomen '+(e.abdomenAvg??'—')+' · thigh '+(e.thighAvg??'—')+' mm'
       + (e.siteSum!=null?' · <strong>Σ '+e.siteSum+' mm</strong>':'')
-      + (e.notes?' <span style="color:var(--mu)">('+e.notes+')</span>':'')+'</div>'
+      + (e.notes?' <span style="color:var(--mu)">('+escHtml(e.notes)+')</span>':'')+'</div>' // v21: free text escaped
       + del + '</div>';
   }).join('');
   // Caliper Σ trend (3-site sum over time)
@@ -6947,22 +7002,8 @@ function renderDietBreakBanner(){
 }
 
 
-function getRunwayProjectionDate(targetWeight){
-  const saved = D.weeks.filter(w=>w.weight);
-  if(!saved.length || !targetWeight) return null;
-  const latest = saved[saved.length-1];
-  const cw = latest.weight;
-  const cv = calcCutVelocity(cw, saved.slice(0,-1), (typeof D!=='undefined' && D.mode) || 'cut');
-  const rr = cv.rollingRate;
-  if(rr==null || rr<=0 || targetWeight>=cw) return null;
-  const weeklyLbs = cw*(rr/100);
-  if(!weeklyLbs) return null;
-  const weeks = (cw-targetWeight)/weeklyLbs;
-  if(!Number.isFinite(weeks) || weeks<=0) return null;
-  const d = new Date();
-  d.setDate(d.getDate() + Math.round(weeks)*7);
-  return d;
-}
+// v21: removed getRunwayProjectionDate() — no callers; renderRunway is the
+// single runway projection (the removed copy used different guard rules).
 
 function estimateTDEEByMifflin(){
   const ht = D.defHeight || nv('defHt');
@@ -7113,19 +7154,22 @@ function renderScenario(){
 }
 
 function renderCommandCenter(){
-  renderDecisionLadder();
-  renderDeficitAwareness();
-  renderSignalsSummary();
-  renderActionSummary();
-  renderNextWeekTargets();
-  renderDietBreakBanner();
-  renderRunway();
-  renderScenario();
-  renderFatigueScore();
-  renderAdherenceStreak();
-  renderVolumeRetention();
-  renderWaterBadge();
-  renderMetaPanel();
+  // v21: each panel isolated (same order). In v20 one throwing panel — e.g.
+  // Next Week Targets on a malformed week — skipped every panel after it and,
+  // via applyModeUI → showSec, blocked the Summary week picker.
+  safeCall('renderDecisionLadder', renderDecisionLadder);
+  safeCall('renderDeficitAwareness', renderDeficitAwareness);
+  safeCall('renderSignalsSummary', renderSignalsSummary);
+  safeCall('renderActionSummary', renderActionSummary);
+  safeCall('renderNextWeekTargets', renderNextWeekTargets);
+  safeCall('renderDietBreakBanner', renderDietBreakBanner);
+  safeCall('renderRunway', renderRunway);
+  safeCall('renderScenario', renderScenario);
+  safeCall('renderFatigueScore', renderFatigueScore);
+  safeCall('renderAdherenceStreak', renderAdherenceStreak);
+  safeCall('renderVolumeRetention', renderVolumeRetention);
+  safeCall('renderWaterBadge', renderWaterBadge);
+  safeCall('renderMetaPanel', renderMetaPanel);
 }
 
 function renderDecisionLadder(){
@@ -7392,7 +7436,12 @@ function loadWeek(date, opts={}){
   } else {
     document.getElementById('photoPreview').style.display='none';
   }
-  window._importedSessions = null; window._importedLiftSrc = null; window._pendingPhoto = null; updLoss();updVelocity();updProteinDynamic();updStepLever();chkRec();chkRecGate();updPG();updBodyDeltas(); applyModeUI();
+  window._importedSessions = null; window._importedLiftSrc = null; window._pendingPhoto = null;
+  // v21: each live-panel refresh isolated (same order) — one failure no longer
+  // skips the remaining refreshes, renderApp, the tab switch and the snapshot.
+  safeCall('updLoss', updLoss); safeCall('updVelocity', updVelocity); safeCall('updProteinDynamic', updProteinDynamic);
+  safeCall('updStepLever', updStepLever); safeCall('chkRec', chkRec); safeCall('chkRecGate', chkRecGate);
+  safeCall('updPG', updPG); safeCall('updBodyDeltas', updBodyDeltas); safeCall('applyModeUI', applyModeUI);
   markDirty(['summary','history','analytics']);
   renderApp('log');
   showSec('log',document.querySelector('.nt'));
@@ -7401,7 +7450,59 @@ function loadWeek(date, opts={}){
   toast('Loaded '+fmtD(date));
 }
 
+// ══════════════════════════════════════════
+// v21: SELF-TEST ENVIRONMENT GUARD
+// The self-test runs against the live app (it swaps D fields, calls save(),
+// setMode(), saveMaintTargets()...). Its own finally-blocks restore D, but in
+// v20 a run left FIXTURE values in the maintenance card (e.g. 2350 kcal, a
+// 136 g protein "override") and the weekly protein field, so the next SAVE
+// would have persisted them as real targets. The wrapper below snapshots
+// localStorage plus every form field / status line the test touches and puts
+// them back. The checks themselves are unchanged (plus Group 26).
+// ══════════════════════════════════════════
+const SELFTEST_RESTORE_IDS = ['mtKcalSrc','mtKcalSugg','mtProtWrap','protDynWrap','pgWrap','pgFill','pgPct',
+  'importBanner','transitionCard','runwayNote','sumOut','sumBtns','toast'];
+function selfTestCaptureEnv(){
+  const env = {lsOk:false, ls:null, fields:[], html:[], sugg:window._mtKcalSuggestion};
+  try { env.ls = localStorage.getItem(SK); env.lsOk = true; } catch(e){}
+  document.querySelectorAll('input,select,textarea').forEach(el => {
+    if(el.type==='file') return; // file inputs can't be restored (and the test never touches them)
+    env.fields.push({el, id:el.id, value:el.value, checked:el.checked,
+      placeholder:el.getAttribute('placeholder'), title:el.getAttribute('title')});
+  });
+  SELFTEST_RESTORE_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if(el) env.html.push({id, html:el.innerHTML, cls:el.getAttribute('class'), style:el.getAttribute('style')});
+  });
+  return env;
+}
+function selfTestRestoreEnv(env){
+  if(!env) return;
+  const setAttr = (el, name, val) => { if(val==null) el.removeAttribute(name); else if(el.getAttribute(name)!==val) el.setAttribute(name, val); };
+  try { if(env.lsOk){ if(env.ls==null) localStorage.removeItem(SK); else localStorage.setItem(SK, env.ls); } }
+  catch(e){ console.warn('[alex-dashboard] self-test storage restore failed', e); }
+  env.html.forEach(h => {
+    const el = document.getElementById(h.id); if(!el) return;
+    if(el.innerHTML!==h.html) el.innerHTML = h.html;
+    setAttr(el, 'class', h.cls); setAttr(el, 'style', h.style);
+  });
+  env.fields.forEach(f => {
+    const el = (f.el && f.el.isConnected) ? f.el : (f.id ? document.getElementById(f.id) : null);
+    if(!el) return;
+    if(el.value!==f.value) el.value = f.value;
+    if(el.type==='checkbox' || el.type==='radio') el.checked = f.checked;
+    setAttr(el, 'placeholder', f.placeholder); setAttr(el, 'title', f.title);
+  });
+  window._mtKcalSuggestion = env.sugg;
+}
+
 window.__selfTest = function __selfTest() {
+  const env = selfTestCaptureEnv();
+  try { return __selfTestRun(); }
+  finally { selfTestRestoreEnv(env); }
+};
+
+function __selfTestRun() {
   // Top-level copy of the [Rule 8] safe-delta helper (also defined inside the
   // export builder). The in-page self-test references delt() directly; without
   // this hoisted copy it threw "delt is not defined" (pre-existing in v15).
@@ -8676,11 +8777,45 @@ window.__selfTest = function __selfTest() {
     }
   } catch(e){ add(false, 'v20R2: Group 25 threw', String(e&&e.message||e)); } finally {}
 
+  // ── Group 26 (v21): stability recode — pure, side-effect-free checks.
+  try {
+    // 26a: backup merge runs on a copy with the v20 rules; malformed input
+    // throws BEFORE anything is committed
+    const cur26 = [{date:'2026-09-12', weight:171.6, photo:'p0'}];
+    const res26 = mergeBackupWeeks(cur26, [{date:'2026-09-12', weight:171.5}, {date:'2026-09-19', weight:171.3}, {weight:170}]);
+    add(res26.weeks.length===2 && res26.updated===1 && res26.added===1 && res26.skipped===1
+        && res26.weeks[0].photo==='p0' && res26.weeks[0].weight===171.5 && res26.weeks[1].date==='2026-09-19',
+      'v21: backup merge = v20 rules (update keeps local photo, add, skip dateless, sorted)');
+    add(cur26.length===1 && cur26[0].weight===171.6, 'v21: backup merge never mutates the current weeks');
+    let threw26 = false;
+    try { mergeBackupWeeks(cur26, [{date:20260919, weight:171}]); } catch(e){ threw26 = true; }
+    add(threw26 && cur26.length===1 && cur26[0].date==='2026-09-12',
+      'v21: malformed backup date throws before anything is committed');
+    // 26b: analytics copy of stored Hevy sessions
+    const s26 = {d:'2026-09-18', t:'Upper Day (Home)', m:'upper', ts:{'Chin Up':{w:0,r:25,rpe:8.5,e1rm:null}}, vol:0};
+    const n26 = normalizeHevySession(s26, '2026-09-18');
+    add(n26.ts===s26.ts && JSON.stringify(n26)===JSON.stringify(s26), 'v21: valid stored session passes through unchanged');
+    const bad26 = normalizeHevySession({t:5, m:'upper'}, '2026-09-18');
+    add(!!bad26.ts && typeof bad26.ts==='object' && Object.keys(bad26.ts).length===0 && bad26.t==='5',
+      'v21: stored session without ts / with non-string title is normalized');
+    // 26c: stored global mode
+    add(['cut','maint','bulk'].every(m=>migrateState({weeks:[], mode:m}).mode===m), 'v21: valid stored modes load unchanged');
+    add(migrateState({weeks:[], mode:'maintenance'}).mode==='cut' && migrateState({weeks:[], mode:null}).mode==='cut',
+      'v21: invalid stored mode loads as cut (no applyModeUI crash)');
+    // 26d: offline (no Chart.js) — the chart is skipped, nothing throws
+    const hadChart26 = Object.prototype.hasOwnProperty.call(window, 'Chart'), chart26 = window.Chart;
+    let chartRes26 = 'unset';
+    try { window.Chart = undefined; chartRes26 = replaceChart('__selftest_probe', null, {}); }
+    catch(e){ chartRes26 = 'threw'; }
+    finally { if(hadChart26) window.Chart = chart26; else delete window.Chart; delete charts['__selftest_probe']; }
+    add(chartRes26===null, 'v21: missing Chart.js skips the chart instead of throwing');
+  } catch(e){ add(false, 'v21: Group 26 threw', String(e&&e.message||e)); }
+
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
   console.log(`[selfTest] ${out.pass ? 'PASS' : 'FAIL'} (${passed}/${out.checks.length}) — ${out.checks.length - existingCount} new checks`, out);
   return out;
-};
+}
 </script>
 </body>
 </html>
