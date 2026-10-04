@@ -987,7 +987,8 @@ const SURPLUS_PROTEIN_PER_LB = 0.9;
 function proteinPerLb(mode){ return mode==='maint' ? MAINT_PROTEIN_PER_LB : mode==='bulk' ? SURPLUS_PROTEIN_PER_LB : CUT_PROTEIN_PER_LB; }
 function proteinRuleLabel(mode){ return mode==='maint' ? '0.8g/lb maintenance' : mode==='bulk' ? '0.9g/lb surplus' : '1g/lb cut'; }
 // v22: short protein rule for UI strings — never parse the display label.
-function proteinRuleShort(mode){ return '≥'+proteinPerLb(mode).toFixed(1)+'g/lb'; }
+// Number-trimmed, no ≥ (downstream export parsers see "1g/lb", not "≥1.0g/lb").
+function proteinRuleShort(mode){ return String(Number(proteinPerLb(mode).toFixed(2)))+'g/lb'; }
 // Latest logged 7-day-average week weight (the week's stored weight IS the 7-day avg).
 function currentAvgWeight(){
   const ws = (typeof D!=='undefined' && Array.isArray(D.weeks) ? D.weeks : []).filter(w=>w && w.weight!=null);
@@ -1307,9 +1308,10 @@ function migrateState(raw){
     settled: cleanWt(rawMa.settled), settledDate: rawMa.settledDate || null
   };
   // v22: seed the phase-entry anchor for states already in maintenance (setMode
-  // never fires for them, so the anchor would stay null forever). Earliest
-  // maint-mode week is the honest phase entry; settled still needs Alex's
-  // explicit confirmation via settleMaintAnchor().
+  // never fires for them, so the anchor would stay null forever). Same single
+  // definition as setMode — the 7-day-average weight when maintenance began —
+  // backfilled from the earliest maint-mode week. `settled` still needs
+  // Alex's explicit confirmation via settleMaintAnchor().
   if(migrated.mode==='maint' && migrated.maintAnchor.phaseEntry==null){
     const firstMaint = (migrated.weeks||[]).filter(w=>w && w.mode==='maint' && w.weight!=null)
       .sort((a,b)=>String(a.date).localeCompare(String(b.date)))[0];
@@ -1542,6 +1544,11 @@ function setMode(m){
     // the ±3 lb guardrail measures from the SETTLED anchor, confirmed by Alex
     // after the transition window; see maintAnchor). Only stamp when entering
     // from a different phase; re-selecting maint must not move the anchor.
+    // v22: phaseEntry is defined ONCE as the 7-day-average weight at the moment
+    // maintenance began. setMode captures it live at switch time (the latest
+    // saved week's average IS the phase-entry weight); migration backfills
+    // the same definition from the earliest maint-mode week for states
+    // already in maintenance. `settled` is always Alex's explicit choice.
     if(m==='maint' && prev!=='maint'){
       const w = currentAvgWeight();
       D.maintAnchor = D.maintAnchor || {phaseEntry:null, phaseEntryDate:null, settled:null, settledDate:null};
@@ -1583,6 +1590,13 @@ function settleMaintAnchor(value){
   save();
   toast('Maintenance anchor settled at '+D.maintAnchor.settled+' lb');
   safeCall('renderRunway', renderRunway);
+}
+// v22: UI path for the anchor input — reads the typed value, falls back to
+// the current weight when the field is empty/invalid.
+function settleAnchorFromInput(id){
+  const el = document.getElementById(id);
+  const v = el ? Number(el.value) : NaN;
+  settleMaintAnchor(Number.isFinite(v) && v>0 ? v : undefined);
 }
 // v22: ±3 lb guardrail status vs the settled anchor (fallback: phase entry).
 // Returns null when no anchor exists yet ("settling").
@@ -1798,12 +1812,39 @@ function weekDataCompleteness(w){
 // the same run tracking that drives the 2-week glycogen/water transition rule
 // in calcCutVelocity — so the header and the drift engine can never disagree.
 // v22: shared transition wording — never "Week 3 of 2". The extended week-3
-// maintenance transition gets explicit calibration language.
+// maintenance transition gets explicit calibration language. Capitalized —
+// phaseTransitionStatusText delegates here so both label sources agree.
 function transitionWeekLabel(cv){
   if(!cv || !cv.inTransition) return 'none';
   if(cv.transitionExtended)
-    return 'week 3 (extended) — scale still settling from phase change';
-  return 'week '+cv.weeksInMode+' of 2 — glycogen/water settling';
+    return 'Week 3 (extended) — scale still settling from phase change';
+  return 'Week '+cv.weeksInMode+' of 2 — glycogen/water settling';
+}
+// v22: was the most recent week in `priorWeeks` (the week before the one under
+// evaluation) transition-extended? An extended week is outside the band by
+// construction (still settling) and must NEVER count as week 1 of the
+// 2-consecutive-week drift pair — otherwise week 4 fires RATE for a week the
+// UI labeled calibrating. priorWeeks: weeks strictly before the week under
+// evaluation, date order.
+function priorWeekWasExtended(priorWeeks, mode){
+  const arr = (priorWeeks||[]).filter(w=>w && w.weight!=null);
+  if(!arr.length) return false;
+  const pw = arr[arr.length-1];
+  const pwCv = calcCutVelocity(pw.weight, arr.slice(0,-1), weekModeOf(pw) || mode);
+  return !!pwCv.transitionExtended;
+}
+// v22: split the action array into the week under evaluation + strictly-prior
+// weeks. Real call sites include the evaluated week as the last element;
+// tests pass prior-only arrays. anchorDate (explicit since v22) disambiguates;
+// a weight match against cv.W0 is the fallback.
+function splitActionWeeks(savedWeeks, cv, anchorDate){
+  const arr = (savedWeeks||[]).filter(w=>w && w.weight!=null);
+  let curIdx = -1;
+  if(anchorDate) curIdx = arr.findIndex(w=>w.date===anchorDate);
+  if(curIdx < 0 && cv && arr.length && arr[arr.length-1].weight===cv.W0)
+    curIdx = arr.length-1;
+  if(curIdx < 0) return {prior: arr, current: null};
+  return {prior: arr.slice(0, curIdx), current: arr[curIdx]};
 }
 // v22: the week-3 extension keys off the latest week-over-week change,
 // computed here from the week's weight vs the prior week's (loss-positive
@@ -1833,8 +1874,8 @@ function phaseStartInfo(allWeeks, idx, mode){
 // v22: extended=true renders the week-3 "still settling" state explicitly.
 function phaseTransitionStatusText(mode, inTransition, weeksInMode, extended){
   if(mode==='unmodeled') return 'n/a (unmodeled)';
-  if(inTransition && extended) return 'Week 3 of transition (extended) — scale still settling';
-  if(inTransition) return 'Week '+weeksInMode+' of 2 — glycogen/water settling';
+  // v22: transition wording delegates to transitionWeekLabel — one source.
+  if(inTransition) return transitionWeekLabel({inTransition:true, weeksInMode:weeksInMode, transitionExtended:!!extended});
   if(mode==='cut') return 'n/a (cut)';
   return 'Transition complete';
 }
@@ -2223,13 +2264,22 @@ function calcStallStatus(cv, currentWaist, savedWeeks, opts={}){
 // during an active transition, surfaces must suppress directional
 // red/green interpretation and render "calibrating" instead.
 // ══════════════════════════════════════════════════════════════
-function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks, priorRR){
-  const inner = _calcWeeklyActionInner(mode, cv, st, rs, tags, savedWeeks, priorRR);
+function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks, priorRR, anchorDate){
+  const weeks = Array.isArray(savedWeeks) ? savedWeeks : [];
+  // v22: identify the week under evaluation explicitly (anchorDate) so
+  // effectiveDate is never derived from the wrong array element, and the
+  // prior-only slice feeds the extended-week check below.
+  const split = splitActionWeeks(weeks, cv, anchorDate);
+  // v22 (Claude r2.1): a transition-extended week never counts toward the
+  // 2-consecutive-week drift gate. The extended week is outside the band by
+  // construction (still settling) — letting it serve as week 1 of the pair
+  // would fire RATE on week 4 for a week the UI labeled calibrating.
+  const effPriorRR = (mode==='maint' && priorWeekWasExtended(split.prior, mode)) ? null : priorRR;
+  const inner = _calcWeeklyActionInner(mode, cv, st, rs, tags, savedWeeks, effPriorRR);
   // v22: the inner engine never returns null today, but the wrapper must not
   // throw if that ever changes — pass nulls through untouched.
   if(!inner) return inner;
-  const weeks = Array.isArray(savedWeeks) ? savedWeeks : [];
-  const cur = weeks[weeks.length-1] || null;
+  const cur = split.current || weeks[weeks.length-1] || null;
   // v22: transition state is sourced from cv (computed by calcCutVelocity with
   // the matching prior-week array) — never recomputed here, so the wrapper
   // cannot disagree with the velocity card or the action engine's own gate.
@@ -2249,7 +2299,9 @@ function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks, priorRR){
     phase: mode,
     policyVersion: POLICY_VERSION,
     transitionState: ts,
-    effectiveDate: cur && cur.date ? cur.date : null,
+    // v22: anchorDate is authoritative when the caller passes it (all real
+    // call sites do); the array fallback preserves legacy/test behavior.
+    effectiveDate: anchorDate || (cur && cur.date ? cur.date : null),
     // v22: magnitude/reasonCodes are structural placeholders until P1 surfaces
     // render them — reasonCodes defaults to [actionCode], never empty.
     magnitude: inner.magnitude != null ? inner.magnitude : null,
@@ -2317,7 +2369,7 @@ function _calcWeeklyActionInner(mode, cv, st, rs, tags, savedWeeks, priorRR){
     const tmsg = 'MODE TRANSITION ('+MODE_CONFIG[mode].label+' phase): '+transitionWeekLabel(cv)+' — the scale is settling after the phase change. No intake adjustments while it settles; drift tracking resumes automatically.';
     if(suppressed) return suppress('NONE', tmsg);
     return {action:tmsg, actionCode:'NONE', priority:5, suppressed:false,
-      note:'Transition gate: rate actions suppressed for 2 weeks post-mode-change.'};
+      note:'Transition gate: rate actions suppressed during transition (2 weeks, +1 extended week if the scale is still settling).'};
   }
   if(rr != null){
     if(mode==='cut'){
@@ -2831,7 +2883,7 @@ function calcNextWeekTargets(anchorDate=null){
   const rr  = cv.rollingRate;
   const adhConf = calcAdherenceConfidence(latest);
   const recBaseNWT = calcRecoveryBaselineConfidence(scoped, scoped.length-1);
-  const baseActionResult = calcWeeklyAction(wkMode, cv, st, rs, tags, scoped, priorWeekRollingRate(scoped.slice(0,-1), wkMode));
+  const baseActionResult = calcWeeklyAction(wkMode, cv, st, rs, tags, scoped, priorWeekRollingRate(scoped.slice(0,-1), wkMode), latest.date);
   const actionResult = applyTiebreakers(baseActionResult, cv, st, rs, scoped, wkMode);
   const actionCode = actionResult.actionCode;
   // Low recovery baseline also triggers compliance mode (Rule 7)
@@ -3124,7 +3176,7 @@ function renderActionSummary(){
   const rs = calcRecoveryStatus();
   const tags = latest.tags || [];
 
-  let result = calcWeeklyAction(mode, cv, st, rs, tags, saved, priorWeekRollingRate(saved.slice(0,-1), mode));
+  let result = calcWeeklyAction(mode, cv, st, rs, tags, saved, priorWeekRollingRate(saved.slice(0,-1), mode), latest.date);
 
   // [D] Apply tie-breakers (wrapper only — does not change calc engines)
   result = applyTiebreakers(result, cv, st, rs, saved, mode);
@@ -3856,6 +3908,29 @@ function hasUnsavedChanges(){
 // ══════════════════════════════════════════
 // SAVE WEEK
 // ══════════════════════════════════════════
+// v22: pure re-save preservation — the stored week's phase identity, policy
+// stamp, and protein-source label survive a re-save unless the user changed
+// the underlying value on this save. Extracted pure for testability;
+// saveWeek calls it with (entry, prev, formPhaseRef).
+function applyResavePreservation(entry, prev, formPhaseRef){
+  if(prev.mode) entry.mode = prev.mode;
+  // phaseRef — the form field wins when the user typed one (explicit edit);
+  // otherwise the stored value survives the re-save.
+  if(!formPhaseRef && prev.phaseRef) entry.phaseRef = prev.phaseRef;
+  if(prev.transition) entry.transition = prev.transition;
+  // policyVersion — a re-save does not recompute the week's actions, so the
+  // stamp stays with the policy that produced them. (A notes-only edit on a
+  // 2025 week must not re-stamp it as current policy.)
+  if(prev.policyVersion!=null) entry.policyVersion = prev.policyVersion;
+  // proteinTargetSource — preserve the stored label when the protein target
+  // is unchanged (a re-save must not flip history); recompute only when the
+  // target itself changed on this save.
+  if(prev.proteinTargetSource && prev.proteinTarget===entry.proteinTarget)
+    entry.proteinTargetSource = prev.proteinTargetSource;
+  else
+    entry.proteinTargetSource = isProteinOverride(entry.mode) ? 'override' : 'equation';
+  return entry;
+}
 function saveWeek(){
   const weekDate=v('wDate');
   if(!weekDate){toast('Set a week ending date first');return;}
@@ -3912,27 +3987,11 @@ function saveWeek(){
   if(idx>=0){
     // preserve photo if not replacing
     if(!entry.photo && D.weeks[idx].photo) entry.photo = D.weeks[idx].photo;
-    // v22: preserve the existing week's phase identity on re-save (see above).
-    // A stored mode is authoritative; only a modeless legacy week falls back
-    // to the current global mode (then migrateWeek's date-based tagging still
-    // applies on the next load).
-    const prev = D.weeks[idx];
-    if(prev.mode) entry.mode = prev.mode;
-    // v22: phaseRef — the form field wins when the user typed one (explicit
-    // edit); otherwise the stored value survives the re-save.
-    if(!v('phaseRef') && prev.phaseRef) entry.phaseRef = prev.phaseRef;
-    if(prev.transition) entry.transition = prev.transition;
-    // v22: policyVersion — a re-save does not recompute the week's actions,
-    // so the stamp stays with the policy that produced them. (A notes-only
-    // edit on a 2025 week must not re-stamp it as current policy.)
-    if(prev.policyVersion!=null) entry.policyVersion = prev.policyVersion;
-    // v22: proteinTargetSource — preserve the stored label when the protein
-    // target is unchanged (a re-save must not flip history); recompute only
-    // when the target itself changed on this save.
-    if(prev.proteinTargetSource && prev.proteinTarget===entry.proteinTarget)
-      entry.proteinTargetSource = prev.proteinTargetSource;
-    else
-      entry.proteinTargetSource = isProteinOverride(entry.mode) ? 'override' : 'equation';
+    // v22: preserve the existing week's phase identity on re-save (see
+    // applyResavePreservation above). A stored mode is authoritative; only a
+    // modeless legacy week falls back to the current global mode (then
+    // migrateWeek's date-based tagging still applies on the next load).
+    applyResavePreservation(entry, D.weeks[idx], v('phaseRef'));
     D.weeks[idx]=entry;
   } else {
     D.weeks.push(entry);
@@ -4460,6 +4519,14 @@ function genSummary(){
   // v22: transition metadata resolved with the week-over-week gain in hand
   // (computed inside phaseStartInfo from the week's own weights).
   phSum = phaseStartInfo(D.weeks, idx, wkMode);
+  // v22: transition fields come from cvSum — the engine's own velocity — so
+  // the header can never disagree with the action engine (e.g. when the prior
+  // week has no weight, a recomputed WoW would say "no extension" while the
+  // engine extends). phaseStartInfo still supplies the phase startDate.
+  phSum.inTransition = cvSum.inTransition;
+  phSum.transitionExtended = !!cvSum.transitionExtended;
+  phSum.weeksInMode = cvSum.weeksInMode;
+  phSum.changed = !!cvSum.modeRunChanged;
   transTextSum = phaseTransitionStatusText(wkMode, phSum.inTransition, phSum.weeksInMode, phSum.transitionExtended);
   const stSum = calcStallStatus(cvSum, wWaist, D.weeks, {anchorDate:w.date, useLiveInputs:false, mode:wkMode});
   const rr    = cvSum.rollingRate;
@@ -4474,7 +4541,10 @@ function genSummary(){
       const d=Math.abs(rr);
       if(d<=MAINT_DRIFT_BAND_PCT) rateStr+=' ✓ STABLE';
       else {
-        const trig=evalMaintDriftTrigger(rr, priorWeekRollingRate(D.weeks.slice(0,idx), wkMode));
+        // v22: an extended settling week never counts as week 1 of the pair.
+        const expPrior = D.weeks.slice(0,idx);
+        const expRR = priorWeekRollingRate(expPrior, wkMode);
+        const trig=evalMaintDriftTrigger(rr, priorWeekWasExtended(expPrior, wkMode) ? null : expRR);
         rateStr+=trig.trigger?' ⚠ ADJUST (2 wks)':' ⚠ WATCH (1st wk)';
       }
     } else if(wkMode==='bulk'){
@@ -4615,8 +4685,11 @@ function genSummary(){
   const mtSuggShown = wkMode==='maint' && maintKcalSuggShown(mtSuggExp, mtExp.kcal);
   // v17 R2c: drift action needs 2 consecutive weeks outside the band — the
   // export line reports the gate state explicitly (no silent "adjust").
-  const rrPrevExp = wkMode==='maint' && rr!=null ? priorWeekRollingRate(D.weeks.slice(0,idx), wkMode) : null;
-  const driftTrigExp = wkMode==='maint' && rr!=null ? evalMaintDriftTrigger(rr, rrPrevExp) : null;
+  // v22: an extended settling week never counts as week 1 of the pair.
+  const expPriorWks = D.weeks.slice(0,idx);
+  const rrPrevExp = wkMode==='maint' && rr!=null ? priorWeekRollingRate(expPriorWks, wkMode) : null;
+  const driftTrigExp = wkMode==='maint' && rr!=null
+    ? evalMaintDriftTrigger(rr, priorWeekWasExtended(expPriorWks, wkMode) ? null : rrPrevExp) : null;
   const driftLine = wkMode==='maint'
     ? 'Drift status:         '+(cvSum.zone||'—')+(rr!=null?' ('+Math.abs(rr).toFixed(2)+'%/wk vs ±'+MAINT_DRIFT_BAND_PCT+'%/wk band)':'')
       +(driftTrigExp
@@ -4673,7 +4746,7 @@ function genSummary(){
   // the same pure functions — reuse them (the old cvTb/stTb/rsTb were
   // byte-identical recomputations that could silently drift if one copy
   // were edited without the other).
-  const baseTbResult = calcWeeklyAction(wkMode, cvSum, stSum, rs, wTags, D.weeks.slice(0,idx+1), priorWeekRollingRate(D.weeks.slice(0,idx), wkMode));
+  const baseTbResult = calcWeeklyAction(wkMode, cvSum, stSum, rs, wTags, D.weeks.slice(0,idx+1), priorWeekRollingRate(D.weeks.slice(0,idx), wkMode), (D.weeks[idx]||{}).date);
   const tbResult = applyTiebreakers(baseTbResult, cvSum, stSum, rs, D.weeks.slice(0,idx+1), wkMode);
 
   // [Rule 5 + Fix 1] RECOVERY is always primary when any metric is RED.
@@ -5662,9 +5735,11 @@ function expandPhoto(date){
 // ══════════════════════════════════════════
 // EXPORT / IMPORT BACKUP
 // ══════════════════════════════════════════
-function exportData(){
-  // Strip photos from export to keep file size manageable; warn user
-  const exportD = {
+// v22: pure export-object builder (extracted for testability) — the backup is
+// a full {...D} spread so new top-level state (maintAnchor, policyVersion)
+// rides along with no key list to maintain. Photos are stripped (size).
+function buildExportObject(){
+  return {
     ...D,
     weeks: D.weeks.map(w => {
       const {photo, ...rest} = w;
@@ -5673,6 +5748,9 @@ function exportData(){
     exportedAt: new Date().toISOString(),
     version: 3
   };
+}
+function exportData(){
+  const exportD = buildExportObject();
   const json = JSON.stringify(exportD, null, 2);
   const blob = new Blob([json], {type: 'application/json'});
   const url = URL.createObjectURL(blob);
@@ -5917,7 +5995,9 @@ function updVelocity(){
   } else if(mode==='maint' && rr!=null){
     // v17 R2c: drift action requires 2 consecutive weeks outside the band
     // (Alex decision 2026-09-25). Single-week excursions watch.
-    const trig = evalMaintDriftTrigger(rr, priorWeekRollingRate(ctx.priorWeeks, mode));
+    // v22: an extended settling week never counts as week 1 of the pair.
+    const ladRR = priorWeekRollingRate(ctx.priorWeeks, mode);
+    const trig = evalMaintDriftTrigger(rr, priorWeekWasExtended(ctx.priorWeeks, mode) ? null : ladRR);
     const drift = Math.abs(rr);
     const dir = rr > 0 ? 'losing' : 'gaining';
     if(trig.trigger){
@@ -6271,8 +6351,20 @@ function calcTDEEEstimate(mode, opts){
     pool = saved.filter(w=>weekModeOf(w)===mode);
   } else {
     const t = modeRunInfo(saved, mode);
-    pool = t.changed ? t.runWeeks.slice(2) : t.runWeeks;
-    if(t.changed) transitionWeeks = t.runWeeks.slice(0,2).map(w=>w.date);
+    // v22: the estimator also honors the extended settling week. A week-3
+    // that is still refilling (gaining outside the band) has confounded
+    // weight deltas — including it would bias the TDEE estimate, so it is
+    // dropped from the clean pool with the 2 transition weeks. (Without the
+    // WoW signal the estimator uses the legacy 2-week drop; the drop below
+    // only applies when the latest WoW move shows continued refill.)
+    let nDrop = 2;
+    if(t.changed && mode==='maint' && t.runWeeks.length===3){
+      const w3 = t.runWeeks[2], w2 = t.runWeeks[1];
+      if(w3 && w2 && w3.weight!=null && w2.weight!=null && w2.weight>0 &&
+         (w2.weight - w3.weight)/w2.weight*100 < -MAINT_DRIFT_BAND_PCT) nDrop = 3;
+    }
+    pool = t.changed ? t.runWeeks.slice(nDrop) : t.runWeeks;
+    if(t.changed) transitionWeeks = t.runWeeks.slice(0,nDrop).map(w=>w.date);
   }
   if(pool.length < 2){
     return {available:false,
@@ -6866,7 +6958,7 @@ function renderRunway(){
     const gs = maintGuardrailStatus(cw);
     if(!gs){
       note.textContent='Maintenance guardrail: no anchor yet — weight still settling after the phase change.';
-      panel.innerHTML='<div class="runway-note">Anchor the maintenance phase to enable the ±3 lb guardrail.<br><button class="btn btn-p" style="margin-top:8px" onclick="settleMaintAnchor()">SETTLE ANCHOR AT CURRENT WEIGHT</button><div style="margin-top:6px">Best set after the transition window, once weight has stabilized post-refill.</div></div>';
+      panel.innerHTML='<div class="runway-note">Anchor the maintenance phase to enable the ±3 lb guardrail.<br><input type="number" id="anchorValA" value="'+cw+'" step="0.1" min="100" max="300" style="width:80px;margin:8px 4px 0 0"> lb <button class="btn btn-p" style="margin-top:8px" onclick="settleAnchorFromInput(\'anchorValA\')">SETTLE ANCHOR</button><div style="margin-top:6px">Best set after the transition window, once weight has stabilized post-refill. Prefilled with current weight — type your reference if different.</div></div>';
       return;
     }
     note.textContent='Maintenance guardrail: ±3 lbs from the '+(gs.settled?'settled':'phase-entry')+' anchor ('+gs.anchor.toFixed(1)+' lb). Outer boundary only — adjustments follow the ±0.25%/wk rate gate.';
@@ -6880,7 +6972,7 @@ function renderRunway(){
       <div class="runway-stat"><span>Guardrail status</span><span class="runway-val ${statusCls}">${statusTxt}</span></div>
       <div class="runway-stat"><span>Guardrail edges</span><span class="runway-val">${(gs.anchor-3).toFixed(1)} – ${(gs.anchor+3).toFixed(1)} lbs</span></div>
     </div>`
-    +(!gs.settled ? '<div class="runway-note">Anchor not yet settled — confirm once weight has stabilized post-refill.<br><button class="btn btn-p" style="margin-top:8px" onclick="settleMaintAnchor()">SETTLE ANCHOR AT CURRENT WEIGHT</button></div>' : '')
+    +(!gs.settled ? '<div class="runway-note">Anchor not yet settled — confirm once weight has stabilized post-refill.<br><input type="number" id="anchorValB" value="'+cw+'" step="0.1" min="100" max="300" style="width:80px;margin:8px 4px 0 0"> lb <button class="btn btn-p" style="margin-top:8px" onclick="settleAnchorFromInput(\'anchorValB\')">SETTLE ANCHOR</button></div>' : '')
     +'<div class="runway-note">[Inference] Guardrail only. The action engine adjusts on the ±0.25%/wk 2-week rate gate.</div>';
     return;
   }
@@ -7529,8 +7621,10 @@ function renderDecisionLadder(){
   const capLadder = mode==='bulk' ? checkSurplusCap(cv.rollingRate) : null;
 
   // v17 R2: drift/cap state for the ladder rungs (cut keeps the stall engine)
+  // v22: an extended settling week never counts as week 1 of the drift pair.
+  const ladPriorRR = priorWeekRollingRate(ctx.priorWeeks, mode);
   const driftTrigLadder = mode==='maint' && cv.rollingRate!=null
-    ? evalMaintDriftTrigger(cv.rollingRate, priorWeekRollingRate(ctx.priorWeeks, mode)) : null;
+    ? evalMaintDriftTrigger(cv.rollingRate, priorWeekWasExtended(ctx.priorWeeks, mode) ? null : ladPriorRR) : null;
   const gainPctLadder = mode==='bulk' && cv.rollingRate!=null ? -cv.rollingRate : null;
 
   const rungs = [
@@ -8218,6 +8312,74 @@ function __selfTestRun() {
     const migA = migrateState({schemaVersion:1, mode:'maint', weeks:[mntW('2026-09-27',170.5),mntW('2026-10-04',169.8)], bodyComp:[]});
     add(migA.maintAnchor.phaseEntry===170.5 && migA.maintAnchor.phaseEntryDate==='2026-09-27' && migA.maintAnchor.settled==null,
       'v22: migration seeds phaseEntry from earliest maint week; settled left for explicit confirmation');
+    // v22 (Claude r2.1): an extended week 3 must NOT count as week 1 of the
+    // 2-consecutive-week drift pair — otherwise the eval week fires RATE for
+    // a week the UI labeled calibrating. Two-phase shape (maint → cut →
+    // maint): only with an earlier same-mode phase does the extended week
+    // have 3 mode-local priors, making its rolling rate (and the false
+    // trigger) computable at all.
+    const gateW = [
+      mntW('2026-08-01',170.0), mntW('2026-08-08',170.0),
+      mntW('2026-08-15',170.0), mntW('2026-08-22',170.0),
+      cutW('2026-08-29',169.0), cutW('2026-09-05',168.0),
+      mntW('2026-09-13',169.5), mntW('2026-09-20',170.8),
+      mntW('2026-09-27',172.0), mntW('2026-10-04',173.2)
+    ];
+    const cvG = calcCutVelocity(173.2, gateW.slice(0,9), 'maint');
+    add(cvG.inTransition===false && Math.abs(cvG.rollingRate)>MAINT_DRIFT_BAND_PCT,
+      'v22: eval week is out of transition and outside the band (drift-gate scenario)');
+    // The unsuppressed prior rate really is outside the band (else the test
+    // would pass vacuously): week of 9-27 gains -0.49%/wk.
+    const rawPriorG = priorWeekRollingRate(gateW.slice(0,9), 'maint');
+    add(rawPriorG!=null && Math.abs(rawPriorG)>MAINT_DRIFT_BAND_PCT,
+      'v22: prior-week rate is genuinely outside the band (suppression does the work)');
+    const actG = calcWeeklyAction('maint', cvG, nullSt, nullRs, [], gateW, rawPriorG, '2026-10-04');
+    add(actG.actionCode==='NONE' && actG.effectiveDate==='2026-10-04',
+      'v22: extended week 3 + outside-band eval week → NONE (extended week does not count); effectiveDate from anchorDate');
+    // Sanity: the same shape WITHOUT an extension still fires RATE.
+    const gateW2 = [
+      cutW('2026-09-06',177.0),
+      mntW('2026-09-13',174.0), mntW('2026-09-20',173.0),
+      mntW('2026-09-27',172.0), mntW('2026-10-04',171.0), mntW('2026-10-11',170.0)
+    ];
+    const cvH6 = calcCutVelocity(170.0, gateW2.slice(0,5), 'maint');
+    const rawPriorH = priorWeekRollingRate(gateW2.slice(0,5), 'maint');
+    add(rawPriorH!=null && Math.abs(rawPriorH)>MAINT_DRIFT_BAND_PCT && Math.abs(cvH6.rollingRate)>MAINT_DRIFT_BAND_PCT,
+      'v22: sanity scenario has two genuine consecutive outside-band weeks');
+    const actH6 = calcWeeklyAction('maint', cvH6, nullSt, nullRs, [], gateW2, rawPriorH, '2026-10-11');
+    add(actH6.actionCode==='RATE',
+      'v22: two genuine consecutive outside-band weeks (no extension) → RATE');
+    // Week-3 gate boundary: strict < -0.25%.
+    const bndBase = [cutW('2026-09-13',177.0), mntW('2026-09-27',178.5), mntW('2026-10-04',179.5)];
+    add(modeRunInfo(bndBase, 'maint', {wowGainPct:-0.25}).transitionExtended===false,
+      'v22: week-3 gate boundary — exactly -0.25% does not extend (strict)');
+    add(modeRunInfo(bndBase, 'maint', {wowGainPct:-0.26}).transitionExtended===true,
+      'v22: week-3 gate boundary — -0.26% extends');
+    // applyResavePreservation: pure re-save semantics.
+    const prevWk = {mode:'bulk', phaseRef:'lean-bulk-1', transition:'maint→bulk', policyVersion:1, proteinTarget:153, proteinTargetSource:'equation'};
+    const entry1 = applyResavePreservation({mode:'cut', phaseRef:'x', proteinTarget:153, policyVersion:2}, Object.assign({}, prevWk), '');
+    add(entry1.mode==='bulk' && entry1.phaseRef==='lean-bulk-1' && entry1.transition==='maint→bulk'
+        && entry1.policyVersion===1 && entry1.proteinTargetSource==='equation',
+      'v22: re-save preserves mode/phaseRef/transition/policyVersion/proteinSource when nothing changed');
+    const entry2 = applyResavePreservation({mode:'cut', proteinTarget:153, policyVersion:2}, Object.assign({}, prevWk), 'my-edit');
+    add(entry2.phaseRef!=='lean-bulk-1' && entry2.mode==='bulk',
+      'v22: explicit phaseRef form edit is not clobbered by the stored value');
+    const entry3 = applyResavePreservation({mode:'bulk', proteinTarget:160, policyVersion:2}, Object.assign({}, prevWk), '');
+    add(entry3.proteinTargetSource==='equation',
+      'v22: changed protein target recomputes the source label');
+    // Backup export → import round trip of maintAnchor.
+    const savedAnchor = D.maintAnchor;
+    D.maintAnchor = {phaseEntry:170.9, phaseEntryDate:'2026-09-28', settled:170.2, settledDate:'2026-10-11'};
+    const expObj = buildExportObject();
+    add(expObj.maintAnchor && expObj.maintAnchor.settled===170.2 && expObj.maintAnchor.phaseEntry===170.9,
+      'v22: backup export carries maintAnchor (spread, no key list)');
+    const rtMig = migrateState(expObj);
+    add(rtMig.maintAnchor.settled===170.2 && rtMig.maintAnchor.phaseEntryDate==='2026-09-28',
+      'v22: backup import round-trips maintAnchor');
+    D.maintAnchor = savedAnchor;
+    // proteinRuleShort: trimmed, no ≥ (export-parser safe).
+    add(proteinRuleShort('cut')==='1g/lb' && proteinRuleShort('maint')==='0.8g/lb' && proteinRuleShort('bulk')==='0.9g/lb',
+      'v22: proteinRuleShort returns trimmed labels without ≥');
     // Drift gate integration: 1 outside-band week → NONE; 2 consecutive → RATE
     const driftW = [
       mntW('2026-10-04',170.0), mntW('2026-10-11',170.0), mntW('2026-10-18',170.0),
