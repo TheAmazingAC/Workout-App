@@ -959,7 +959,16 @@ const HEVY_DATA = {"sessions":[{"d":"2024-12-24","t":"Morning workout \u2600\ufe
 // STORAGE & STATE
 // ══════════════════════════════════════════
 const SK = 'alexCutDash_v3';
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+// v22: POLICY_VERSION versions the decision-policy set (thresholds, rate gates,
+// protein equations, action rules) independently of the storage schema. Every
+// saved week and every computed action result stamps the policy version that
+// produced it, so a future threshold change cannot silently rewrite what an
+// old week "would have said". Bump POLICY_VERSION whenever a policy constant
+// or action rule changes; add a migratePolicy() step for cross-version reads.
+// v22 starts at 2: the v22 policy set changed bulk protein (0.8→0.9),
+// protFloor, the transition extension, and guardrail semantics vs v21 (=1).
+const POLICY_VERSION = 2;
 // Maintenance targets (Alex's bridge plan): protein is a DYNAMIC equation —
 // 0.8g/lb of current 7-day-average body weight (Alex decision 2026-09-25; at
 // ~172.5 lb ≈ 138g). Fat 60g; carbs derived: (2500 − protein×4 − 60×9) / 4 —
@@ -969,10 +978,16 @@ const SCHEMA_VERSION = 1;
 const DEFAULT_MAINT_TARGETS = {kcal:2500, kcalSource:'default', protein:175, fat:60, carbs:315, stepEq:15000};
 // v17 R2b: protein equations — cut keeps the existing 1.0g/lb; maintenance uses
 // 0.8g/lb of body weight, recomputed from current weight (not a static number).
+// v22: surplus uses 0.9g/lb — over 0.8 with margin for logging error, without
+// displacing carbs the way 1.0 would (Alex decision 2026-10-04; Cutting
+// Strategy Optimization concur: 1.0 reserved as a user-preference ceiling).
 const CUT_PROTEIN_PER_LB = 1.0;
 const MAINT_PROTEIN_PER_LB = 0.8;
-function proteinPerLb(mode){ return mode==='maint' ? MAINT_PROTEIN_PER_LB : CUT_PROTEIN_PER_LB; }
-function proteinRuleLabel(mode){ return mode==='maint' ? '0.8g/lb maintenance' : '1g/lb cut'; }
+const SURPLUS_PROTEIN_PER_LB = 0.9;
+function proteinPerLb(mode){ return mode==='maint' ? MAINT_PROTEIN_PER_LB : mode==='bulk' ? SURPLUS_PROTEIN_PER_LB : CUT_PROTEIN_PER_LB; }
+function proteinRuleLabel(mode){ return mode==='maint' ? '0.8g/lb maintenance' : mode==='bulk' ? '0.9g/lb surplus' : '1g/lb cut'; }
+// v22: short protein rule for UI strings — never parse the display label.
+function proteinRuleShort(mode){ return '≥'+proteinPerLb(mode).toFixed(1)+'g/lb'; }
 // Latest logged 7-day-average week weight (the week's stored weight IS the 7-day avg).
 function currentAvgWeight(){
   const ws = (typeof D!=='undefined' && Array.isArray(D.weeks) ? D.weeks : []).filter(w=>w && w.weight!=null);
@@ -989,8 +1004,8 @@ function calcMaintProtein(refWeight){
 // ── v18: user-overridable protein target ──
 // Alex can type his own protein target; the per-mode equation stays the
 // default (shown as the field placeholder) and a reset restores it.
-// Overrides live in D.proteinOverrides {cut, maint}; bulk keeps its existing
-// per-site behavior (Alex's bulk protein decision is still open).
+// Overrides live in D.proteinOverrides {cut, maint, bulk}.
+// v22: bulk now has a real policy (0.9g/lb equation + override support).
 function proteinEquationFor(mode, refWeight){
   const w = (refWeight!=null && Number.isFinite(Number(refWeight)) && Number(refWeight)>0)
     ? Number(refWeight) : currentAvgWeight();
@@ -1002,8 +1017,9 @@ function proteinOverrideFor(mode){
   return (o!=null && Number.isFinite(Number(o)) && Number(o)>0) ? Math.round(Number(o)) : null;
 }
 // Effective protein target: Alex's override when set, else the live equation.
+// v22: bulk supported (0.9g/lb equation + override); unmodeled → null.
 function proteinTargetFor(mode, refWeight){
-  if(mode!=='cut' && mode!=='maint') return null;
+  if(mode!=='cut' && mode!=='maint' && mode!=='bulk') return null;
   const o = proteinOverrideFor(mode);
   return o!=null ? o : proteinEquationFor(mode, refWeight);
 }
@@ -1019,8 +1035,8 @@ function proteinTargetSourceLabel(mode, refWeight){
 // ── v18 R2: adherence scoring follows the EFFECTIVE target ──
 // proteinScoreTarget: Alex's override when set, else the UNROUNDED phase
 // equation. Unrounded so no-override scoring is bit-identical to v17 (only
-// the displayed target is rounded). Bulk keeps the legacy 1g/lb equation
-// scoring — Alex's bulk protein decision is still open.
+// the displayed target is rounded). v22: bulk scores against the 0.9g/lb
+// surplus equation (policy decided 2026-10-04).
 function proteinScoreTarget(mode, refWeight){
   const o = proteinOverrideFor(mode);
   if(o!=null) return o;
@@ -1043,7 +1059,8 @@ function proteinStreakOk(weekProtein, weekWeight, mode){
 }
 function resetProteinOverride(mode){
   let saved = true;
-  if(typeof D!=='undefined'){ D.proteinOverrides = D.proteinOverrides||{cut:null,maint:null}; D.proteinOverrides[mode]=null; saved = save(); }
+  // v22: bulk key included (surplus protein policy 0.9g/lb).
+  if(typeof D!=='undefined'){ D.proteinOverrides = D.proteinOverrides||{cut:null,maint:null,bulk:null}; D.proteinOverrides[mode]=null; saved = save(); }
   renderMaintTargets(); updProteinDynamic();
   if(saved) toast('Protein target reset to equation ('+proteinRuleLabel(mode)+')');
 }
@@ -1070,6 +1087,13 @@ const DEFAULT_STATE = {
   // writers are saveMaintTargets and backup import) or 'default' (pristine
   // 2500 default, never saved). The TDEE suggestion never writes.
   maintTargets:{kcal:2500,kcalSource:'default',protein:175,fat:60,carbs:315,stepEq:15000},
+  // v22: maintenance anchor — the ±3 lb guardrail is measured from the SETTLED
+  // anchor, not the depleted cut-end weight (glycogen refill would otherwise
+  // trip the guardrail while maintenance is working). phaseEntry is stamped
+  // automatically on mode change into maintenance; settled is confirmed by
+  // Alex after the transition window (null = not yet settled → guardrail
+  // shows "settling" and the rate gate remains the action logic).
+  maintAnchor:{phaseEntry:null, phaseEntryDate:null, settled:null, settledDate:null},
   // v17 F3: body-composition log — dated entries, persisted in D and backups
   // dexa:    {id,type:'dexa',date,bfPct,fatMassLb,leanMassLb,boneMassLb?,notes?}
   // caliper: {id,type:'caliper',date,chest:[a,b,c],abdomen:[a,b,c],thigh:[a,b,c],chestAvg,abdomenAvg,thighAvg,siteSum,notes?}
@@ -1092,9 +1116,13 @@ function cloneDefaultState(){
     // v17: deep-copy mutable defaults — a shared array/object reference would
     // let two cloned states mutate each other's bodyComp/maintTargets.
     maintTargets:{...DEFAULT_MAINT_TARGETS},
+    // v22: same treatment for the maintenance anchor object.
+    maintAnchor:{phaseEntry:null, phaseEntryDate:null, settled:null, settledDate:null},
     // v18: per-mode protein target overrides (g/day). null = use the phase
     // equation; a number = Alex's persisted override.
-    proteinOverrides:{cut:null,maint:null},
+    // v22: bulk added — surplus protein policy is 0.9g/lb (Alex decision
+    // 2026-10-04, Cutting Strategy Optimization concur).
+    proteinOverrides:{cut:null,maint:null,bulk:null},
     bodyComp:[]
   };
 }
@@ -1200,6 +1228,10 @@ function migrateWeek(w){
   week.tags = Array.isArray(rawWeek.tags) ? [...rawWeek.tags] : [];
   if(week.deload === true && !week.tags.includes('deload')) week.tags.push('deload');
   if(week.refeed === true && !week.tags.includes('refeed')) week.tags.push('refeed');
+  // v22: every week carries the policy version that produced its saved targets
+  // and actions. Pre-v22 weeks were computed under the v21 policy set, so a
+  // missing stamp means policy v1 — never leave it undefined.
+  if(week.policyVersion == null) week.policyVersion = 1;
   // v19: pre-v17 weeks (dated before 2026-09-25) are tagged by documented
   // phase dates REGARDLESS of any stored mode. Rationale: v16's saveWeek
   // stamped every week with `mode: D.mode || 'cut'`, and the global mode was
@@ -1262,9 +1294,30 @@ function migrateState(raw){
   }
   // v18: protein target overrides round-trip through backup/restore. Only
   // finite positive numbers survive; anything else becomes null (equation).
+  // v22: bulk override added (surplus protein policy 0.9g/lb).
   const rawPo = (raw.proteinOverrides && typeof raw.proteinOverrides==='object') ? raw.proteinOverrides : {};
   const cleanPo = k => { const n = Number(rawPo[k]); return (rawPo[k]!=null && Number.isFinite(n) && n>0) ? Math.round(n) : null; };
-  migrated.proteinOverrides = {cut: cleanPo('cut'), maint: cleanPo('maint')};
+  migrated.proteinOverrides = {cut: cleanPo('cut'), maint: cleanPo('maint'), bulk: cleanPo('bulk')};
+  // v22: maintenance anchor round-trips through backup/restore. Only finite
+  // positive weights survive; anything else stays null (unsettled).
+  const rawMa = (raw.maintAnchor && typeof raw.maintAnchor==='object') ? raw.maintAnchor : {};
+  const cleanWt = v => { const n = Number(v); return (v!=null && Number.isFinite(n) && n>0) ? Math.round(n*10)/10 : null; };
+  migrated.maintAnchor = {
+    phaseEntry: cleanWt(rawMa.phaseEntry), phaseEntryDate: rawMa.phaseEntryDate || null,
+    settled: cleanWt(rawMa.settled), settledDate: rawMa.settledDate || null
+  };
+  // v22: seed the phase-entry anchor for states already in maintenance (setMode
+  // never fires for them, so the anchor would stay null forever). Earliest
+  // maint-mode week is the honest phase entry; settled still needs Alex's
+  // explicit confirmation via settleMaintAnchor().
+  if(migrated.mode==='maint' && migrated.maintAnchor.phaseEntry==null){
+    const firstMaint = (migrated.weeks||[]).filter(w=>w && w.mode==='maint' && w.weight!=null)
+      .sort((a,b)=>String(a.date).localeCompare(String(b.date)))[0];
+    if(firstMaint){
+      migrated.maintAnchor.phaseEntry = Math.round(Number(firstMaint.weight)*10)/10;
+      migrated.maintAnchor.phaseEntryDate = firstMaint.date;
+    }
+  }
   // v21: the global mode drives every MODE_CONFIG lookup in the UI. A stored
   // value outside cut/maint/bulk (corrupted/hand-edited storage) used to throw
   // in applyModeUI and break tab navigation; it now loads as 'cut', the same
@@ -1416,7 +1469,7 @@ const MODE_CONFIG = {
     ladderNote:'Goal is lean muscle gain without excess fat. The only rate guardrail is the exit-plan cap: ≈1 lb/month (≈0.15 %BW/wk). Under the cap and lifting well = stay the course.',
     primaryPanels:['velocityCard','ladderCard'],
     signalPrimary:['strength','waistDrift','recovery','adherence'],
-    protFloor:0.8, calAdhFloor:80, stpAdhFloor:70, protAdhFloor:85,
+    protFloor:0.9, calAdhFloor:80, stpAdhFloor:70, protAdhFloor:85,
   },
   // v18 R3: 'unmodeled' = historical weeks from the undocumented 6/29/25–10/24/25
   // gap (tagged by historicalPhaseMode on migration). This entry exists ONLY so
@@ -1451,7 +1504,10 @@ const TRANSITION_DATA = {
     cls:'cut-maint', label:'🔄 Transitioning: Cut → Maintenance',
     items:[
       'Calories stepped up to near TDEE estimate?',
-      'Weight target range set (±X lbs from current)?',
+      // v22: the ±3 lb guardrail measures from the SETTLED anchor (confirmed
+      // after the transition window), not the depleted cut-end weight —
+      // glycogen refill must not read as guardrail failure.
+      'Maintenance anchor will be settled after the transition window (runway card)?',
       'Step/cardio target adjusted (cut-level cardio not needed)?',
       'Reverse diet or immediate step-up chosen?',
     ]
@@ -1461,7 +1517,9 @@ const TRANSITION_DATA = {
     items:[
       'Calorie surplus target set (+250–350 kcal/day above TDEE)?',
       'Training program updated for hypertrophy focus?',
-      'Surplus duration planned (end-weight ceiling set)?',
+      // v22: no end-weight target — surplus is governed by the <1 lb/month
+      // gain cap, waist trend, and performance (Alex decision 2026-10-04).
+      'Surplus governed by gain-rate cap (≈1 lb/month), not a target weight?',
       'Weekly weigh-in cadence confirmed?',
     ]
   }
@@ -1480,9 +1538,65 @@ function setMode(m){
     const t = (transMap[prev]||{})[m] || 'none';
     D.transition = t;
     D.transitionDismissed = false;
+    // v22: entering maintenance stamps the phase-entry anchor (reference only —
+    // the ±3 lb guardrail measures from the SETTLED anchor, confirmed by Alex
+    // after the transition window; see maintAnchor). Only stamp when entering
+    // from a different phase; re-selecting maint must not move the anchor.
+    if(m==='maint' && prev!=='maint'){
+      const w = currentAvgWeight();
+      D.maintAnchor = D.maintAnchor || {phaseEntry:null, phaseEntryDate:null, settled:null, settledDate:null};
+      D.maintAnchor.phaseEntry = (w!=null && w>0) ? Math.round(w*10)/10 : null;
+      D.maintAnchor.phaseEntryDate = todayLocalISO();
+      D.maintAnchor.settled = null;
+      D.maintAnchor.settledDate = null;
+    }
+    // v22: leaving maintenance clears the settled anchor (a new maintenance
+    // phase will establish its own); phaseEntry is kept for history.
+    if(prev==='maint' && m!=='maint' && D.maintAnchor){
+      D.maintAnchor.settled = null;
+      D.maintAnchor.settledDate = null;
+    }
   }
   save();
   applyModeUI();
+}
+
+// v22: local-date ISO (YYYY-MM-DD) — toISOString() is UTC and lands on the
+// wrong day for late-evening Pacific entries. New v22 code uses this.
+function todayLocalISO(){
+  const d = new Date();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return d.getFullYear()+'-'+m+'-'+day;
+}
+// v22: confirm the settled maintenance anchor — call after the transition
+// window, once weight has stabilized post-refill. The ±3 lb guardrail is
+// measured from this anchor, not the depleted cut-end weight.
+// value: explicit anchor weight (defaults to the current 7-day-average week).
+function settleMaintAnchor(value){
+  const w = (value!=null && Number.isFinite(Number(value)) && Number(value)>0)
+    ? Number(value) : currentAvgWeight();
+  if(w==null || w<=0){ toast('No weight data — cannot settle anchor'); return; }
+  D.maintAnchor = D.maintAnchor || {phaseEntry:null, phaseEntryDate:null, settled:null, settledDate:null};
+  D.maintAnchor.settled = Math.round(w*10)/10;
+  D.maintAnchor.settledDate = todayLocalISO();
+  save();
+  toast('Maintenance anchor settled at '+D.maintAnchor.settled+' lb');
+  safeCall('renderRunway', renderRunway);
+}
+// v22: ±3 lb guardrail status vs the settled anchor (fallback: phase entry).
+// Returns null when no anchor exists yet ("settling").
+function maintGuardrailStatus(currentWeight){
+  const ma = (typeof D!=='undefined' && D.maintAnchor) ? D.maintAnchor : null;
+  const anchor = ma && ma.settled!=null ? ma.settled : (ma && ma.phaseEntry!=null ? ma.phaseEntry : null);
+  if(anchor==null || currentWeight==null) return null;
+  const dist = currentWeight - anchor; // signed lb
+  return {
+    anchor, dist, absDist: Math.abs(dist),
+    within: Math.abs(dist) <= 3,
+    settled: !!(ma && ma.settled!=null),
+    edge: dist>=0 ? anchor+3 : anchor-3
+  };
 }
 
 function applyModeUI(){
@@ -1610,12 +1724,29 @@ function historicalPhaseMode(weekEndISO){
   if(d >= '2026-02-21') return 'cut';
   return 'unmodeled'; // 2025-06-29 -> 2025-10-10
 }
+// v22: week-3 extension — MAINT ONLY (the cut→maint refill). If the latest
+// week-over-week change is still a GAIN outside the maintenance band in what
+// would be week 3, the transition extends one week. Direction-aware by design:
+// continued LOSS in maintenance is a real under-fueling signal, never
+// "settling"; bulk never extends (overshoot must not be labeled settling).
+// ext = {wowGainPct} — signed %BW change from the prior week to the current
+// week in the app's rolling-rate convention (LOSS-positive: NEGATIVE means
+// gaining). null/omitted → no extension signal (plain 2-week gate).
+// Returns {active, week, extended} — every consumer (velocity card, action
+// engine, export header) shares this so they can never disagree.
+function transitionStateFor(priorWeeks, mode, ext){
+  const mi = modeRunInfo(priorWeeks, mode, ext);
+  return {active: mi.inTransition, week: mi.weeksInMode, extended: !!mi.transitionExtended, changed: mi.changed};
+}
 // v17 R2: mode-change run tracking shared by the drift engine and the TDEE estimator.
 // priorWeeks: earlier weeks in date order (current week excluded).
 // Returns the trailing run of weeks in `mode` (oldest→newest), whether a different
 // mode preceded the run (a real mode change), and the transition state counting the
 // current week under evaluation as week 1 of the run.
-function modeRunInfo(priorWeeks, mode){
+// v22: inTransition honors the week-3 extension — pass {wowGainPct} when
+// available so the gate and all surfaces agree; omitted preserves the legacy
+// 2-week behavior.
+function modeRunInfo(priorWeeks, mode, ext){
   const run = [];
   let changed = false;
   const arr = priorWeeks || [];
@@ -1624,7 +1755,16 @@ function modeRunInfo(priorWeeks, mode){
     else { changed = true; break; }
   }
   const weeksInMode = run.length + 1; // + current week under evaluation
-  return { runWeeks: run, changed, weeksInMode, inTransition: !!(changed && weeksInMode<=2) };
+  const baseTransition = !!(changed && weeksInMode<=2);
+  // v22 extension: week 3, maint only, still gaining outside the band → the
+  // refill is not done; stay in transition one more week. wowGainPct is
+  // loss-positive (NEGATIVE = gaining), matching the rolling-rate convention.
+  let extended = false;
+  const wowGain = ext && Number.isFinite(ext.wowGainPct) ? ext.wowGainPct : null;
+  if(!baseTransition && changed && weeksInMode===3 && mode==='maint' && wowGain!=null && wowGain < -MAINT_DRIFT_BAND_PCT){
+    extended = true;
+  }
+  return { runWeeks: run, changed, weeksInMode, inTransition: baseTransition || extended, transitionExtended: extended };
 }
 
 // v19: data-completeness flags for the weekly export. VISIBILITY ONLY — not a
@@ -1657,16 +1797,32 @@ function weekDataCompleteness(w){
 // v19: phase-transition metadata for the export header. Reuses modeRunInfo —
 // the same run tracking that drives the 2-week glycogen/water transition rule
 // in calcCutVelocity — so the header and the drift engine can never disagree.
-// Returns { startDate, weeksInMode, inTransition, changed }; startDate is the
-// first week of the current continuous mode run (the phase's start).
+// v22: shared transition wording — never "Week 3 of 2". The extended week-3
+// maintenance transition gets explicit calibration language.
+function transitionWeekLabel(cv){
+  if(!cv || !cv.inTransition) return 'none';
+  if(cv.transitionExtended)
+    return 'week 3 (extended) — scale still settling from phase change';
+  return 'week '+cv.weeksInMode+' of 2 — glycogen/water settling';
+}
+// v22: the week-3 extension keys off the latest week-over-week change,
+// computed here from the week's weight vs the prior week's (loss-positive
+// convention, matching rollingRate); also surfaces transitionExtended for
+// explicit labeling.
 function phaseStartInfo(allWeeks, idx, mode){
   const prior = (allWeeks||[]).slice(0, idx);
-  const mi = modeRunInfo(prior, mode);
   const cur = (allWeeks||[])[idx];
+  const prevW = (allWeeks||[])[idx-1];
+  let wowGainPct = null;
+  if(cur && prevW && cur.weight!=null && prevW.weight!=null && prevW.weight>0){
+    wowGainPct = (prevW.weight - cur.weight)/prevW.weight*100; // loss-positive: negative = gaining
+  }
+  const mi = modeRunInfo(prior, mode, {wowGainPct});
   return {
     startDate: mi.runWeeks.length ? mi.runWeeks[0].date : (cur ? cur.date : null),
     weeksInMode: mi.weeksInMode,
     inTransition: mi.inTransition,
+    transitionExtended: !!mi.transitionExtended,
     changed: mi.changed
   };
 }
@@ -1674,8 +1830,10 @@ function phaseStartInfo(allWeeks, idx, mode){
 // v19: wording for the transition status. Cut has no transition concept (cut
 // phases don't get the 2-week glycogen/water window); unmodeled gap weeks are
 // data-only records, so they never show a transition state either.
-function phaseTransitionStatusText(mode, inTransition, weeksInMode){
+// v22: extended=true renders the week-3 "still settling" state explicitly.
+function phaseTransitionStatusText(mode, inTransition, weeksInMode, extended){
   if(mode==='unmodeled') return 'n/a (unmodeled)';
+  if(inTransition && extended) return 'Week 3 of transition (extended) — scale still settling';
   if(inTransition) return 'Week '+weeksInMode+' of 2 — glycogen/water settling';
   if(mode==='cut') return 'n/a (cut)';
   return 'Transition complete';
@@ -1692,7 +1850,8 @@ function calcCutVelocity(currentWeight, savedWeeks, mode){
   const wks = savedWeeks.filter(w=>w && w.weight && weekModeOf(w)===mode); // mode-local weight weeks
   // v17 R2: the first 2 weeks after a mode change are glycogen/water transition
   // weeks — labeled explicitly; the action engine takes no rate action during them.
-  const mi = modeRunInfo(savedWeeks, mode);
+  // v22: computed AFTER rollingRate so the week-3 extension (still settling →
+  // still in transition) can apply. See transitionStateFor/modeRunInfo.
   const W0 = currentWeight;
   const W1 = wks.length>=1 ? wks[wks.length-1].weight : null;
   const W2 = wks.length>=2 ? wks[wks.length-2].weight : null;
@@ -1710,6 +1869,13 @@ function calcCutVelocity(currentWeight, savedWeeks, mode){
 
   // Short-term (week-over-week, display only — not decision driver)
   const shortTermRate = (W0!=null && W1!=null) ? ((W1-W0)/W1)*100 : null;
+
+  // v22: transition state resolved with the week-over-week change in hand —
+  // the week-3 extension keys off the latest WoW move (loss-positive
+  // convention: NEGATIVE = gaining, matching rollingRate), not the rolling
+  // rate itself (which would include the refill weeks). All consumers
+  // (velocity card, action engine, export) share this result.
+  const mi = modeRunInfo(savedWeeks, mode, {wowGainPct: shortTermRate});
 
   // Velocity zone — mode-aware (v17 F1). Cut zones unchanged (A-verified baseline).
   // v17 R2: transition weeks are labeled, never drift-classified.
@@ -1746,7 +1912,10 @@ function calcCutVelocity(currentWeight, savedWeeks, mode){
 
   return { W0, W1, W2, W3, rollingRate, shortTermRate, zone, zoneCls,
            // v17 R2: mode-local drift state for the action engine / card / export
-           inTransition: mi.inTransition, weeksInMode: mi.weeksInMode, modeRunChanged: mi.changed, velMode: mode };
+           // v22: transitionExtended included so the action contract can source
+           // the transition state from cv instead of recomputing it.
+           inTransition: mi.inTransition, transitionExtended: mi.transitionExtended,
+           weeksInMode: mi.weeksInMode, modeRunChanged: mi.changed, velMode: mode };
 }
 
 // v17 R2c: prior-week rolling rate for the 2-consecutive-week maintenance drift
@@ -2040,7 +2209,56 @@ function calcStallStatus(cv, currentWaist, savedWeeks, opts={}){
            twoConsecSlow, slowThisWk, prevRolling };
 }
 
+// ══════════════════════════════════════════════════════════════
+// v22: STRUCTURED ACTION CONTRACT
+// calcWeeklyAction is the single decision pipeline:
+//   raw measurement → phase-neutral computation → phase-specific
+//   interpretation → one structured action → every surface renders it.
+// The inner function holds the decision logic (unchanged); this wrapper
+// stamps the contract fields every consumer and export can rely on:
+//   action, actionCode, priority, suppressed, note (from inner)
+//   + phase, policyVersion, transitionState, effectiveDate,
+//     magnitude, reasonCodes, blockingFlags, confidence.
+// transitionState: {active, week, extended} from transitionStateFor —
+// during an active transition, surfaces must suppress directional
+// red/green interpretation and render "calibrating" instead.
+// ══════════════════════════════════════════════════════════════
 function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks, priorRR){
+  const inner = _calcWeeklyActionInner(mode, cv, st, rs, tags, savedWeeks, priorRR);
+  // v22: the inner engine never returns null today, but the wrapper must not
+  // throw if that ever changes — pass nulls through untouched.
+  if(!inner) return inner;
+  const weeks = Array.isArray(savedWeeks) ? savedWeeks : [];
+  const cur = weeks[weeks.length-1] || null;
+  // v22: transition state is sourced from cv (computed by calcCutVelocity with
+  // the matching prior-week array) — never recomputed here, so the wrapper
+  // cannot disagree with the velocity card or the action engine's own gate.
+  const ts = cv
+    ? {active: !!cv.inTransition, week: cv.weeksInMode!=null ? cv.weeksInMode : null,
+       extended: !!cv.transitionExtended, changed: !!cv.modeRunChanged}
+    : {active: false, week: null, extended: false, changed: false};
+  const blockingFlags = [];
+  if(inner.suppressed) blockingFlags.push('tag-suppression');
+  if(ts.active) blockingFlags.push('transition');
+  // v22: confidence derives from what's blocking the decision — a NONE from an
+  // active transition/suppression is low-information by design, not high.
+  const confidence = inner.confidence
+    || (blockingFlags.length ? 'low' : (inner.actionCode==='NONE' ? 'high' : 'medium'));
+  return {
+    ...inner,
+    phase: mode,
+    policyVersion: POLICY_VERSION,
+    transitionState: ts,
+    effectiveDate: cur && cur.date ? cur.date : null,
+    // v22: magnitude/reasonCodes are structural placeholders until P1 surfaces
+    // render them — reasonCodes defaults to [actionCode], never empty.
+    magnitude: inner.magnitude != null ? inner.magnitude : null,
+    reasonCodes: Array.isArray(inner.reasonCodes) && inner.reasonCodes.length ? inner.reasonCodes : [inner.actionCode],
+    blockingFlags,
+    confidence,
+  };
+}
+function _calcWeeklyActionInner(mode, cv, st, rs, tags, savedWeeks, priorRR){
   // v18 R3: 'unmodeled' weeks (undocumented 6/29/25–10/24/25 gap) are data-only
   // records — no rate zones, stall engine, or actions. Guarded BEFORE any
   // MODE_CONFIG lookup: exporting one of these weeks used to crash with
@@ -2096,7 +2314,7 @@ function calcWeeklyAction(mode, cv, st, rs, tags, savedWeeks, priorRR){
   // automatically afterwards). Checked before the rr!=null guard: during
   // transition there is deliberately no rolling rate yet.
   if(cv.inTransition){
-    const tmsg = 'MODE TRANSITION ('+MODE_CONFIG[mode].label+' phase): week '+cv.weeksInMode+' of 2 — the scale is settling (glycogen/water) after the phase change. No intake adjustments while it settles; drift tracking resumes automatically.';
+    const tmsg = 'MODE TRANSITION ('+MODE_CONFIG[mode].label+' phase): '+transitionWeekLabel(cv)+' — the scale is settling after the phase change. No intake adjustments while it settles; drift tracking resumes automatically.';
     if(suppressed) return suppress('NONE', tmsg);
     return {action:tmsg, actionCode:'NONE', priority:5, suppressed:false,
       note:'Transition gate: rate actions suppressed for 2 weeks post-mode-change.'};
@@ -2592,12 +2810,12 @@ function calcNextWeekTargets(anchorDate=null){
   const baseCals  = wkMode==='maint' ? mtNWT.kcal : (latest.calorieTarget || latest.calories || 2300);
   const baseStepEq = wkMode==='maint' ? mtNWT.stepEq : (latest.stepTarget || calcNEAT(latest.steps, latest.bikeMin).totalEq || 15000);
   const baseBike  = latest.bikeMin || 0;
-  // [Fix 3] Protein — cut: existing 1g/lb equation (kept); maintenance: 0.8g/lb of
-  // body weight, dynamic from the week's 7-day-avg weight (Alex decision 2026-09-25)
-  // v18: next-week protein target follows Alex's override when set; otherwise the
-  // same per-mode equations as before (cut 1.0, maint 0.8, bulk 0.8).
+  // [Fix 3] Protein — per-mode equations (Alex decisions 2026-09-25 / 2026-10-04):
+  // cut 1.0g/lb, maintenance 0.8g/lb, surplus 0.9g/lb — dynamic from the week's
+  // 7-day-avg weight. v18: next-week protein target follows Alex's override
+  // when set; otherwise the live equation via proteinTargetFor.
   const exactProt = proteinTargetFor(wkMode, bw) ?? (wkMode==='maint' ? (calcMaintProtein(bw) ?? mtNWT.protein)
-    : wkMode === 'cut' ? Math.round(bw * CUT_PROTEIN_PER_LB) : Math.round(bw * 0.8));
+    : Math.round(bw * proteinPerLb(wkMode)));
   const baseProt  = exactProt;
 
   // [Fix 2] Basis description — make clear what the starting point is
@@ -3664,16 +3882,24 @@ function saveWeek(){
     proteinTarget:v('protTgt')?parseInt(v('protTgt')):null,
     // v18: record whether the saved protein target was the phase equation or
     // Alex's override so the weekly export can label it honestly.
-    proteinTargetSource: isProteinOverride((typeof D!=='undefined'&&D.mode)||'cut') ? 'override' : 'equation',
+    // v22: resolved against the ENTRY's mode (the week's own phase), not the
+    // global D.mode — same phase-identity rule as mode/phaseRef above.
+    proteinTargetSource: null, // set below after phase identity is final
     fat:nv('fat'),carbs:nv('carbs') ? parseInt(v('carbs')) : null,
     fiber:nv('fiber'),
     lifts, notes:v('notes'),
     refeed: getActiveTags().includes('refeed'),
     deload: getActiveTags().includes('deload'),
     tags: getActiveTags(),
+    // v22: NEW weeks stamp the current global mode. RE-SAVED weeks keep their
+    // own stored phase identity (mode/phaseRef/transition) — stamping D.mode
+    // here used to corrupt a historical cut week re-saved while the global
+    // mode was maintenance. The canonical phase always lives on the week.
     mode: D.mode || 'cut',
     phaseRef: v('phaseRef') || (D.mode || 'cut'),
     transition: D.transition || 'none',
+    // v22: stamp the policy version that produced this save.
+    policyVersion: POLICY_VERSION,
     daysTracked: v('daysTracked')?parseInt(v('daysTracked')):null,
     eventDays: v('eventDays')?parseInt(v('eventDays')):null,
     photo: window._pendingPhoto || null,
@@ -3686,8 +3912,33 @@ function saveWeek(){
   if(idx>=0){
     // preserve photo if not replacing
     if(!entry.photo && D.weeks[idx].photo) entry.photo = D.weeks[idx].photo;
+    // v22: preserve the existing week's phase identity on re-save (see above).
+    // A stored mode is authoritative; only a modeless legacy week falls back
+    // to the current global mode (then migrateWeek's date-based tagging still
+    // applies on the next load).
+    const prev = D.weeks[idx];
+    if(prev.mode) entry.mode = prev.mode;
+    // v22: phaseRef — the form field wins when the user typed one (explicit
+    // edit); otherwise the stored value survives the re-save.
+    if(!v('phaseRef') && prev.phaseRef) entry.phaseRef = prev.phaseRef;
+    if(prev.transition) entry.transition = prev.transition;
+    // v22: policyVersion — a re-save does not recompute the week's actions,
+    // so the stamp stays with the policy that produced them. (A notes-only
+    // edit on a 2025 week must not re-stamp it as current policy.)
+    if(prev.policyVersion!=null) entry.policyVersion = prev.policyVersion;
+    // v22: proteinTargetSource — preserve the stored label when the protein
+    // target is unchanged (a re-save must not flip history); recompute only
+    // when the target itself changed on this save.
+    if(prev.proteinTargetSource && prev.proteinTarget===entry.proteinTarget)
+      entry.proteinTargetSource = prev.proteinTargetSource;
+    else
+      entry.proteinTargetSource = isProteinOverride(entry.mode) ? 'override' : 'equation';
     D.weeks[idx]=entry;
-  } else D.weeks.push(entry);
+  } else {
+    D.weeks.push(entry);
+    // v22: proteinTargetSource follows the entry's final phase identity.
+    entry.proteinTargetSource = isProteinOverride(entry.mode) ? 'override' : 'equation';
+  }
   D.weeks.sort((a,b)=>a.date.localeCompare(b.date));
   const saved = save();
   // v21: the week is already persisted here; an analytics-merge failure must
@@ -4141,8 +4392,9 @@ function genSummary(){
   // v19: export-only additions (ChatGPT v19 wishlist) — schema version, data
   // completeness, phase-transition metadata. No behavioral effect anywhere.
   const dcSum = weekDataCompleteness(w);
-  const phSum = phaseStartInfo(D.weeks, idx, wkMode);
-  const transTextSum = phaseTransitionStatusText(wkMode, phSum.inTransition, phSum.weeksInMode);
+  // v22: phaseStartInfo needs the rolling rate for the week-3 extension; it is
+  // computed with cvSum below, so the transition fields are filled in there.
+  let phSum = null, transTextSum = '';
   const wWeight = num(w.weight) || null;
   const wWaist  = num(w.waist)  || null;
   const wHRV    = num(w.hrv)    || null;
@@ -4205,6 +4457,10 @@ function genSummary(){
 
   // ── Velocity ──
   const cvSum = calcCutVelocity(wWeight, D.weeks.slice(0,idx), wkMode);
+  // v22: transition metadata resolved with the week-over-week gain in hand
+  // (computed inside phaseStartInfo from the week's own weights).
+  phSum = phaseStartInfo(D.weeks, idx, wkMode);
+  transTextSum = phaseTransitionStatusText(wkMode, phSum.inTransition, phSum.weeksInMode, phSum.transitionExtended);
   const stSum = calcStallStatus(cvSum, wWaist, D.weeks, {anchorDate:w.date, useLiveInputs:false, mode:wkMode});
   const rr    = cvSum.rollingRate;
   const stRate = cvSum.shortTermRate;
@@ -4640,9 +4896,10 @@ function genSummary(){
       const nwtExp = calcNextWeekTargets(w.date);
       if(!nwtExp) return '  Insufficient data (need ≥2 weeks)';
       const suppTag = nwtExp.suppressed ? ' [SUPPRESSED — held]' : '';
-      // [Rule 7] Protein label: always rule-based — cut 1g/lb (existing), maint 0.8g/lb (dynamic equation)
+      // [Rule 7] Protein label: always rule-based via proteinRuleLabel —
+      // cut 1g/lb, maint 0.8g/lb, surplus 0.9g/lb (v22).
       // v18: appends [equation] or [override Ng] so the export says which was used.
-      const protRuleTxt = wkMode==='maint' ? '0.8g/lb' : '1g/lb';
+      const protRuleTxt = proteinRuleShort(wkMode);
       const protLabel = (wWeight
         ? Math.round(nwtExp.protein)+'g/day [exact: '+Math.round(wWeight)+' lbs × '+protRuleTxt+' = '+Math.round(nwtExp.protein)+'g]'
         : Math.round(nwtExp.protein)+'g/day ['+proteinRuleLabel(wkMode)+' — weight not logged]')
@@ -4699,7 +4956,7 @@ function genSummary(){
         : driftTrigExp.curOut ? '1st-week-outside (watch; action after 2 consecutive)'
         : 'in-band (hold)')
       : 'n/a'),
-    'phase_transition:          '+(cvSum.inTransition ? 'week '+cvSum.weeksInMode+' of 2 — glycogen/water settling, no rate actions' : 'none'),
+    'phase_transition:          '+(cvSum.inTransition ? transitionWeekLabel(cvSum)+', no rate actions' : 'none'),
     'surplus_gain_cap_over:     '+(wkMode==='bulk' ? boolStr(capEval && capEval.overCap) : 'n/a'),
     'tdee_estimate_kcal:        '+(tdeeExp.available ? String(tdeeExp.tdee)+' ±'+tdeeExp.band+' ['+tdeeExp.confidence+']' : 'n/a'),
     'tdee_provisional:          '+boolStr(tdeeExp.provisional===true),
@@ -5648,7 +5905,7 @@ function updVelocity(){
   // ── Action boxes — mode-aware (v17 F1; v17 R2 transition gate + 2-wk drift gate + cap-only bulk) ──
   let action = '';
   if(cv.inTransition){
-    action = `<div class="action-box blue"><div class="ah">⇄ Transition — Glycogen/Water Settling</div>Week ${cv.weeksInMode} of 2 in ${MODE_CONFIG[mode].label} phase. The scale is settling after the phase change — no intake adjustments until drift tracking resumes.</div>`;
+    action = `<div class="action-box blue"><div class="ah">⇄ Transition — Glycogen/Water Settling</div>${transitionWeekLabel(cv)} in ${MODE_CONFIG[mode].label} phase. The scale is settling after the phase change — no intake adjustments until drift tracking resumes.</div>`;
   } else if(mode==='cut'){
     if(rr!=null && rr > 1.25){
       action = `<div class="action-box red"><div class="ah">⚠ Guardrail: Over-Dieting Risk</div>Rolling rate >1.25%/wk. Prioritize muscle retention — increase calories +100–200 kcal/day (carbs). Do not reduce further until rate normalizes.</div>`;
@@ -6302,7 +6559,7 @@ function saveMaintTargets(opts){
   if(!skipProtein && typeof D!=='undefined'){
     const pv = nv('mtProt');
     const eq = proteinEquationFor('maint');
-    D.proteinOverrides = D.proteinOverrides||{cut:null,maint:null};
+    D.proteinOverrides = D.proteinOverrides||{cut:null,maint:null,bulk:null};
     if(pv!=null && pv>0 && (eq==null || Math.abs(pv-eq) > 0.5)){
       D.proteinOverrides.maint = Math.round(pv);
     }
@@ -6434,8 +6691,9 @@ function commitWeeklyProteinOverride(){
   const mode = (typeof D!=='undefined' && D.mode) || 'cut';
   const val = nv('protTgt');
   if(typeof D!=='undefined'){
-    D.proteinOverrides = D.proteinOverrides||{cut:null,maint:null};
-    if(mode==='cut'||mode==='maint') D.proteinOverrides[mode] = (val!=null && val>0) ? Math.round(val) : null;
+    D.proteinOverrides = D.proteinOverrides||{cut:null,maint:null,bulk:null};
+    // v22: bulk included — surplus protein overrides persist like cut/maint.
+    if(mode==='cut'||mode==='maint'||mode==='bulk') D.proteinOverrides[mode] = (val!=null && val>0) ? Math.round(val) : null;
   }
   const saved = save(); renderMaintTargets(); updProteinDynamic();
   if(saved) toast(isProteinOverride(mode)
@@ -6601,30 +6859,66 @@ function renderRunway(){
   const tw = D.targetWeight || nv('targetWt');
 
   if(mode==='maint'){
-    note.textContent='Maintenance: weeks before drifting ±3 lbs from current weight.';
-    const absRate = rr!=null ? Math.abs(rr)/100 : null;
-    if(!absRate||absRate<0.001){
-      panel.innerHTML='<div class="runway-note">Rate too small for projection — weight stable ✓</div>'; return;
+    // v22: the ±3 lb figure is an OUTER GUARDRAIL measured from the settled
+    // maintenance anchor — not an action trigger (the ±0.25%/wk × 2-week rate
+    // gate in the action engine is the action logic) and not a projection
+    // from current weight (that confused refill with drift).
+    const gs = maintGuardrailStatus(cw);
+    if(!gs){
+      note.textContent='Maintenance guardrail: no anchor yet — weight still settling after the phase change.';
+      panel.innerHTML='<div class="runway-note">Anchor the maintenance phase to enable the ±3 lb guardrail.<br><button class="btn btn-p" style="margin-top:8px" onclick="settleMaintAnchor()">SETTLE ANCHOR AT CURRENT WEIGHT</button><div style="margin-top:6px">Best set after the transition window, once weight has stabilized post-refill.</div></div>';
+      return;
     }
-    const driftLbs = 3;
-    const wksTo3lb = Math.round(driftLbs/(cw*absRate));
+    note.textContent='Maintenance guardrail: ±3 lbs from the '+(gs.settled?'settled':'phase-entry')+' anchor ('+gs.anchor.toFixed(1)+' lb). Outer boundary only — adjustments follow the ±0.25%/wk rate gate.';
+    const statusCls = gs.within ? 'vel-green' : 'vel-red';
+    const statusTxt = gs.within ? 'Within guardrail ✓' : 'OUTSIDE GUARDRAIL — review';
+    const dirTxt = gs.dist===0 ? 'at anchor' : (gs.dist>0 ? '+'+gs.dist.toFixed(1)+' lb above anchor' : gs.dist.toFixed(1)+' lb below anchor');
     panel.innerHTML=`<div class="runway-card">
-      <div class="runway-stat"><span>Current drift rate</span><span class="runway-val">${Math.abs(rr).toFixed(2)}%/wk</span></div>
+      <div class="runway-stat"><span>Guardrail anchor</span><span class="runway-val">${gs.anchor.toFixed(1)} lbs${gs.settled?'':' (phase entry — not yet settled)'}</span></div>
       <div class="runway-stat"><span>Current weight</span><span class="runway-val">${cw} lbs</span></div>
-      <div class="runway-stat"><span>Weeks to ±3 lb drift</span><span class="runway-val">${wksTo3lb} wks</span></div>
-    </div>
-    <div class="runway-note">[Inference] Based on current 2-week rolling rate. Will update as more data is logged.</div>`;
+      <div class="runway-stat"><span>Distance from anchor</span><span class="runway-val">${dirTxt}</span></div>
+      <div class="runway-stat"><span>Guardrail status</span><span class="runway-val ${statusCls}">${statusTxt}</span></div>
+      <div class="runway-stat"><span>Guardrail edges</span><span class="runway-val">${(gs.anchor-3).toFixed(1)} – ${(gs.anchor+3).toFixed(1)} lbs</span></div>
+    </div>`
+    +(!gs.settled ? '<div class="runway-note">Anchor not yet settled — confirm once weight has stabilized post-refill.<br><button class="btn btn-p" style="margin-top:8px" onclick="settleMaintAnchor()">SETTLE ANCHOR AT CURRENT WEIGHT</button></div>' : '')
+    +'<div class="runway-note">[Inference] Guardrail only. The action engine adjusts on the ±0.25%/wk 2-week rate gate.</div>';
     return;
   }
 
+  if(mode==='bulk'){
+    // v22: surplus has NO end-weight target (Alex decision 2026-10-04) — the
+    // runway is guardrail status: gain rate vs the <1 lb/month
+    // (≈0.15 %BW/wk) cap, plus waist as the primary composition tell.
+    note.textContent='Surplus guardrail: gain rate vs the ≈1 lb/month cap. No target weight — governed by rate and composition.';
+    const gain = rr!=null ? -rr : null; // gain-positive %BW/wk
+    const gainLbsWk = gain!=null ? cw*(gain/100) : null;
+    const capLbsWk = cw*(SURPLUS_GAIN_CAP_PCT_WK/100);
+    let statusTxt='Insufficient data', statusCls='vel-gray';
+    if(gain!=null){
+      if(gain<0){ statusTxt='Losing — surplus not landing'; statusCls='vel-yellow'; }
+      else if(gain<=SURPLUS_GAIN_CAP_PCT_WK){ statusTxt='Within cap ✓'; statusCls='vel-green'; }
+      else { statusTxt='Above cap — trim surplus'; statusCls='vel-red'; }
+    }
+    panel.innerHTML=`<div class="runway-card">
+      <div class="runway-stat"><span>Current weight</span><span class="runway-val">${cw} lbs</span></div>
+      <div class="runway-stat"><span>Gain rate</span><span class="runway-val">${gain!=null?gain.toFixed(2)+'%'+'/wk ('+gainLbsWk.toFixed(2)+' lbs/wk)':'—'}</span></div>
+      <div class="runway-stat"><span>Cap (≈1 lb/month)</span><span class="runway-val">${SURPLUS_GAIN_CAP_PCT_WK}%/wk (${capLbsWk.toFixed(2)} lbs/wk)</span></div>
+      <div class="runway-stat"><span>Guardrail status</span><span class="runway-val ${statusCls}">${statusTxt}</span></div>
+    </div>
+    <div class="runway-note">[Inference] Slower-but-positive gain is acceptable if performance and recovery are improving. Waist trend is the primary composition tell.</div>`;
+    return;
+  }
+
+  // v22: only cut reaches here — maint and bulk return above with guardrail
+  // status (no target-weight projections outside a cut).
   if(!tw){
     panel.innerHTML='<div class="runway-note">Set a Target Weight in the LOG → Body card to enable projection.</div>';
     return;
   }
 
-  const diff = mode==='cut' ? (cw - tw) : (tw - cw); // lbs to go
+  const diff = cw - tw; // lbs to go (cut only)
   if(diff <= 0){
-    panel.innerHTML='<div class="runway-note">'+(mode==='cut'?'Target weight already reached or passed.':'Bulk ceiling already reached or passed.')+'</div>';
+    panel.innerHTML='<div class="runway-note">Target weight already reached or passed.</div>';
     return;
   }
 
@@ -6634,10 +6928,10 @@ function renderRunway(){
   }
 
   // [H] Rate sign contradiction check
-  const effectiveRate = mode==='cut' ? rr : -rr;
+  const effectiveRate = rr;
   // Negative weeks clamp guard
-  if(effectiveRate<=0 || (mode==='cut'&&rr<0) || (mode==='bulk'&&rr>0)){
-    panel.innerHTML='<div class="runway-note">⚠ Projection unavailable — rate is in the opposite direction for '+mode+' mode. Focus on adherence first.</div>';
+  if(effectiveRate<=0 || rr<0){
+    panel.innerHTML='<div class="runway-note">⚠ Projection unavailable — rate is in the opposite direction for cut mode. Focus on adherence first.</div>';
     return;
   }
   // Safety clamp: never show negative result
@@ -6654,9 +6948,8 @@ function renderRunway(){
   targetDate.setDate(targetDate.getDate() + wksRounded*7);
   const dateFmt = targetDate.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
 
-  const cautionNote = mode==='cut'
-    ? (wksRounded>20?'Long runway — consider whether rate is sustainable.':'')
-    : (wksRounded>30?'Long bulk — waist drift will increase. Monitor monthly.':'');
+  // v22: cut-only runway (maint/bulk return above).
+  const cautionNote = wksRounded>20?'Long runway — consider whether rate is sustainable.':'';
 
   panel.innerHTML=`<div class="runway-card">
     <div class="runway-stat"><span>Current weight</span><span class="runway-val">${cw} lbs</span></div>
@@ -6953,10 +7246,11 @@ function renderNextWeekTargets(){
   if(!nwt){ card.style.display='none'; return; }
 
   card.style.display = 'block';
-  // v17 R2b: protein rule label follows the active phase (cut 1g/lb, maint 0.8g/lb);
+  // v17 R2b: protein rule label follows the active phase
+  // (cut 1g/lb, maint 0.8g/lb, surplus 0.9g/lb — v22);
   // same mode resolution as calcNextWeekTargets (latest week, then D.mode)
   const nwtMode = (saved[saved.length-1].mode || (typeof D!=='undefined' && D.mode)) || 'cut';
-  const nwtRuleTxt = nwtMode==='maint' ? '0.8g/lb' : '1g/lb';
+  const nwtRuleTxt = proteinRuleShort(nwtMode);
 
   const holdCls = (val, base) => val === base ? 'hold' : '';
   const fmt = v => v != null ? Math.round(v).toLocaleString() : '—';
@@ -7253,7 +7547,7 @@ function renderDecisionLadder(){
       status:'Protocol: add bike → hold steps → no walking through pain'
     },
     {
-      n:'2', title: mode==='maint' ? 'Protein ≥0.8g/lb bodyweight' : 'Protein ≥1g/lb bodyweight',
+      n:'2', title: 'Protein ≥'+proteinPerLb(mode).toFixed(1)+'g/lb bodyweight',
       sub:'Current: '+(prot?prot+'g':'—')+' · Target: '+(protTgt?protTgt+'g'+(isProteinOverride(mode)?' (override)':' ('+proteinRuleLabel(mode)+')'):'set bodyweight')+' · Under-eating protein = muscle loss, not fat loss.',
       ok: protOk,
       status: prot&&bw ? (prot/bw).toFixed(2)+' g/lb '+(protOk?'✓':'— increase protein') : 'No data'
@@ -7886,6 +8180,44 @@ function __selfTestRun() {
     add(proteinRuleLabel('maint')==='0.8g/lb maintenance', 'v17: maintenance rule label');
     add(Math.round(172.5*CUT_PROTEIN_PER_LB)===173 && proteinRuleLabel('cut')==='1g/lb cut',
       'v17: cut protein stays 1g/lb (173g at 172.5 lb)');
+    // v22: surplus protein policy 0.9g/lb (Alex decision 2026-10-04)
+    add(proteinPerLb('bulk')===0.9 && proteinRuleLabel('bulk')==='0.9g/lb surplus',
+      'v22: surplus protein equation is 0.9g/lb');
+    add(proteinEquationFor('bulk', 170)===153,
+      'v22: surplus protein 153g at 170 lb (0.9g/lb)');
+    add(proteinTargetFor('bulk', 170)===153,
+      'v22: proteinTargetFor supports bulk (no longer null)');
+    add(proteinScoreTarget('bulk', 170)===153,
+      'v22: bulk adherence scores against 0.9g/lb');
+    add(MODE_CONFIG.bulk.protFloor===0.9,
+      'v22: MODE_CONFIG.bulk.protFloor is 0.9');
+    // v22b (Claude review fixes): policy versioning, directional week-3 gate
+    add(POLICY_VERSION===2, 'v22: POLICY_VERSION is 2 (v21 records migrate as policy 1)');
+    add(migrateState({schemaVersion:1, weeks:[mntW('2026-10-04',170.0)], bodyComp:[]}).weeks[0].policyVersion===1,
+      'v22: v21 state migrates weeks to policyVersion 1, not current');
+    // Week-3 extension: maint still GAINING outside the band → extended
+    const extM = [cutW('2026-09-13',177.0), mntW('2026-09-27',178.5), mntW('2026-10-04',179.5)];
+    const cvE = calcCutVelocity(180.5, extM, 'maint');
+    add(cvE.inTransition===true && cvE.transitionExtended===true && cvE.weeksInMode===3,
+      'v22: maint week 3 still gaining >band stays in transition (extended)');
+    add(/extended/.test(transitionWeekLabel(cvE)) && !/of 2/.test(transitionWeekLabel(cvE)),
+      'v22: extended transition label never says "of 2"');
+    // Direction-aware: maint LOSING in week 3 is a real signal, not settling
+    const extL = [cutW('2026-09-13',177.0), mntW('2026-09-27',178.5), mntW('2026-10-04',178.0)];
+    const cvL = calcCutVelocity(177.0, extL, 'maint');
+    add(cvL.inTransition===false && cvL.transitionExtended===false,
+      'v22: maint week 3 still LOSING does not extend (under-fueling signal)');
+    // Bulk never extends — overshoot must not be labeled settling. Genuine
+    // week-3 scenario: two bulk weeks already banked, still gaining hard.
+    const blkW = (date,weight)=>({date, mode:'bulk', weight, calories:2800, calorieTarget:2800, daysTracked:7});
+    const extB = [mntW('2026-09-13',170.0), blkW('2026-09-27',170.5), blkW('2026-10-04',171.5)];
+    const cvB = calcCutVelocity(173.0, extB, 'bulk');
+    add(cvB.inTransition===false && cvB.transitionExtended===false && cvB.weeksInMode===3,
+      'v22: bulk week 3 gaining does not extend (overshoot is not settling)');
+    // Anchor seeding: migration seeds phaseEntry from earliest maint week
+    const migA = migrateState({schemaVersion:1, mode:'maint', weeks:[mntW('2026-09-27',170.5),mntW('2026-10-04',169.8)], bodyComp:[]});
+    add(migA.maintAnchor.phaseEntry===170.5 && migA.maintAnchor.phaseEntryDate==='2026-09-27' && migA.maintAnchor.settled==null,
+      'v22: migration seeds phaseEntry from earliest maint week; settled left for explicit confirmation');
     // Drift gate integration: 1 outside-band week → NONE; 2 consecutive → RATE
     const driftW = [
       mntW('2026-10-04',170.0), mntW('2026-10-11',170.0), mntW('2026-10-18',170.0),
@@ -8225,8 +8557,8 @@ function __selfTestRun() {
       'v18: human export label says "override 160g"');
     add(/equation/.test(proteinTargetSourceLabel('cut', 172.5)),
       'v18: human export label says "equation" when no override');
-    add(proteinTargetFor('bulk', 172.5)===null,
-      'v18: bulk keeps existing per-site behavior (no override path)');
+    add(proteinTargetFor('bulk', 172.5)===Math.round(172.5*0.9),
+      'v18→v22: bulk protein equation opened in v22 (0.9g/lb; was null pre-v22)');
     D.proteinOverrides.maint = null;
     add(proteinTargetFor('maint', 172.5)===138,
       'v18: reset restores the equation default');
