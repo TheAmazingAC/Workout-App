@@ -8547,6 +8547,18 @@ function __selfTestRun() {
     add(cvH.rollingRate!=null && Math.abs(cvH.rollingRate)>MAINT_DRIFT_BAND_PCT
         && rawPriorH!=null && Math.abs(rawPriorH)>MAINT_DRIFT_BAND_PCT,
       'v22 P1: sanity scenario has two genuine consecutive outside-band weeks on clean windows');
+    // A weightless transition week must retain its calendar position. Removing
+    // it before calcCutVelocity shifts the post-transition slice by one week
+    // and leaves maintenance week 7 without a complete rolling-rate window.
+    const weightlessTransitionW = [
+      cutW('2026-09-05',179.0),
+      mntW('2026-09-12',179.0), mntW('2026-09-19',null),
+      mntW('2026-09-26',178.0), mntW('2026-10-03',177.0),
+      mntW('2026-10-10',176.0), mntW('2026-10-17',175.0)
+    ];
+    const weightlessPriorRate = priorWeekRollingRate(weightlessTransitionW, 'maint');
+    add(weightlessPriorRate===0.5633802816901409,
+      'v22: prior-week rate preserves calendar position of a weightless transition week (maintenance week 7)');
     // v22 P1: waist must agree — scale-only drift does not earn a calorie
     // change when the waist contradicts it. Threshold 0.25" matches the
     // protocol's stable band.
