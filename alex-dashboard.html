@@ -942,6 +942,15 @@ select option{background:var(--s2);}
       <button class="btn btn-p" onclick="suBackfillApply('fill')" style="font-size:11px">APPLY — FILL MISSING</button>
       <button class="btn btn-s" onclick="suBackfillApply('refresh')" style="font-size:11px">REFRESH SET COUNTS</button>
     </div>
+    <!-- v22.11: incline split re-key (uses the CSV loaded above) -->
+    <div style="margin-top:12px;border-top:1px solid var(--b);padding-top:10px">
+      <div class="ct" style="font-size:11px">// Incline split — "(Dumbbell)" → "(Vitruvian)"</div>
+      <p class="note">Classifies every stored session holding a "(Dumbbell)" incline by your evidence standard (gym = Dumbbell; Vitruvian notes/titles, native Vitruvian, or 2026 home = Vitruvian). Apply exports a backup, then renames only that key in both copies.</p>
+      <div class="btn-row"><button class="btn btn-s" onclick="_suInclineEv=null;renderInclineSplit()" style="font-size:11px">INCLINE SPLIT — DRY RUN</button>
+        <button class="btn btn-p" id="suInclineApply" onclick="uiInclineApply()" style="font-size:11px;display:none">APPLY INCLINE RE-KEY</button></div>
+      <pre id="suInclineReport" style="font-size:10px;white-space:pre-wrap;color:var(--mu);margin-top:6px"></pre>
+      <div id="suInclineConflicts"></div>
+    </div>
   </div>
   <div class="card">
     <div class="ct">// Photo Progress Strip</div>
@@ -1784,12 +1793,159 @@ function uiSuTogglePair(i){
   else { [..._suAcceptedPairs.values()].forEach(q=>{ if(q.stored===p.stored || q.csv===p.csv) _suAcceptedPairs.delete(q.id); }); _suAcceptedPairs.set(p.id, p); }
   renderSuProbablePairs();
 }
+// ══════════════════════════════════════════
+// v22.11: INCLINE SPLIT — evidence-based re-key "(Dumbbell)" → "(Vitruvian)"
+// ══════════════════════════════════════════
+// Alex's evidence standard (2026-11-02), priority order, for a stored session
+// whose incline sits under the "(Dumbbell)" key; evidence comes from the CSV
+// session matched on date||title:
+//  1 native   — CSV logs "Incline Bench Press (Vitruvian)"          → Vitruvian
+//  2 gym      — gym-titled workout (absolute; beats a note)         → Dumbbell
+//  3 notes    — "Vitruvian" in the incline exercise's Hevy notes    → Vitruvian
+//  4 titled   — Vitruvian-titled workout                            → Vitruvian
+//  5 home2026 — home-evidenced (title says home, or any Vitruvian-
+//               branded exercise in the session) AND in 2026        → Vitruvian
+//  6 otherwise (incl. home-evidenced before 2026)                   → Dumbbell
+// A gym-titled session that also carries Vitruvian evidence is a CONFLICT:
+// it stays Dumbbell unless Alex overrides that session.
+const INCLINE_DB = 'Incline Bench Press (Dumbbell)', INCLINE_VIT = 'Incline Bench Press (Vitruvian)';
+let _suBackfillCsvText = null, _suInclineEv = null, _suInclineOverrides = new Set();
+function buildInclineEvidenceIndex(csvText){
+  const map = new Map();
+  groupBySessions(parseHevyCsvRows(csvText||'')).forEach(g=>{
+    if(!g.dateSort || !g.title) return;
+    const key = g.dateSort+'||'+g.title;
+    const ex = new Set(g.sets.map(r=>r.exercise_title).filter(Boolean));
+    const notes = g.sets.filter(r=>r.exercise_title===INCLINE_DB || r.exercise_title===INCLINE_VIT).map(r=>r.exercise_notes||'').join(' ');
+    map.set(key, {d:g.dateSort, t:g.title, ex, notes});
+  });
+  return map;
+}
+function classifyIncline(ev){
+  if(ev.ex.has(INCLINE_VIT)) return {cls:'native', to:'vit'};
+  const gym = /\bgym\b/i.test(ev.t), note = /vitruvian/i.test(ev.notes), titled = /vitruvian/i.test(ev.t);
+  const homeEv = /\bhome\b/i.test(ev.t) || [...ev.ex].some(x=>/vitruvian/i.test(x));
+  if(gym) return {cls:'gym', to:'db', conflict: note || titled, why: note ? 'Vitruvian note' : (titled ? 'Vitruvian title' : '')};
+  if(note) return {cls:'notes', to:'vit'};
+  if(titled) return {cls:'titled', to:'vit'};
+  if(homeEv && ev.d>='2026-01-01') return {cls:'home2026', to:'vit'};
+  if(homeEv) return {cls:'homePre2026', to:'db'};
+  return {cls:'none', to:'db'};
+}
+const holdsInclineDb = s=>!!(s && ((s.ts && s.ts[INCLINE_DB]) || (s.sc && s.sc[INCLINE_DB]!=null)));
+// Dry run (read-only).
+function planInclineSplit(weeks, ev, overrides){
+  const ov = overrides instanceof Set ? overrides : new Set(overrides||[]);
+  const rep = {total:0, toVit:0, toDb:0, counts:{native:0, notes:0, titled:0, home2026:0, gym:0, homePre2026:0, none:0},
+    rows:[], conflicts:[], unclassifiable:[], collisions:[], disagreeWeeks:[]};
+  (weeks||[]).forEach(w=>{
+    const a = Array.isArray(w.sessions) ? w.sessions.map(suSessionKey).sort() : null;
+    const b = Array.isArray(w.hevySessions) ? w.hevySessions.map(suSessionKey).sort() : null;
+    const disagree = a && b && JSON.stringify(a)!==JSON.stringify(b);
+    weekStoredSessions(w).forEach(s=>{
+      if(!holdsInclineDb(s)) return;
+      const k = suSessionKey(s);
+      rep.total++;
+      if(disagree){ if(!rep.disagreeWeeks.includes(w.date)) rep.disagreeWeeks.push(w.date); return; }
+      if((s.ts && s.ts[INCLINE_VIT]) || (s.sc && s.sc[INCLINE_VIT]!=null)){ rep.collisions.push(k); return; }
+      const e = k && ev.get(k);
+      if(!e){ rep.unclassifiable.push(k||'(undated) '+String(s&&s.t)); return; }
+      const c = classifyIncline(e);
+      const to = (c.conflict && ov.has(k)) ? 'vit' : c.to;
+      rep.counts[c.cls]++;
+      if(c.conflict) rep.conflicts.push({key:k, week:w.date, why:c.why, override:ov.has(k)});
+      rep.rows.push({key:k, week:w.date, cls:c.cls, to, conflict:!!c.conflict});
+      if(to==='vit') rep.toVit++; else rep.toDb++;
+    });
+  });
+  return rep;
+}
+// Rename one key in place of order (values untouched).
+function suRekey(o, from, to){
+  if(!o || typeof o!=='object' || !(from in o) || (to in o)) return o;
+  const out = {}; Object.keys(o).forEach(k=>{ out[k===from?to:k] = o[k]; }); return out;
+}
+function applyInclineSplit(weeks, ev, overrides){
+  const plan = planInclineSplit(weeks, ev, overrides);
+  const targets = new Set(plan.rows.filter(r=>r.to==='vit').map(r=>r.week+'##'+r.key));
+  const out = JSON.parse(JSON.stringify(weeks||[]));
+  const rekeyed = new Set();
+  out.forEach(w=>[w.sessions, w.hevySessions].filter(Array.isArray).forEach(arr=>arr.forEach((x,j)=>{
+    const k = suSessionKey(x); if(!k || !targets.has(w.date+'##'+k)) return;
+    const nx = {...x};
+    if(nx.ts) nx.ts = suRekey(nx.ts, INCLINE_DB, INCLINE_VIT);
+    if(nx.sc) nx.sc = suRekey(nx.sc, INCLINE_DB, INCLINE_VIT);
+    arr[j] = nx; rekeyed.add(w.date+'##'+k);
+  })));
+  return {weeks:out, plan, rekeyed, check:verifyInclineSplit(weeks||[], out, rekeyed, plan)};
+}
+// Only the key NAME changes on re-keyed sessions (values, order, counts
+// byte-identical); counts reconcile with the dry run; nothing else moves.
+function verifyInclineSplit(before, after, rekeyed, plan){
+  const errors = [];
+  if(before.length!==after.length) errors.push('week count changed');
+  const back = x=>{ const c = {...x}; if(c.ts) c.ts = suRekey(c.ts, INCLINE_VIT, INCLINE_DB); if(c.sc) c.sc = suRekey(c.sc, INCLINE_VIT, INCLINE_DB); return c; };
+  before.forEach((w,i)=>{
+    const a = after[i]; if(!a || a.date!==w.date){ errors.push('week order changed at '+i); return; }
+    const c = JSON.parse(JSON.stringify(a));
+    ['sessions','hevySessions'].forEach(f=>{
+      if(!Array.isArray(c[f])) return;
+      if(!Array.isArray(w[f]) || w[f].length!==c[f].length){ errors.push('session count changed in '+w.date+' '+f); return; }
+      c[f] = c[f].map(x=>rekeyed.has(w.date+'##'+suSessionKey(x)) ? back(x) : x);
+    });
+    if(JSON.stringify(c)!==JSON.stringify(w)) errors.push('something other than the incline key name changed in '+w.date);
+  });
+  if(rekeyed.size!==plan.toVit) errors.push('re-keyed '+rekeyed.size+' sessions, dry run planned '+plan.toVit);
+  after.forEach(w=>weekStoredSessions(w).forEach(x=>{ if(rekeyed.has(w.date+'##'+suSessionKey(x)) && holdsInclineDb(x)) errors.push('Dumbbell key left on '+suSessionKey(x)); }));
+  return {ok:!errors.length, errors};
+}
+function renderInclineSplit(){
+  const el = document.getElementById('suInclineReport'); if(!el) return;
+  if(!_suBackfillCsvText){ el.textContent = 'Load the Hevy CSV above first.'; return; }
+  if(!_suInclineEv) _suInclineEv = buildInclineEvidenceIndex(_suBackfillCsvText);
+  const r = planInclineSplit(D.weeks, _suInclineEv, _suInclineOverrides);
+  const c = r.counts;
+  const lines = [
+    'INCLINE SPLIT — DRY RUN (nothing written)',
+    'Stored sessions with a "(Dumbbell)" incline: '+r.total,
+    '→ Vitruvian '+r.toVit+'  (native '+c.native+', notes '+c.notes+', titled '+c.titled+', home-2026 '+c.home2026+(r.conflicts.filter(x=>x.override).length?', conflict overrides '+r.conflicts.filter(x=>x.override).length:'')+')',
+    '→ stays Dumbbell '+r.toDb+'  (gym '+c.gym+', home pre-2026 '+c.homePre2026+', no evidence '+c.none+')',
+    'Unclassifiable (no CSV counterpart, left alone): '+r.unclassifiable.length+(r.unclassifiable.length?'\n    '+r.unclassifiable.slice(0,20).join('\n    '):''),
+    'Both keys already present (left alone): '+r.collisions.length+(r.collisions.length?'\n    '+r.collisions.join('\n    '):''),
+    'Weeks whose copies disagree (left alone): '+r.disagreeWeeks.length
+  ];
+  el.textContent = lines.join('\n');
+  const cf = document.getElementById('suInclineConflicts');
+  if(cf) cf.innerHTML = r.conflicts.length ? '<div style="font-size:10px;color:var(--w);margin:4px 0">Conflicts — gym-titled with Vitruvian evidence (default: Dumbbell):</div>'
+    + r.conflicts.map((x,i)=>'<div style="font-size:10px;margin:2px 0">'+escHtml(x.key+' — '+x.why)+' <button class="btn btn-s" style="font-size:9px;width:auto;padding:1px 7px" onclick="uiInclineOverride('+i+')">'+(x.override?'✓ Override → Vitruvian — undo':'Override → Vitruvian')+'</button></div>').join('')
+    : '<div style="font-size:10px;color:var(--mu)">Conflicts: none</div>';
+  window._suInclineConflicts = r.conflicts;
+  const b = document.getElementById('suInclineApply'); if(b) b.style.display = r.toVit ? 'inline-block' : 'none';
+}
+function uiInclineOverride(i){
+  const x = (window._suInclineConflicts||[])[i]; if(!x) return;
+  if(_suInclineOverrides.has(x.key)) _suInclineOverrides.delete(x.key); else _suInclineOverrides.add(x.key);
+  renderInclineSplit();
+}
+function uiInclineApply(){
+  if(!_suBackfillCsvText){ renderInclineSplit(); return; }
+  if(!_suInclineEv) _suInclineEv = buildInclineEvidenceIndex(_suBackfillCsvText);
+  try{ exportData(); } catch(e){ document.getElementById('suInclineReport').textContent = '✗ Backup export failed — re-key not run'; return; }
+  const res = applyInclineSplit(D.weeks, _suInclineEv, _suInclineOverrides);
+  if(!res.check.ok){ document.getElementById('suInclineReport').textContent = '✗ Checks failed — nothing written:\n'+res.check.errors.slice(0,10).join('\n'); return; }
+  D.weeks = res.weeks;
+  const saved = save();
+  safeCall('mergeStoredSessions', mergeStoredSessions);
+  markDirty(['history','training']);
+  renderInclineSplit();
+  if(saved) document.getElementById('suInclineReport').textContent = '✓ Re-keyed '+res.rekeyed.size+' sessions to "(Vitruvian)" (both copies). Checks passed: only the key name changed; counts match the dry run.\n\n'+document.getElementById('suInclineReport').textContent;
+}
 let _suBackfillIdx = null;
 function suBackfillLoadCsv(e){
   const file = e.target.files[0]; if(!file) return;
   const reader = new FileReader();
   reader.onload = ev=>{
-    try{ _suBackfillIdx = buildCsvSessionIndex(ev.target.result); renderSuBackfillReport(planSuBackfill(D.weeks, _suBackfillIdx, 'fill')); }
+    try{ _suBackfillCsvText = ev.target.result; _suInclineEv = null; _suBackfillIdx = buildCsvSessionIndex(ev.target.result); renderSuBackfillReport(planSuBackfill(D.weeks, _suBackfillIdx, 'fill')); }
     catch(err){ console.error(err); suBackfillStatus('✗ Could not read the CSV', 'var(--a3)'); }
   };
   reader.readAsText(file);
@@ -1990,7 +2146,7 @@ function renderSuEditor(){
   const unrated = suUnratedNames();
   const names = Object.keys(cfg.entries).sort((a,b)=>a.localeCompare(b)).filter(n=>{
     const e = cfg.entries[n];
-    if(q && !n.toLowerCase().includes(q) && !displayExName(n).toLowerCase().includes(q)) return false;
+    if(q && !n.toLowerCase().includes(q)) return false;
     if(flt==='differs') return !suAliasTarget(n) && suSeedDiff(n).length>0;
     if(flt==='unrated') return !suAliasTarget(n) && !e.exempt && !(e.su>0);
     if(flt==='incomplete') return !suAliasTarget(n) && suEntryIncomplete(e);
@@ -2007,21 +2163,21 @@ function renderSuEditor(){
   const zeroN = Object.keys(cfg.entries).filter(n=>{ const e = cfg.entries[n]; return !suAliasTarget(n) && !e.exempt && e.su!=null && !(e.su>0); }).length;
   if(incN || zeroN) h += `<div style="font-size:11px;color:var(--w);margin-bottom:10px">${incN?incN+' incomplete entr'+(incN===1?'y':'ies')+' (SU set but region or a joint flag missing — joint exposure understated). ':''}${zeroN?zeroN+' invalid SU (≤ 0) — treated as unrated.':''}</div>`;
   if(ur.length) h += `<div style="font-size:11px;color:var(--w);margin-bottom:10px">Unrated in your logged sessions:<br>`
-    + ur.map(([n,c])=>`${escHtml(displayExName(n))} (${c} sets)${cfg.entries[n]?'':` <button class="btn btn-s" style="font-size:9px;width:auto;padding:2px 8px" onclick="uiSuAdd(${JSON.stringify(n).replace(/"/g,'&quot;')})">Add</button>`}`).join('<br>') + `</div>`;
+    + ur.map(([n,c])=>`${escHtml(n)} (${c} sets)${cfg.entries[n]?'':` <button class="btn btn-s" style="font-size:9px;width:auto;padding:2px 8px" onclick="uiSuAdd(${JSON.stringify(n).replace(/"/g,'&quot;')})">Add</button>`}`).join('<br>') + `</div>`;
   h += names.map((n,i)=>{
     const e = cfg.entries[n], diff = suSeedDiff(n);
     const aliasOf = suAliasTarget(n);
     if(aliasOf){
       const ce = cfg.entries[aliasOf] || {};
       return `<div style="border-top:1px solid var(--b);padding:6px 0;font-size:11px;color:var(--mu)">
-        <div>${escHtml(n)} <span style="color:var(--a2)">↪ alias of ${escHtml(aliasOf)} — seed alias row, priced as the entry shown as ${escHtml(displayExName(aliasOf))}</span></div>
+        <div>${escHtml(n)} <span style="color:var(--a2)">↪ alias of ${escHtml(aliasOf)}</span></div>
         <div style="font-size:10px">Priced as the canonical entry: SU ${ce.exempt?'exempt':(ce.su==null?'—':escHtml(String(ce.su)))} · ${escHtml(String(ce.region||'region ?'))} · Back ${escHtml(String(ce.back||'?'))} Foot ${escHtml(String(ce.foot||'?'))} Elbow ${escHtml(String(ce.elbow||'?'))} — edit it there.</div>
       </div>`;
     }
     const badSu = !e.exempt && e.su!=null && !(e.su>0);
     const badge = (suEntryIncomplete(e)?suChip('incomplete'):'') + (badSu?suChip('invalid SU — unrated'):'');
     return `<div style="border-top:1px solid var(--b);padding:6px 0;font-size:11px">
-      <div style="display:flex;justify-content:space-between"><span>${escHtml(displayExName(n))}${displayExName(n)!==n?' <span style="color:var(--mu);font-size:9px">key: '+escHtml(n)+'</span>':''}${badge}</span>
+      <div style="display:flex;justify-content:space-between"><span>${escHtml(n)}${badge}</span>
         <span>${diff.length?`<span style="color:var(--w)">≠ seed: ${escHtml(diff.join(', '))}</span>${SU_LIBRARY_SEED.entries[n]?` <button class="btn btn-s" style="font-size:9px;width:auto;padding:2px 8px" onclick="uiSuReset(${i})">Reset</button>`:''}`:''}</span></div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:4px">
         SU <input type="number" step="0.5" min="0.5" max="10" style="width:64px" value="${e.su==null?'':e.su}" ${e.exempt?'disabled':''} onchange="uiSuEdit(${i},'su',this.value)">
@@ -2040,7 +2196,7 @@ function renderSuEditor(){
   h += `<div style="margin-top:12px;border-top:1px solid var(--b);padding-top:8px;font-size:10px;color:var(--mu)">Rating history (latest ${Math.min(HIST_N,cfg.changelog.length)} of ${cfg.changelog.length}, newest first)<br>`
     + (idxs.length ? idxs.map(k=>{
         const c = cfg.changelog[k], st = suRevertStatus(k);
-        const line = escHtml(`#${k} · ${c.date} · ${displayExName(c.name)} · ${c.field}: ${fmtV(c.from)} → ${fmtV(c.to)}${c.note?' · '+c.note:''}`);
+        const line = escHtml(`#${k} · ${c.date} · ${c.name} · ${c.field}: ${fmtV(c.from)} → ${fmtV(c.to)}${c.note?' · '+c.note:''}`);
         const act = st.ok ? ` <button class="btn btn-s" style="font-size:9px;width:auto;padding:1px 7px" onclick="uiSuRevert(${k})">Revert</button>`
           : ` <span style="opacity:.7">(${escHtml(revertedBy[k]!=null && st.why!=='not revertible' ? 'reverted by #'+revertedBy[k] : st.why)})</span>`;
         return '<div style="margin:2px 0">'+line+act+'</div>';
@@ -2108,7 +2264,7 @@ function renderBlocks(){
   if(selId){
     const r = computeBlockRollup(selId);
     const b = getBlockById(selId);
-    const it = o=>Object.keys(o).length ? Object.entries(o).map(([k,c])=>escHtml(displayExName(k))+' ×'+c).join(', ') : 'none';
+    const it = o=>Object.keys(o).length ? Object.entries(o).map(([k,c])=>escHtml(k)+' ×'+c).join(', ') : 'none';
     h += `<div style="font-size:11px;line-height:1.7">
       <div><b>${escHtml(b.name||b.id)}</b> · phase ${escHtml(String(b.phaseRef||'—'))}${r.phases.length>1?' · <span style="color:var(--w)">spans '+escHtml(r.phases.join(' → '))+'</span>':''}${b.note?' · '+escHtml(b.note):''}</div>
       <div>Weeks: ${r.weeks}${r.start?' ('+escHtml(fmtDShort(r.start))+' → '+escHtml(fmtDShort(r.end))+')':''} · SU coverage ${r.pricedWeeks}/${r.weeks}</div>
@@ -4373,6 +4529,11 @@ const CANONICAL_EXERCISE_MAP = {
   'Incline Bench Press (Machine)':            'Incline Bench Press (Dumbbell)',
   // A6 (Alex decision 2026-09-25: rename in Hevy): the new Hevy title maps to
   // the EXISTING history key so strength history stays continuous.
+  // v22.11: KEPT here on purpose. This broad map only drives matching (the
+  // incline priority slot keeps capturing Alex's incline press on either
+  // implement) and muscle-group lookup — never stored keys, which follow
+  // TRUE_RENAME_MAP, where the pair is now retired. The picker lists the split
+  // key on its own (see RENAME_SPLIT_KEYS).
   'Incline Bench Press (Vitruvian)':       'Incline Bench Press (Dumbbell)',
   // Shoulder Press variants
   'Shoulder Press':                           'Shoulder Press (Dumbbell)',
@@ -4435,10 +4596,30 @@ function canonicalizeWithMeta(rawName){
 // backup load). Weighted/assisted variants are intentionally absent: they are
 // distinct exercises and must never merge.
 // ══════════════════════════════════════════
+// v22.11: the incline pair is RETIRED (Alex, 2026-11-02). Its "(Dumbbell)"
+// history was genuinely mixed, so "(Vitruvian)" is now its own key; stored
+// history is split by the evidence-based re-key in the backfill card. The
+// Romanian Deadlift pair stays.
 const TRUE_RENAME_MAP = {
-  'Incline Bench Press (Vitruvian)': 'Incline Bench Press (Dumbbell)',
   'Romanian Deadlift (Vitruvian)':   'Romanian Deadlift (Barbell)',
 };
+// v22.11: keys split out of a retired rename. The broad CANONICAL_EXERCISE_MAP
+// still folds '(Vitruvian)' into the incline priority slot (slot behavior is
+// deliberately unchanged), so these keys need their own picker entry and must
+// not re-enter the old key's chart through weekly-log points.
+const RENAME_SPLIT_KEYS = Object.freeze({
+  'Incline Bench Press (Dumbbell)': 'Incline Bench Press (Vitruvian)',
+});
+function isSplitKey(k){ return Object.values(RENAME_SPLIT_KEYS).includes(k); }
+// v22.11: for a weekly priority-slot lift, the split key its top set was
+// actually logged under (from its source session's ts), or null.
+function liftSplitSource(l){
+  const sk = l && RENAME_SPLIT_KEYS[l.name];
+  if(!sk || !l.srcTitle || !l.srcDate) return null;
+  const d = parseHevyDate(l.srcDate) || l.srcDate;
+  const ses = (typeof HEVY_DATA!=='undefined' ? HEVY_DATA.sessions : []).find(x=>x && x.t===l.srcTitle && x.d===d);
+  return (ses && ses.ts && ses.ts[sk] && !ses.ts[l.name]) ? sk : null;
+}
 
 // Resolve a raw exercise name through TRUE renames only (identity otherwise).
 function canonicalizeRename(rawName){
@@ -4446,17 +4627,8 @@ function canonicalizeRename(rawName){
   return TRUE_RENAME_MAP[rawName] || rawName;
 }
 
-// v22.8: DISPLAY-ONLY exercise labels for human-facing surfaces. The canonical
-// key 'Incline Bench Press (Dumbbell)' has been Vitruvian work throughout
-// Alex's history (renamed in Hevy 2026-11; TRUE_RENAME_MAP folds the new name
-// to this key). Keys, stored data, TRUE_RENAME_MAP, pricing and every
-// machine-readable export line keep canonical keys; nothing reads a rendered
-// label back as a key (option values, hidden inputs and stored fields carry
-// the canonical key).
-const EX_DISPLAY_NAMES = Object.freeze({
-  'Incline Bench Press (Dumbbell)': 'Incline Bench Press (Vitruvian)',
-});
-function displayExName(key){ return (key && EX_DISPLAY_NAMES[key]) || key; }
+// v22.11: the v22.8 display-only alias (EX_DISPLAY_NAMES / displayExName) is
+// removed — keys are truthful after the incline split and need no alias.
 // v22.8: backup filename (phase-neutral).
 function backupFilename(dateStr){ return 'alex-dashboard-backup-'+dateStr+'.json'; }
 // v22.9: the user's LOCAL calendar date as YYYY-MM-DD. For user-facing
@@ -4543,7 +4715,7 @@ function buildLiftRows(){
     PRIORITY_LIFTS.filter(l=>l.day===day).forEach(l=>{
       const i = l.slot;
       html += `<div class="lift-row">
-        <div class="lift-label">${displayExName(l.name)}</div>
+        <div class="lift-label">${l.name}</div>
         <div class="lift-inp">
           <input type="hidden" id="l${i}n" value="${l.name}">
           <div class="field"><label>Lbs</label><input type="number" id="l${i}w" placeholder="—" step="2.5"></div>
@@ -5238,7 +5410,7 @@ function showImportModal(){
     const found = PRIORITY_LIFTS.map(pl=>{
       const top = getTopSetForExercise(s.sets, pl.name);
       // v21: CSV text is escaped (identical output for normal text)
-      return top ? `${displayExName(pl.name)}: ${escHtml(String(top.weight_lbs||'BW'))}lbs × ${escHtml(String(top.reps))} @ RPE ${escHtml(String(top.rpe))}` : null;
+      return top ? `${pl.name}: ${escHtml(String(top.weight_lbs||'BW'))}lbs × ${escHtml(String(top.reps))} @ RPE ${escHtml(String(top.rpe))}` : null;
     }).filter(Boolean);
     const peakNote = s.type==='home' ? ' · excl. from peaks' : s.type==='deload' ? ' · fully excluded' : ' · sets peaks';
     return `<div class="ses-row ${s.type}" onclick="toggleSesRow(${idx})">
@@ -5576,8 +5748,9 @@ function genSummary(){
     const srcNote = (l.srcTitle||l.srcDate)
       ? ' [from "'+str(l.srcTitle||'?')+'"'+(l.srcDate?' '+str(l.srcDate):'')+']'
       : '';
-    return '  '+pl.day+' — '+displayExName(pl.name)+aliasNote+': '+(hasData
-      ? nd(l.weight)+' lbs × '+nd(l.reps)+' reps @ RPE '+nd(l.rpe)+srcNote
+    const splitSrc = hasData ? liftSplitSource(l) : null;   // v22.11
+    return '  '+pl.day+' — '+pl.name+aliasNote+': '+(hasData
+      ? nd(l.weight)+' lbs × '+nd(l.reps)+' reps @ RPE '+nd(l.rpe)+srcNote+(splitSrc?' — set logged as '+splitSrc:'')
       : 'not trained');
   }).join('\n');
 
@@ -5589,12 +5762,14 @@ function genSummary(){
     const sessions = arr(w.hevySessions);
     if(!sessions.length) return [];
     const out = [];
-    PRIORITY_LIFTS.forEach(pl=>{
-      const cands = collectAltEquipCands(sessions, pl);
+    PRIORITY_LIFTS.forEach((pl,i)=>{
+      // v22.11: the slot line already shows a split-key top set — don't repeat it
+      const l = wLifts[i]||{}, sp = liftSplitSource(l), sd = l.srcDate ? (parseHevyDate(l.srcDate)||l.srcDate) : null;
+      const cands = collectAltEquipCands(sessions, pl).filter(c=>!(sp && c.ex===sp && c.session===l.srcTitle && c.date===sd));
       if(cands.length){
         cands.sort((a,b)=>((b.e1rm??b.w))-((a.e1rm??a.w)));
         const c = cands[0];
-        out.push('  + alt location/equipment — '+displayExName(c.ex)+': '+nd(c.w)+' lbs × '+nd(c.r)+' reps @ RPE '+nd(c.rpe)
+        out.push('  + alt location/equipment — '+c.ex+': '+nd(c.w)+' lbs × '+nd(c.r)+' reps @ RPE '+nd(c.rpe)
           +(c.session?' [from "'+str(c.session)+'"'+(c.date?' '+str(c.date):'')+']':''));
       }
     });
@@ -6144,14 +6319,15 @@ function buildExSelectors(){
   // Collect all exercise names from HEVY_DATA sessions + weekly lifts
   const exSet=new Set();
   HEVY_DATA.sessions.forEach(s=>Object.keys(s.ts).forEach(ex=>{
-    if(isValidExerciseName(ex)) exSet.add(canonicalize(ex)||ex);
+    // v22.11: split keys keep their own picker entry (the broad map would fold them back)
+    if(isValidExerciseName(ex)) exSet.add(isSplitKey(ex) ? ex : (canonicalize(ex)||ex));
   }));
   D.weeks.forEach(w=>(w.lifts||[]).forEach(l=>{if(isValidExerciseName(l.name))exSet.add(l.name);}));
   const names=[...exSet].sort();
   ['liftSel','ormSel'].forEach(id=>{
     const sel=document.getElementById(id);
     sel.innerHTML='<option value="">— Select exercise —</option>';
-    names.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=displayExName(n);sel.appendChild(o);});
+    names.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
   });
 }
 
@@ -6182,7 +6358,10 @@ function getExerciseData(name){
   // From weekly manual logs (may duplicate but use as override if same date range)
   D.weeks.forEach(w=>{
     (w.lifts||[]).forEach(l=>{
-      if(l.name===name&&l.weight){
+      // v22.11: a weekly priority-slot value whose source session logged the
+      // set under the split key (e.g. Vitruvian incline) is not the slot key's
+      // data — skip it here (that session's own ts already charts it there).
+      if(l.name===name&&l.weight&&!liftSplitSource(l)){
         const e1rm=l.weight&&l.reps?Math.round(l.weight*(1+l.reps/30)*10)/10:null;
         pts.push({date:w.date,w:l.weight,r:l.reps,rpe:l.rpe,e1rm,src:'manual',session:'Weekly log'});
       }
@@ -6299,9 +6478,9 @@ function renderSessions(){
     // v21: session titles / exercise names come from CSV or backups — escaped
     // v22.1: SU priced live from the current library; "—" when unpriced.
     const suR=computeSessionSU(s);
-    const suTip=suR?`lower ${suR.lower.toFixed(1)} · upper ${suR.upper.toFixed(1)} · core ${suR.core.toFixed(1)}${suR.unratedSets?' · unrated: '+Object.entries(suR.unrated).map(([k,c])=>displayExName(k)+' ×'+c).join(', '):''}`:'Not priced (no set counts stored)';
+    const suTip=suR?`lower ${suR.lower.toFixed(1)} · upper ${suR.upper.toFixed(1)} · core ${suR.core.toFixed(1)}${suR.unratedSets?' · unrated: '+Object.entries(suR.unrated).map(([k,c])=>k+' ×'+c).join(', '):''}`:'Not priced (no set counts stored)';
     const suStr=`<span title="${escHtml(suTip)}"${suR&&suR.unratedSets?' style="color:var(--w)"':''}>${escHtml(fmtSU(suR))}</span>`;
-    const topStr=Object.entries(s.ts).slice(0,3).map(([ex,d])=>`${escHtml(String(displayExName(ex)))}: ${escHtml(String(d.w||'BW'))}lbs×${escHtml(String(d.r||'?'))}`).join('  ·  ');
+    const topStr=Object.entries(s.ts).slice(0,3).map(([ex,d])=>`${escHtml(String(ex))}: ${escHtml(String(d.w||'BW'))}lbs×${escHtml(String(d.r||'?'))}`).join('  ·  ');
     return`<div class="hi" style="display:block;padding:11px 0;">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
         <div style="font-size:12px">${escHtml(String(s.t))}</div>
@@ -7852,7 +8031,7 @@ function renderRetention(){
     const barW = Math.min(100,Math.max(0,r.pct-70))/30*100; // map 70-100% to 0-100% width
     return `<div style="margin-bottom:14px">
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-        <div style="font-size:11px;font-weight:600">${escHtml(displayExName(r.ex))}</div>
+        <div style="font-size:11px;font-weight:600">${escHtml(r.ex)}</div>
         <div style="font-size:10px;color:${col};font-family:'Syne',sans-serif;font-weight:700">${badge}</div>
       </div>
       <div style="font-size:9px;color:var(--mu);margin-bottom:3px">Peak e1RM: ${r.peak} lbs &nbsp;·&nbsp; Current: ${r.curr} lbs &nbsp;·&nbsp; ${r.pct}%</div>
@@ -9310,7 +9489,8 @@ function __selfTestRun() {
   add(canonicalize('Romanian Deadlift (Vitruvian)')===canonicalize('Romanian Deadlift (Barbell)'), 'A7: old + new RDL names canonicalize identically');
 
   // Group 19: R3 — rename reaches EVERY ingress; weighted/assisted stay separate
-  add(canonicalizeRename('Incline Bench Press (Vitruvian)')==='Incline Bench Press (Dumbbell)', 'R3: TRUE rename map covers new incline name');
+  // v22.11: incline pair retired from TRUE_RENAME_MAP — these R3 checks now assert the split.
+  add(canonicalizeRename('Incline Bench Press (Vitruvian)')==='Incline Bench Press (Vitruvian)', 'v22.11: incline pair retired — Vitruvian is its own key');
   add(canonicalizeRename('Romanian Deadlift (Vitruvian)')==='Romanian Deadlift (Barbell)', 'R3: TRUE rename map covers new RDL name');
   add(canonicalizeRename('Incline Bench Press (Dumbbell)')==='Incline Bench Press (Dumbbell)', 'R3: old canonical keys pass through the TRUE rename map');
   add(canonicalize('Chin Up (Weighted)')==='Chin Up (Weighted)', 'R3: weighted chin-up is NOT aliased to Chin Up');
@@ -9322,11 +9502,11 @@ function __selfTestRun() {
     {exercise_title:'Incline Bench Press (Dumbbell)', set_type:'working', weight_lbs:'95', reps:'8', rpe:'9'}
   ];
   const r3ts = buildSessionTopSets(r3sets);
-  add(Object.keys(r3ts).length===1 && r3ts['Incline Bench Press (Dumbbell)']!==undefined, 'R3: renamed + old incline sets store under ONE canonical key (no split)');
-  add(r3ts['Incline Bench Press (Dumbbell)'] && r3ts['Incline Bench Press (Dumbbell)'].w===100, 'R3: merged canonical key keeps the better top set');
+  add(Object.keys(r3ts).length===2 && r3ts['Incline Bench Press (Dumbbell)']!==undefined && r3ts['Incline Bench Press (Vitruvian)']!==undefined, 'v22.11: Vitruvian + Dumbbell incline sets store under TWO keys');
+  add(r3ts['Incline Bench Press (Dumbbell)'].w===95 && r3ts['Incline Bench Press (Vitruvian)'].w===100, 'v22.11: each incline key keeps its own top set');
   // Backup-load path canonicalizes stored ts keys identically
   const r3loaded = canonicalizeSessionTs({d:'2026-09-20', t:'Upper Day (Home)', ts:{'Incline Bench Press (Vitruvian)':{w:100,r:10,rpe:9,e1rm:133.3},'Chin Up':{w:0,r:26,rpe:8.5,e1rm:null}}});
-  add(r3loaded.ts['Incline Bench Press (Dumbbell)']!==undefined && r3loaded.ts['Incline Bench Press (Vitruvian)']===undefined, 'R3: backup-load canonicalizes renamed ts key');
+  add(r3loaded.ts['Incline Bench Press (Vitruvian)']!==undefined && r3loaded.ts['Incline Bench Press (Dumbbell)']===undefined, 'v22.11: backup-load keeps the split Vitruvian incline key');
   add(r3loaded.ts['Chin Up']!==undefined, 'R3: backup-load leaves unrelated keys untouched');
   add(canonicalizeSessionTs({d:'2026-09-20', ts:{'Romanian Deadlift (Vitruvian)':{w:200,r:8}}}).ts['Romanian Deadlift (Barbell)']!==undefined, 'R3: backup-load canonicalizes renamed RDL key');
   // Exercise-picker level: old and new names give identical data (no duplicates)
@@ -9350,7 +9530,7 @@ function __selfTestRun() {
   const r3b12Rename = collectAltEquipCands(
     [{t:'Upper Day (Home)', d:'2026-09-20', ts:{'Incline Bench Press (Vitruvian)':{w:100,r:10,rpe:9,e1rm:133.3}}}],
     {name:'Incline Bench Press (Dumbbell)'});
-  add(r3b12Rename.length===0, 'R3: B12 does not duplicate a pure rename');
+  add(r3b12Rename.length===1 && r3b12Rename[0].ex==='Incline Bench Press (Vitruvian)', 'v22.11: B12 surfaces the split Vitruvian incline as alt equipment');
   const r3b12Alt = collectAltEquipCands(
     [{t:'Push (Gym)', d:'2026-09-21', ts:{'Incline Bench Press (Smith)':{w:135,r:8,rpe:9,e1rm:171}}}],
     {name:'Incline Bench Press (Dumbbell)'});
@@ -9393,7 +9573,7 @@ function __selfTestRun() {
     {exercise_title:'Incline Bench Press (Dumbbell)', set_type:'working', weight_lbs:'95', reps:'8', rpe:'9'}
   ];
   const r4vitIncTs = buildSessionTopSets(r4vitIncSets);
-  add(Object.keys(r4vitIncTs).length===1 && r4vitIncTs['Incline Bench Press (Dumbbell)']!==undefined, 'R4: Incline Bench Press (Vitruvian) + old name collapse to ONE key through buildSessionTopSets');
+  add(Object.keys(r4vitIncTs).length===2, 'v22.11: Incline Bench Press (Vitruvian) + Dumbbell stay TWO keys through buildSessionTopSets (pair retired)');
   // (d) priority-lift picker behavior unchanged: still matches via the broad map
   const r4pickSets = [{exercise_title:'RDL', set_type:'working', weight_lbs:'200', reps:'8', rpe:'8'}];
   add(getTopSetForExercise(r4pickSets, 'Romanian Deadlift (Barbell)')!==null, 'R4: priority-lift picker still matches broad aliases (default mode unchanged)');
@@ -10232,33 +10412,34 @@ function __selfTestRun() {
   // ── Group 28 (v22.1): sc build + SU pricing
   try{
     const rows = [
-      {exercise_title:'Incline Bench Press (Vitruvian)', set_type:'warmup'},
-      {exercise_title:'Incline Bench Press (Vitruvian)', set_type:'normal'},
-      {exercise_title:'Incline Bench Press (Dumbbell)', set_type:'normal'},
+      {exercise_title:'Romanian Deadlift (Vitruvian)', set_type:'warmup'},
+      {exercise_title:'Romanian Deadlift (Vitruvian)', set_type:'normal'},
+      {exercise_title:'Romanian Deadlift (Barbell)', set_type:'normal'},
       {exercise_title:'Chin Up', set_type:'normal'},
       {exercise_title:'Chin Up', set_type:'dropset'},
       {exercise_title:'Bird Dog', set_type:'normal'},
       {exercise_title:'Mystery Move', set_type:'normal'},
     ];
     const sc = buildSessionSetCounts(rows);
-    add(sc['Incline Bench Press (Dumbbell)']===2 && !sc['Incline Bench Press (Vitruvian)'] && sc['Chin Up']===2 && sc['Bird Dog']===1,
-      'v22.1: sc counts work sets only, true-rename collapses Vitruvian incline');
+    // v22.11: fixture moved to the RDL pair (the incline pair is retired)
+    add(sc['Romanian Deadlift (Barbell)']===2 && !sc['Romanian Deadlift (Vitruvian)'] && sc['Chin Up']===2 && sc['Bird Dog']===1,
+      'v22.1: sc counts work sets only, true-rename collapses Vitruvian RDL');
     const cfg = freshStressConfig();
     const r = computeSessionSU({sc}, cfg);
-    add(r.su===2*1.5+2*2 && r.upper===7 && r.lower===0, 'v22.1: SU = 2×1.5 incline + 2×2 chin = 7.0 (got '+r.su+')');
+    add(r.su===2*3+2*2 && r.upper===4 && r.lower===6, 'v22.1: SU = 2×3 RDL + 2×2 chin = 10.0 (got '+r.su+')');
     add(r.exemptSets===1 && !r.unrated['Bird Dog'], 'v22.1: exempt contributes 0 and is not unrated');
     add(r.unratedSets===1 && r.unrated['Mystery Move']===1 && /\+ \? \(1 unrated set\)/.test(fmtSU(r)),
       'v22.1: unknown exercise surfaces as "+ ?" with count');
     add(computeSessionSU({ts:{}}, cfg)===null && fmtSU(null)==='SU —', 'v22.1: session without sc is unpriced ("SU —")');
     const cfg2 = freshStressConfig(); cfg2.entries['Chin Up'].su = 2.5;
-    add(computeSessionSU({sc}, cfg2).su===8, 'v22.1: SU recomputes live from the current library (no staleness)');
+    add(computeSessionSU({sc}, cfg2).su===11, 'v22.1: SU recomputes live from the current library (no staleness)');
     const legSes = {sc:{'Romanian Deadlift (Barbell)':2,'Belted Squat':2,'Leg Extension (Hyper Pro)':2,'Lying Leg Curl (Machine)':1,'Standing Calf Raise (Hyper Pro)':2}};
     const rl = computeSessionSU(legSes, cfg);
     add(rl.su===15 && rl.lower===15 && rl.yellow.backYSets===2 && rl.yellow.footEx.length===1,
       'v22.1: Lower B card (RDL2 belt2 ext2 curl1 calf2) = 15 SU; back-Y 2 sets; 1 yellow-foot exercise');
     const wk = {hevySessions:[{sc}, legSes, {ts:{}}]};
     const wr = computeWeekSU(wk, cfg);
-    add(wr.su===22 && wr.pricedSessions===2 && wr.sessions===3 && Math.abs(suLegShare(wr)-15/22*100)<1e-9,
+    add(wr.su===25 && wr.pricedSessions===2 && wr.sessions===3 && Math.abs(suLegShare(wr)-21/25*100)<1e-9,
       'v22.1: week rollup sums priced sessions, counts unpriced, leg share of rated SU');
     add(computeWeekSU({hevySessions:[{ts:{}}]}, cfg)===null && computeWeekSU({sessions:[legSes]}, cfg).su===15,
       'v22.1: week with no priced session → null; falls back to legacy sessions copy');
@@ -10463,20 +10644,26 @@ function __selfTestRun() {
     try{
       D.stressConfig = freshStressConfig();
       // 1. alias row
-      add(suAliasTarget('Incline Bench Press (Vitruvian)')==='Incline Bench Press (Dumbbell)' && suAliasTarget('Supine Press')===null, 'v22.7: alias detected via TRUE_RENAME_MAP only');
-      add(Object.keys(D.stressConfig.entries).length===146 && !!D.stressConfig.entries['Incline Bench Press (Vitruvian)'], 'v22.7: seed + stressConfig shape unchanged (146, alias row kept)');
-      suApplyEdit('Incline Bench Press (Vitruvian)', {su:2}, 'via alias', '2026-11-22');
-      add(D.stressConfig.entries['Incline Bench Press (Dumbbell)'].su===2 && D.stressConfig.entries['Incline Bench Press (Vitruvian)'].su===1.5
-          && D.stressConfig.changelog.slice(-1)[0].name==='Incline Bench Press (Dumbbell)', 'v22.7: edit on alias lands on the canonical entry');
-      add(computeSessionSU({sc:{'Incline Bench Press (Vitruvian)':1}}).su===2, 'v22.7: alias sets price at the canonical rating');
+      // v22.11: the seed no longer holds an alias (incline pair retired); the
+      // alias machinery is exercised with the remaining RDL pair via a
+      // stored-config row named after the rename source.
+      add(suAliasTarget('Romanian Deadlift (Vitruvian)')==='Romanian Deadlift (Barbell)' && suAliasTarget('Incline Bench Press (Vitruvian)')===null && suAliasTarget('Supine Press')===null, 'v22.7: alias detected via TRUE_RENAME_MAP only');
+      add(Object.keys(D.stressConfig.entries).length===146 && !!D.stressConfig.entries['Incline Bench Press (Vitruvian)'], 'v22.7: seed + stressConfig shape unchanged (146)');
+      D.stressConfig.entries['Romanian Deadlift (Vitruvian)'] = {su:3, exempt:false, region:'lower', back:'Y', foot:'G', elbow:'G'};
+      suApplyEdit('Romanian Deadlift (Vitruvian)', {su:2.5}, 'via alias', '2026-11-22');
+      add(D.stressConfig.entries['Romanian Deadlift (Barbell)'].su===2.5 && D.stressConfig.entries['Romanian Deadlift (Vitruvian)'].su===3
+          && D.stressConfig.changelog.slice(-1)[0].name==='Romanian Deadlift (Barbell)', 'v22.7: edit on alias lands on the canonical entry');
+      add(computeSessionSU({sc:{'Romanian Deadlift (Vitruvian)':1}}).su===2.5, 'v22.7: alias sets price at the canonical rating');
       D.weeks = [];
-      document.getElementById('suFilter').value=''; document.getElementById('suSearch').value='Incline Bench Press (V';
+      document.getElementById('suFilter').value=''; document.getElementById('suSearch').value='Romanian Deadlift (V';
       renderSuEditor();
       const panel = document.getElementById('suEditorPanel').innerHTML;
-      // v22.8: search also matches display names, so the canonical row (shown
-      // as Vitruvian) is listed too — locate the alias row by name, not index 0.
-      const aliasIdx = _suEditorNames.indexOf('Incline Bench Press (Vitruvian)');
-      add(/alias of Incline Bench Press \(Dumbbell\)/.test(panel) && aliasIdx>=0 && !new RegExp("uiSuEdit\\("+aliasIdx+",'su'").test(panel), 'v22.7: alias row rendered read-only with label');
+      const aliasIdx = _suEditorNames.indexOf('Romanian Deadlift (Vitruvian)');
+      add(/alias of Romanian Deadlift \(Barbell\)/.test(panel) && aliasIdx>=0 && !new RegExp("uiSuEdit\\("+aliasIdx+",'su'").test(panel), 'v22.7: alias row rendered read-only with label');
+      const inc = _suEditorNames.indexOf('Incline Bench Press (Vitruvian)');
+      document.getElementById('suSearch').value='Incline Bench Press (V'; renderSuEditor();
+      add(/uiSuEdit\(0,'su'/.test(document.getElementById('suEditorPanel').innerHTML) && !/alias of/.test(document.getElementById('suEditorPanel').innerHTML), 'v22.11: the Vitruvian incline row is a normal live entry');
+      delete D.stressConfig.entries['Romanian Deadlift (Vitruvian)'];
       document.getElementById('suSearch').value='';
       // 2. zero SU
       add(suApplyEdit('Supine Press', {su:0})===0 && suApplyEdit('Supine Press', {su:'0'})===0 && D.stressConfig.entries['Supine Press'].su===1.5, 'v22.7: SU 0 rejected for a non-exempt entry');
@@ -10507,44 +10694,14 @@ function __selfTestRun() {
     finally { D.stressConfig = savedSc; D.weeks = savedWeeks; const f=document.getElementById('suFilter'); if(f) f.value=''; const q=document.getElementById('suSearch'); if(q) q.value=''; }
   }
 
-  // ── Group 35 (v22.8): display-name map + phase-neutral chrome
-  {
-    const savedWeeks = D.weeks;
-    try{
-      add(displayExName('Incline Bench Press (Dumbbell)')==='Incline Bench Press (Vitruvian)' && displayExName('Supine Press')==='Supine Press' && displayExName(null)===null,
-        'v22.8: display map renders the canonical incline key as Vitruvian, identity otherwise');
-      add(Object.isFrozen(EX_DISPLAY_NAMES) && canonicalizeRename('Incline Bench Press (Vitruvian)')==='Incline Bench Press (Dumbbell)' && Object.keys(TRUE_RENAME_MAP).length===2,
-        'v22.8: TRUE_RENAME_MAP unchanged; display map frozen');
-      add(computeSessionSU({sc:{'Incline Bench Press (Vitruvian)':1,'Incline Bench Press (Dumbbell)':1}}).su===3, 'v22.8: pricing unchanged (both names fold to the canonical key)');
-      // selectors: text is the display name, value stays the key
-      buildExSelectors();
-      const o = [...document.getElementById('liftSel').options].find(x=>x.value==='Incline Bench Press (Dumbbell)');
-      add(!o || o.textContent==='Incline Bench Press (Vitruvian)', 'v22.8: lift picker shows Vitruvian label, option value is the canonical key');
-      add(![...document.getElementById('liftSel').options].some(x=>x.value==='Incline Bench Press (Vitruvian)' && x.textContent==='Incline Bench Press (Vitruvian)' && o),
-        'v22.8: picker does not gain a second Vitruvian-keyed option');
-      const pl = PRIORITY_LIFTS.find(x=>x.name==='Incline Bench Press (Dumbbell)');
-      if(pl){
-        const hid = document.getElementById('l'+pl.slot+'n');
-        add(!hid || hid.value==='Incline Bench Press (Dumbbell)', 'v22.8: priority-lift hidden input keeps the canonical key');
-      }
-      // stored data untouched by rendering
-      const ses = {d:'2026-11-05', t:'Upper Day (Home)', m:'upper', ts:{'Incline Bench Press (Dumbbell)':{w:192,r:7,rpe:7.5,e1rm:237}}, vol:1, sc:{'Incline Bench Press (Dumbbell)':2}};
-      D.weeks = [migrateWeek({date:'2026-11-07', mode:'maint', weight:171, hevySessions:[JSON.parse(JSON.stringify(ses))], sessions:[JSON.parse(JSON.stringify(ses))]})];
-      const before = JSON.stringify(D.weeks);
-      safeCall('renderHistory', renderHistory);
-      const keysOk = JSON.stringify(D.weeks)===before && !/Incline Bench Press \(Vitruvian\)/.test(before);
-      add(keysOk, 'v22.8: rendering never writes display names into stored weeks');
-      // machine export lines keep canonical keys; human lines show the label
-      const ex = suExportLines(D.weeks[0]);
-      add(!ex.machine.some(l=>/Vitruvian/.test(l)), 'v22.8: su_* machine lines carry no display names');
-      add(backupFilename('2026-11-02')==='alex-dashboard-backup-2026-11-02.json', 'v22.8: backup filename phase-neutral');
-      add(/Training Dashboard/.test(document.title) && !/Cut Dashboard/.test(document.title), 'v22.8: document title phase-neutral ('+document.title+')');
-      const sumCard = document.querySelector('#sec-summary .ct');
-      add(sumCard && /Generate Weekly Summary/.test(sumCard.textContent) && !/Monday cut/.test(document.querySelector('#sec-summary .note').textContent),
-        'v22.8: summary card copy phase-neutral');
-    } catch(e){ add(false, 'v22.8: Group 35 threw', String(e&&e.message||e)); }
-    finally { D.weeks = savedWeeks; }
-  }
+  // ── Group 35 (v22.8 → v22.11): the display alias is removed; chrome stays neutral
+  try{
+    add(typeof displayExName==='undefined' && typeof EX_DISPLAY_NAMES==='undefined', 'v22.11: display-only alias removed');
+    add(backupFilename('2026-11-02')==='alex-dashboard-backup-2026-11-02.json', 'v22.8: backup filename phase-neutral');
+    add(/Training Dashboard/.test(document.title) && !/Cut Dashboard/.test(document.title), 'v22.8: document title phase-neutral ('+document.title+')');
+    const sumCard = document.querySelector('#sec-summary .ct');
+    add(sumCard && /Generate Weekly Summary/.test(sumCard.textContent) && !/Monday cut/.test(document.querySelector('#sec-summary .note').textContent), 'v22.8: summary card copy phase-neutral');
+  } catch(e){ add(false, 'v22.8: Group 35 threw', String(e&&e.message||e)); }
 
   // ── Group 36 (v22.9): staged-import leak, local dates, backup freshness
   {
@@ -10650,6 +10807,74 @@ function __selfTestRun() {
       add(dup.applied.length===0 && dup.skipped[0].why==='target key already stored', 'v22.10: retitle refused when the target key is already stored');
     } catch(e){ add(false, 'v22.10: Group 37 threw', String(e&&e.message||e)); }
     finally { D.stressConfig = savedSc; }
+  }
+
+  // ── Group 38 (v22.11): incline split
+  {
+    try{
+      add(canonicalizeRename('Incline Bench Press (Vitruvian)')==='Incline Bench Press (Vitruvian)' && canonicalizeRename('Romanian Deadlift (Vitruvian)')==='Romanian Deadlift (Barbell)' && Object.keys(TRUE_RENAME_MAP).length===1,
+        'v22.11: incline pair retired, RDL pair kept');
+      add(JSON.stringify(SU_LIBRARY_SEED.entries[INCLINE_DB])===JSON.stringify(SU_LIBRARY_SEED.entries[INCLINE_VIT]) && Object.keys(SU_LIBRARY_SEED.entries).length===146,
+        'v22.11: both seed incline rows identical (no re-price), seed still 146');
+      add(canonicalize(INCLINE_VIT)===INCLINE_DB, 'v22.11: broad map still folds Vitruvian into the incline priority slot (slot behavior unchanged)');
+      const H='title,start_time,end_time,description,exercise_title,superset_id,exercise_notes,set_index,set_type,weight_lbs,reps,distance_miles,duration_seconds,rpe';
+      const r=(t,d,ex,note)=>['"'+t+'"','"'+d+'"','"'+d+'"','""','"'+ex+'"','','"'+(note||'')+'"',0,'normal',100,8,'','',7].join(',');
+      const fx = [
+        ['Upper Day (Home)','5 Oct 2026, 07:00',INCLINE_VIT,''],                 // 1 native
+        ['At Gym Upper','6 Oct 2026, 07:00',INCLINE_DB,''],                       // 2 gym
+        ['Push Workout - Gym 2','2 Apr 2025, 07:00',INCLINE_DB,'on the Vitruvian'],// 2 gym + conflict
+        ['Upper','10 Mar 2025, 07:00',INCLINE_DB,'Vitruvian eccentric mode'],     // 3 notes
+        ['Vitruvian Push','12 Mar 2025, 07:00',INCLINE_DB,''],                    // 4 titled
+        ['Upper Day (Home)','3 Feb 2026, 07:00',INCLINE_DB,''],                   // 5 home 2026 (title)
+        ['Friday Upper','6 Feb 2026, 07:00',INCLINE_DB,''],                       // 5 home 2026 (Vitruvian exercise)
+        ['Upper Day (Home)','4 Jun 2025, 07:00',INCLINE_DB,''],                   // 6 home pre-2026
+        ['Push Workout','7 Jan 2025, 07:00',INCLINE_DB,''],                       // 6 no evidence
+      ];
+      const rows = [H]; fx.forEach(f=>rows.push(r(...f)));
+      rows.push(r('Friday Upper','6 Feb 2026, 07:00','Chest Supported Incline Row (Vitruvian)',''));
+      const ev = buildInclineEvidenceIndex(rows.join('\n'));
+      const mk = (d,t,extra)=>({d,t,m:'upper',vol:1,ts:{[INCLINE_DB]:{w:190,r:8,rpe:7.5,e1rm:240.7},'Chin Up':{w:0,r:20,rpe:7,e1rm:null}},sc:{[INCLINE_DB]:2,'Chin Up':1},...(extra||{})});
+      const ses = [mk('2026-10-05','Upper Day (Home)'), mk('2026-10-06','At Gym Upper'), mk('2025-04-02','Push Workout - Gym 2'), mk('2025-03-10','Upper'),
+        mk('2025-03-12','Vitruvian Push'), mk('2026-02-03','Upper Day (Home)'), mk('2026-02-06','Friday Upper'), mk('2025-06-04','Upper Day (Home)'), mk('2025-01-07','Push Workout'),
+        mk('2025-05-05','Not In CSV'), mk('2025-05-06','Both Keys',{ts:{[INCLINE_DB]:{w:1,r:1},[INCLINE_VIT]:{w:2,r:2}}})];
+      const weeks = [{...cloneDefaultWeek(), date:'2026-12-31', weight:171, blockId:'b1', sessions:ses.map(x=>JSON.parse(JSON.stringify(x))), hevySessions:ses.map(x=>({...JSON.parse(JSON.stringify(x)), we:'2026-12-31'}))},
+                     {...cloneDefaultWeek(), date:'2025-01-11', hevySessions:[{d:'2025-01-08', t:'Leg', ts:{'Belted Squat':{w:1,r:1}}}]}];
+      const plan = planInclineSplit(weeks, ev, []);
+      const c = plan.counts;
+      add(plan.total===11 && c.native===1 && c.gym===2 && c.notes===1 && c.titled===1 && c.home2026===2 && c.homePre2026===1 && c.none===1,
+        'v22.11: tally exercises all six classes ('+JSON.stringify(c)+')');
+      add(plan.toVit===5 && plan.toDb===4 && plan.unclassifiable.length===1 && plan.collisions.length===1, 'v22.11: 5 → Vitruvian, 4 stay Dumbbell, 1 unclassifiable, 1 both-keys');
+      add(plan.conflicts.length===1 && plan.conflicts[0].key==='2025-04-02||Push Workout - Gym 2' && plan.rows.find(x=>x.key==='2025-04-02||Push Workout - Gym 2').to==='db',
+        'v22.11: gym + Vitruvian note = flagged conflict, defaults to Dumbbell (gym wins)');
+      const before = JSON.stringify(weeks);
+      const res = applyInclineSplit(weeks, ev, []);
+      add(JSON.stringify(weeks)===before && res.check.ok && res.rekeyed.size===5, 'v22.11: re-key on a copy; checks pass; 5 re-keyed ('+res.check.errors.join('; ')+')');
+      const w0 = res.weeks[0], nat = w0.hevySessions.find(x=>x.d==='2026-10-05'), nat2 = w0.sessions.find(x=>x.d==='2026-10-05');
+      add(nat.ts[INCLINE_VIT] && !nat.ts[INCLINE_DB] && nat.sc[INCLINE_VIT]===2 && !nat.sc[INCLINE_DB] && nat2.ts[INCLINE_VIT] && nat2.sc[INCLINE_VIT]===2,
+        'v22.11: ts and sc re-keyed in both copies');
+      add(Object.keys(nat.ts)[0]===INCLINE_VIT && JSON.stringify(nat.ts[INCLINE_VIT])===JSON.stringify(ses[0].ts[INCLINE_DB]) && nat.ts['Chin Up'].r===20, 'v22.11: values + key order preserved');
+      add(w0.hevySessions.find(x=>x.d==='2026-10-06').ts[INCLINE_DB] && w0.hevySessions.find(x=>x.d==='2025-05-05').ts[INCLINE_DB] && w0.blockId==='b1' && w0.weight===171,
+        'v22.11: gym + unclassifiable untouched; week fields intact');
+      add(computeWeekSU(w0).su===computeWeekSU(weeks[0]).su, 'v22.11: week SU unchanged by the re-key');
+      const again = applyInclineSplit(res.weeks, ev, []);
+      add(again.rekeyed.size===0 && again.plan.toVit===0 && JSON.stringify(again.weeks)===JSON.stringify(res.weeks), 'v22.11: re-key is idempotent');
+      const ovr = applyInclineSplit(res.weeks, ev, ['2025-04-02||Push Workout - Gym 2']);
+      add(ovr.check.ok && ovr.rekeyed.size===1 && ovr.weeks[0].hevySessions.find(x=>x.d==='2025-04-02').ts[INCLINE_VIT], 'v22.11: conflict override re-keys only that session');
+      const bad = JSON.parse(JSON.stringify(res.weeks)); bad[0].hevySessions[0].ts[INCLINE_VIT].w = 1;
+      add(!verifyInclineSplit(weeks, bad, res.rekeyed, res.plan).ok, 'v22.11: verifier catches a value change');
+      // picker + weekly-log attribution
+      const savedWeeks = D.weeks;
+      try{
+        D.weeks = res.weeks.map(x=>JSON.parse(JSON.stringify(x)));
+        D.weeks[0].lifts = [{name:INCLINE_DB, weight:190, reps:8, rpe:7.5, srcTitle:'Upper Day (Home)', srcDate:'2026-10-05'}];
+        mergeStoredSessions(); buildExSelectors();
+        const vals = [...document.getElementById('liftSel').options].map(o=>o.value);
+        add(vals.includes(INCLINE_VIT) && vals.includes(INCLINE_DB), 'v22.11: picker lists the Vitruvian and Dumbbell incline keys separately');
+        add(liftSplitSource(D.weeks[0].lifts[0])===INCLINE_VIT, 'v22.11: weekly slot value traced to its Vitruvian source session');
+        add(!getExerciseData(INCLINE_DB).some(p=>p.src==='manual' && p.date==='2026-12-31'), 'v22.11: that slot value no longer charts under "(Dumbbell)"');
+        add(getExerciseData(INCLINE_VIT).some(p=>p.date==='2026-10-05'), 'v22.11: the session charts under "(Vitruvian)"');
+      } finally { D.weeks = savedWeeks; safeCall('mergeStoredSessions', mergeStoredSessions); }
+    } catch(e){ add(false, 'v22.11: Group 38 threw', String(e&&e.message||e)); }
   }
 
   const failed = out.checks.filter(c=>!c.ok).length;
