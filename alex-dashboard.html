@@ -729,7 +729,7 @@ select option{background:var(--s2);}
       <p class="note">SU per work set and joint flags (G green · y monitor · Y controlled). Edits change your stored copy only — the built-in seed never overwrites it. Every edit is logged and bumps the library revision.</p>
       <div class="field"><label>Search</label><input id="suSearch" type="text" oninput="renderSuEditor()"></div>
       <div class="field"><label>Show</label><select id="suFilter" onchange="renderSuEditor()">
-        <option value="">All</option><option value="differs">Differs from seed</option><option value="unrated">Unrated</option><option value="exempt">Exempt</option><option value="yellow">Any Yellow flag</option></select></div>
+        <option value="">All</option><option value="differs">Differs from seed</option><option value="unrated">Unrated</option><option value="incomplete">Incomplete</option><option value="exempt">Exempt</option><option value="yellow">Any Yellow flag</option></select></div>
       <div class="field"><label>Change note (optional, recorded with each edit)</label><input id="suReason" type="text"></div>
       <div id="suEditorPanel"></div>
     </div>
@@ -1193,7 +1193,9 @@ function sanitizeStressConfig(raw){
     const exempt = v.exempt===true;
     const n = Number(v.su);
     entries[k] = {
-      su: (!exempt && v.su!=null && Number.isFinite(n) && n>=0) ? n : null,
+      // v22.7: a non-exempt SU must be > 0 — a stored 0 becomes null (unrated,
+      // surfaced as "+ ?"), never a silent zero. Exempt is the only zero-cost state.
+      su: (!exempt && v.su!=null && Number.isFinite(n) && n>0) ? n : null,
       exempt,
       region: SU_REGIONS.includes(v.region) ? v.region : null,
       back:  SU_FLAGS.includes(v.back)  ? v.back  : null,
@@ -1237,6 +1239,22 @@ function sanitizeBlocks(raw){
     });
   });
   return out;
+}
+// v22.7: weeks an incoming backup would overwrite (same date) where the stored
+// week carries sc or a blockId and the incoming week lacks it. Used to warn
+// before an old (pre-v20 / pre-backfill) backup silently strips them.
+function suWeekCarriesSc(w){ return !!w && [w.sessions, w.hevySessions].some(a=>Array.isArray(a) && a.some(hasSc)); }
+function suImportOverwriteRisk(currentWeeks, importedWeeks){
+  const cur = new Map((currentWeeks||[]).filter(w=>w&&w.date).map(w=>[w.date, w]));
+  const dates = [];
+  (importedWeeks||[]).forEach(iw=>{
+    if(!iw || !iw.date) return;
+    const cw = cur.get(iw.date); if(!cw) return;
+    const lostSc = suWeekCarriesSc(cw) && !suWeekCarriesSc(iw);
+    const lostBlock = cw.blockId!=null && iw.blockId==null;
+    if(lostSc || lostBlock) dates.push(iw.date);
+  });
+  return {count:dates.length, dates};
 }
 // Backup restore for the two new top-level blocks (C1 semantics):
 //  - stressConfig: replaced wholesale when the FILE carries a valid copy
@@ -1292,7 +1310,8 @@ function computeSessionSU(ses, cfg){
     out.sets += c;
     const e = entries[key];
     if(e && e.exempt){ out.exemptSets += c; }
-    else if(!e || e.su==null){ out.unratedSets += c; out.unrated[key] = c; return; }
+    // v22.7: su ≤ 0 on a non-exempt entry (unsanitized in-session state) is unrated too
+    else if(!e || !(e.su>0)){ out.unratedSets += c; out.unrated[key] = c; return; }
     else {
       const v = e.su*c;
       out.su += v;
@@ -1727,7 +1746,8 @@ function suValidate(field, value){
   if(field==='su'){
     if(value===null || value==='' ) return {ok:true, v:null};
     const n = Number(value);
-    if(!Number.isFinite(n) || n<0 || n>10 || Math.round(n*2)!==n*2) return {ok:false};
+    // v22.7: 0 rejected — null = unrated, exempt = zero-cost; never a rated zero
+    if(!Number.isFinite(n) || n<=0 || n>10 || Math.round(n*2)!==n*2) return {ok:false};
     return {ok:true, v:n};
   }
   if(field==='exempt') return {ok:true, v:value===true || value==='true'};
@@ -1739,8 +1759,18 @@ function suValidate(field, value){
 // Apply changes {field:value} to one entry. Every changed field is logged
 // (date, exercise, field, old, new, optional reason); one revision per edit.
 // Exempt=true clears su (exempt entries never carry SU). Returns #fields changed.
+// v22.7: a TRUE_RENAME_MAP source name (e.g. 'Incline Bench Press (Vitruvian)')
+// never prices on its own — all pricing folds it to the canonical key — so its
+// seed row is an alias: shown read-only, and edits land on the canonical entry.
+function suAliasTarget(name){ const c = canonicalizeRename(name); return (c && c!==name) ? c : null; }
+// v22.7: a rated entry with a null region or joint flag prices its sets but
+// contributes no region / joint exposure — flagged "incomplete".
+function suEntryIncomplete(e){
+  return !!(e && !e.exempt && e.su>0 && (e.region==null || e.back==null || e.foot==null || e.elbow==null));
+}
 function suApplyEdit(name, changes, reason, dateStr){
   const cfg = suCfg();
+  const aliasOf = suAliasTarget(name); if(aliasOf) name = aliasOf;
   const e = cfg.entries[name]; if(!e) return 0;
   const date = dateStr || new Date().toISOString().split('T')[0];
   const log = [];
@@ -1762,6 +1792,7 @@ function suApplyEdit(name, changes, reason, dateStr){
 }
 // Per-row reset to the CURRENT seed (ratings only; the note is kept).
 function suResetToSeed(name, reason, dateStr){
+  const aliasOf = suAliasTarget(name); if(aliasOf) name = aliasOf;
   const sd = SU_LIBRARY_SEED.entries[name]; if(!sd) return 0;
   const ch = {}; SU_RATING_FIELDS.forEach(f=>ch[f]=sd[f]);
   // exempt first so su:null is accepted, then su
@@ -1786,7 +1817,7 @@ function suUnratedNames(){
     if(!s || !s.sc || typeof s.sc!=='object') return;
     Object.entries(s.sc).forEach(([n,c])=>{
       const k = canonicalizeRename(n), e = ent[k];
-      if(!e || (!e.exempt && e.su==null)) out[k] = (out[k]||0) + (Number(c)||0);
+      if(!e || (!e.exempt && !(e.su>0))) out[k] = (out[k]||0) + (Number(c)||0);
     });
   }));
   return out;
@@ -1801,8 +1832,9 @@ function renderSuEditor(){
   const names = Object.keys(cfg.entries).sort((a,b)=>a.localeCompare(b)).filter(n=>{
     const e = cfg.entries[n];
     if(q && !n.toLowerCase().includes(q)) return false;
-    if(flt==='differs') return suSeedDiff(n).length>0;
-    if(flt==='unrated') return !e.exempt && e.su==null;
+    if(flt==='differs') return !suAliasTarget(n) && suSeedDiff(n).length>0;
+    if(flt==='unrated') return !suAliasTarget(n) && !e.exempt && !(e.su>0);
+    if(flt==='incomplete') return !suAliasTarget(n) && suEntryIncomplete(e);
     if(flt==='exempt') return e.exempt;
     if(flt==='yellow') return [e.back,e.foot,e.elbow].some(x=>x==='y'||x==='Y');
     return true;
@@ -1812,15 +1844,28 @@ function renderSuEditor(){
   const flagSel = (i,f,cur)=>`<select onchange="uiSuEdit(${i},'${f}',this.value)">${opt('','?',cur==null?'':cur)}${opt('G','G',cur)}${opt('y','y',cur)}${opt('Y','Y',cur)}</select>`;
   const ur = Object.entries(unrated);
   let h = `<div style="font-size:10px;color:var(--mu);margin-bottom:8px">Library revision ${cfg.revision} (libVersion) · seed v${SU_LIBRARY_SEED.version} · ${Object.keys(cfg.entries).length} exercises · showing ${names.length}</div>`;
+  const incN = Object.keys(cfg.entries).filter(n=>!suAliasTarget(n) && suEntryIncomplete(cfg.entries[n])).length;
+  const zeroN = Object.keys(cfg.entries).filter(n=>{ const e = cfg.entries[n]; return !suAliasTarget(n) && !e.exempt && e.su!=null && !(e.su>0); }).length;
+  if(incN || zeroN) h += `<div style="font-size:11px;color:var(--w);margin-bottom:10px">${incN?incN+' incomplete entr'+(incN===1?'y':'ies')+' (SU set but region or a joint flag missing — joint exposure understated). ':''}${zeroN?zeroN+' invalid SU (≤ 0) — treated as unrated.':''}</div>`;
   if(ur.length) h += `<div style="font-size:11px;color:var(--w);margin-bottom:10px">Unrated in your logged sessions:<br>`
     + ur.map(([n,c])=>`${escHtml(n)} (${c} sets)${cfg.entries[n]?'':` <button class="btn btn-s" style="font-size:9px;width:auto;padding:2px 8px" onclick="uiSuAdd(${JSON.stringify(n).replace(/"/g,'&quot;')})">Add</button>`}`).join('<br>') + `</div>`;
   h += names.map((n,i)=>{
     const e = cfg.entries[n], diff = suSeedDiff(n);
+    const aliasOf = suAliasTarget(n);
+    if(aliasOf){
+      const ce = cfg.entries[aliasOf] || {};
+      return `<div style="border-top:1px solid var(--b);padding:6px 0;font-size:11px;color:var(--mu)">
+        <div>${escHtml(n)} <span style="color:var(--a2)">↪ alias of ${escHtml(aliasOf)}</span></div>
+        <div style="font-size:10px">Priced as the canonical entry: SU ${ce.exempt?'exempt':(ce.su==null?'—':escHtml(String(ce.su)))} · ${escHtml(String(ce.region||'region ?'))} · Back ${escHtml(String(ce.back||'?'))} Foot ${escHtml(String(ce.foot||'?'))} Elbow ${escHtml(String(ce.elbow||'?'))} — edit it there.</div>
+      </div>`;
+    }
+    const badSu = !e.exempt && e.su!=null && !(e.su>0);
+    const badge = (suEntryIncomplete(e)?suChip('incomplete'):'') + (badSu?suChip('invalid SU — unrated'):'');
     return `<div style="border-top:1px solid var(--b);padding:6px 0;font-size:11px">
-      <div style="display:flex;justify-content:space-between"><span>${escHtml(n)}</span>
+      <div style="display:flex;justify-content:space-between"><span>${escHtml(n)}${badge}</span>
         <span>${diff.length?`<span style="color:var(--w)">≠ seed: ${escHtml(diff.join(', '))}</span>${SU_LIBRARY_SEED.entries[n]?` <button class="btn btn-s" style="font-size:9px;width:auto;padding:2px 8px" onclick="uiSuReset(${i})">Reset</button>`:''}`:''}</span></div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:4px">
-        SU <input type="number" step="0.5" min="0" max="10" style="width:64px" value="${e.su==null?'':e.su}" ${e.exempt?'disabled':''} onchange="uiSuEdit(${i},'su',this.value)">
+        SU <input type="number" step="0.5" min="0.5" max="10" style="width:64px" value="${e.su==null?'':e.su}" ${e.exempt?'disabled':''} onchange="uiSuEdit(${i},'su',this.value)">
         <label style="display:inline-flex;gap:3px;align-items:center"><input type="checkbox" ${e.exempt?'checked':''} onchange="uiSuEdit(${i},'exempt',this.checked)">exempt</label>
         <select onchange="uiSuEdit(${i},'region',this.value)">${opt('','region ?',e.region==null?'':e.region)}${opt('lower','lower',e.region)}${opt('upper','upper',e.region)}${opt('core','core',e.region)}</select>
         Back ${flagSel(i,'back',e.back)} Foot ${flagSel(i,'foot',e.foot)} Elbow ${flagSel(i,'elbow',e.elbow)}
@@ -6499,6 +6544,16 @@ function importData(e){
         showBackupStatus('✗ Invalid backup file — no weeks array found', 'var(--a3)'); return;
       }
       const imported = migrateState(parsed);
+      // v22.7: warn before an older backup strips sc / blockId from stored
+      // weeks it overwrites. Cancel → nothing changed. Otherwise the import
+      // proceeds exactly as before (including the embedded-history self-heal).
+      const risk = suImportOverwriteRisk(D.weeks, imported.weeks);
+      if(risk.count && !confirm('This backup would overwrite '+risk.count+' existing week'+(risk.count===1?' that carries':'s that carry')
+          +' SU set counts or block membership with data that lacks them ('+risk.dates.slice(0,5).join(', ')+(risk.count>5?', …':'')
+          +'). They would lose them; re-run SU Backfill afterwards to restore set counts. Continue?')){
+        showBackupStatus('Import cancelled — nothing changed', 'var(--mu)');
+        return;
+      }
       // v21: merge into a COPY and commit only after the merge + sort succeed.
       // v20 mutated D.weeks in place, so a malformed backup (e.g. a non-string
       // date) threw mid-merge, showed "Could not parse", and left D half-merged
@@ -10168,6 +10223,53 @@ function __selfTestRun() {
     add(full.check.ok && full.report.placed+full.report.deferred===283 && full.report.invalid===0,
       'v22.6: real embedded block onto HIST_DATA weeks reconciles ('+JSON.stringify({placed:full.report.placed, created:full.report.created, patched:full.report.patchedWeeks, deferred:full.report.deferred})+')');
   } catch(e){ add(false, 'v22.6: Group 33 threw', String(e&&e.message||e)); }
+
+  // ── Group 34 (v22.7): verification fixes
+  {
+    const savedSc = D.stressConfig, savedWeeks = D.weeks;
+    try{
+      D.stressConfig = freshStressConfig();
+      // 1. alias row
+      add(suAliasTarget('Incline Bench Press (Vitruvian)')==='Incline Bench Press (Dumbbell)' && suAliasTarget('Supine Press')===null, 'v22.7: alias detected via TRUE_RENAME_MAP only');
+      add(Object.keys(D.stressConfig.entries).length===146 && !!D.stressConfig.entries['Incline Bench Press (Vitruvian)'], 'v22.7: seed + stressConfig shape unchanged (146, alias row kept)');
+      suApplyEdit('Incline Bench Press (Vitruvian)', {su:2}, 'via alias', '2026-11-22');
+      add(D.stressConfig.entries['Incline Bench Press (Dumbbell)'].su===2 && D.stressConfig.entries['Incline Bench Press (Vitruvian)'].su===1.5
+          && D.stressConfig.changelog.slice(-1)[0].name==='Incline Bench Press (Dumbbell)', 'v22.7: edit on alias lands on the canonical entry');
+      add(computeSessionSU({sc:{'Incline Bench Press (Vitruvian)':1}}).su===2, 'v22.7: alias sets price at the canonical rating');
+      D.weeks = [];
+      document.getElementById('suFilter').value=''; document.getElementById('suSearch').value='Incline Bench Press (V';
+      renderSuEditor();
+      const panel = document.getElementById('suEditorPanel').innerHTML;
+      add(/alias of Incline Bench Press \(Dumbbell\)/.test(panel) && !/uiSuEdit\(0,'su'/.test(panel), 'v22.7: alias row rendered read-only with label');
+      document.getElementById('suSearch').value='';
+      // 2. zero SU
+      add(suApplyEdit('Supine Press', {su:0})===0 && suApplyEdit('Supine Press', {su:'0'})===0 && D.stressConfig.entries['Supine Press'].su===1.5, 'v22.7: SU 0 rejected for a non-exempt entry');
+      add(suApplyEdit('Supine Press', {su:null})===1 && D.stressConfig.entries['Supine Press'].su===null, 'v22.7: null still allowed (unrated)');
+      suApplyEdit('Supine Press', {su:1.5});
+      const z = sanitizeStressConfig({entries:{'A':{su:0,exempt:false,region:'upper',back:'G',foot:'G',elbow:'G'}, 'B':{su:0,exempt:true}}});
+      add(z.entries['A'].su===null && z.entries['B'].su===null && z.entries['B'].exempt===true, 'v22.7: sanitizer turns a stored non-exempt 0 into unrated');
+      const raw0 = freshStressConfig(); raw0.entries['Chin Up'].su = 0;
+      const r0 = computeSessionSU({sc:{'Chin Up':2}}, raw0);
+      add(r0.su===0 && r0.unratedSets===2 && /\+ \?/.test(fmtSU(r0)), 'v22.7: an unsanitized 0 prices as unrated, not as zero');
+      suApplyEdit('Leg Extension (Machine)', {exempt:true});
+      add(D.stressConfig.entries['Leg Extension (Machine)'].su===null && D.stressConfig.entries['Leg Extension (Machine)'].exempt===true, 'v22.7: exempt still clears SU');
+      // 3. incomplete
+      suAddEntry('Custom Thing'); suApplyEdit('Custom Thing', {su:1.5, region:'lower'});
+      add(suEntryIncomplete(D.stressConfig.entries['Custom Thing']) && !suEntryIncomplete(D.stressConfig.entries['Belted Squat']), 'v22.7: rated entry with null flags is incomplete; complete seed entry is not');
+      add(computeSessionSU({sc:{'Custom Thing':2}}).su===3, 'v22.7: incomplete entry pricing unchanged');
+      document.getElementById('suFilter').value='incomplete'; renderSuEditor();
+      const p2 = document.getElementById('suEditorPanel').innerHTML;
+      add(/Custom Thing/.test(p2) && /incomplete/.test(p2) && /1 incomplete entry/.test(p2), 'v22.7: incomplete badge + filter + summary');
+      document.getElementById('suFilter').value='';
+      // 4. import risk
+      const cw = [{date:'2026-10-24', hevySessions:[{d:'2026-10-20', t:'X', ts:{}, sc:{'Chin Up':1}}]}, {date:'2026-10-31', blockId:'b1'}, {date:'2026-11-07', hevySessions:[{d:'2026-11-03', t:'Y', ts:{}}]}];
+      const old = [{date:'2026-10-24', hevySessions:[{d:'2026-10-20', t:'X', ts:{}}]}, {date:'2026-10-31'}, {date:'2026-11-07'}, {date:'2026-11-14'}];
+      const rk = suImportOverwriteRisk(cw, old);
+      add(rk.count===2 && rk.dates.join()==='2026-10-24,2026-10-31', 'v22.7: overwrite risk counts weeks losing sc or blockId only');
+      add(suImportOverwriteRisk(cw, JSON.parse(JSON.stringify(cw))).count===0, 'v22.7: a current backup carries no risk');
+    } catch(e){ add(false, 'v22.7: Group 34 threw', String(e&&e.message||e)); }
+    finally { D.stressConfig = savedSc; D.weeks = savedWeeks; const f=document.getElementById('suFilter'); if(f) f.value=''; const q=document.getElementById('suSearch'); if(q) q.value=''; }
+  }
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
