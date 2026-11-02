@@ -4034,6 +4034,18 @@ function saveWeek(){
   if(idx>=0){
     // preserve photo if not replacing
     if(!entry.photo && D.weeks[idx].photo) entry.photo = D.weeks[idx].photo;
+    // v22.2 (C4): same rule for stored sessions. loadWeek clears the staged
+    // import, so re-saving a loaded week after editing any non-session field
+    // used to write sessions/hevySessions as null — deleting the week's
+    // sessions (and their sc / SU) on the next reload. Nothing staged → keep
+    // the existing copies; a new staged import still replaces them.
+    if(!window._importedSessions){
+      if(D.weeks[idx].sessions!=null) entry.sessions = D.weeks[idx].sessions;
+      if(D.weeks[idx].hevySessions!=null) entry.hevySessions = D.weeks[idx].hevySessions;
+    }
+    // v22.2: block membership is never touched by a save — only the block UI
+    // (v22.3) changes it.
+    if(D.weeks[idx].blockId!=null) entry.blockId = D.weeks[idx].blockId;
     D.weeks[idx]=entry;
   } else D.weeks.push(entry);
   D.weeks.sort((a,b)=>a.date.localeCompare(b.date));
@@ -9305,6 +9317,30 @@ function __selfTestRun() {
     const tsKeys = Object.keys(buildSessionTopSets(rows.filter(x=>x.set_type!=='warmup').map(x=>({...x, weight_lbs:'50', reps:'8', rpe:'7'}))));
     add(tsKeys.every(k=>k in sc), 'v22.1: sc keys cover ts keys for the same set rows');
   } catch(e){ add(false, 'v22.1: Group 28 threw', String(e&&e.message||e)); }
+
+  // ── Group 29 (v22.2): saveWeek preserves stored sessions + blockId on re-save
+  {
+    const savedWeeks = D.weeks, savedStaged = window._importedSessions, savedDate = v('wDate');
+    try{
+      const ses = [{d:'2026-10-31', t:'Lower Day (Home)', m:'legs', ts:{}, vol:0, sc:{'Belted Squat':2}}];
+      D.weeks = [{...cloneDefaultWeek(), date:'2026-10-31', weight:171, sessions:ses, hevySessions:ses.map(x=>({...x, we:'2026-10-31'})), blockId:'b1'}];
+      window._importedSessions = null;
+      sv('wDate','2026-10-31');
+      saveWeek();
+      const w = D.weeks.find(x=>x.date==='2026-10-31');
+      add(w && Array.isArray(w.hevySessions) && w.hevySessions[0].sc['Belted Squat']===2 && Array.isArray(w.sessions) && w.sessions.length===1,
+        'v22.2: re-save with nothing staged keeps sessions + hevySessions (sc intact)');
+      add(w && w.blockId==='b1', 'v22.2: re-save keeps blockId');
+      add(w && computeWeekSU(w).su===4, 'v22.2: week SU survives re-save');
+      const fresh = [{d:'2026-10-30', t:'Upper Day (Home)', m:'upper', ts:{}, vol:0, sc:{'Chin Up':1}}];
+      window._importedSessions = fresh;
+      saveWeek();
+      const w2 = D.weeks.find(x=>x.date==='2026-10-31');
+      add(w2.hevySessions.length===1 && w2.hevySessions[0].t==='Upper Day (Home)' && w2.blockId==='b1',
+        'v22.2: a newly staged import still replaces the sessions; blockId kept');
+    } catch(e){ add(false, 'v22.2: Group 29 threw', String(e&&e.message||e)); }
+    finally { D.weeks = savedWeeks; window._importedSessions = savedStaged; sv('wDate', savedDate); }
+  }
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
