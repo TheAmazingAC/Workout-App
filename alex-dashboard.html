@@ -2469,7 +2469,8 @@ function migrateWeek(w){
   // 81-week "cut history". The documented phase dates are authoritative for
   // the pre-v17 era because no pre-v17 week can carry meaningful per-week
   // intent: cut ≤2025-06-28, bulk 2025-10-11→2026-02-20, cut ≥2026-02-21,
-  // gap 2025-06-29→2025-10-10 → 'unmodeled' (never defaulted to cut).
+  // 2025-06-29→2025-10-10 → 'maint' (v22.14: Alex-confirmed summer-2025
+  // maintenance; previously 'unmodeled'; never defaulted to cut).
   // CAVEAT: this overwrites a stored mode on pre-v17 weeks, so a manual
   // correction of a historical week's mode made after v17 would be reverted
   // on the next load. Alex's real data has no such corrections (all 82 weeks
@@ -2875,7 +2876,7 @@ function historicalPhaseMode(weekEndISO){
   if(d <= '2025-06-28') return 'cut';
   if(d >= '2025-10-11' && d <= '2026-02-20') return 'bulk';
   if(d >= '2026-02-21') return 'cut';
-  return 'unmodeled'; // 2025-06-29 -> 2025-10-10
+  return 'maint'; // 2025-06-29 -> 2025-10-10: summer-2025 maintenance (v22.14; was 'unmodeled')
 }
 // v17 R2: mode-change run tracking shared by the drift engine and the TDEE estimator.
 // priorWeeks: earlier weeks in date order (current week excluded).
@@ -9632,7 +9633,7 @@ function __selfTestRun() {
   try{
     const rawHist = [
       {date:'2025-02-22', weight:192.5, waist:35.0},              // 2025 cut
-      {date:'2025-08-02', weight:185.0, waist:33.5},              // undocumented gap → unmodeled
+      {date:'2025-08-02', weight:185.0, waist:33.5},              // summer-2025 maintenance (v22.14)
       {date:'2025-11-01', weight:180.0, waist:33.0},              // bulk
       {date:'2026-01-10', weight:199.0, waist:36.0},              // bulk peak
       {date:'2026-02-21', weight:197.5, waist:35.8},              // recent cut starts
@@ -9642,8 +9643,8 @@ function __selfTestRun() {
     const migWeeks = rawHist.map(migrateWeek);
     add(migWeeks[0].mode==='cut' && migWeeks[2].mode==='bulk' && migWeeks[3].mode==='bulk',
       'v18r2: migration tags 2025 weeks cut and Oct25–Feb26 weeks bulk');
-    add(migWeeks[1].mode==='unmodeled',
-      'v18r2: undocumented gap weeks are unmodeled, never defaulted to cut');
+    add(migWeeks[1].mode==='maint',
+      'v22.14: summer-2025 weeks (2025-06-29 → 2025-10-10) are maint, never defaulted to cut');
     add(migWeeks[4].mode==='cut' && migWeeks[6].mode==='cut',
       'v18r2: post-2/21/26 modeless weeks tagged cut');
     // v19: pre-v17 stored modes are defaults, not intent — the date rules.
@@ -9771,8 +9772,8 @@ function __selfTestRun() {
     D.weeks = migrateState({weeks:histFx}).weeks;
     add(D.weeks.every(w=>w && w.mode!=null),
       'v18r3: imported historical weeks are never modeless (no reload needed)');
-    const umCount = D.weeks.filter(w=>w.mode==='unmodeled').length;
-    add(umCount>0, 'v18r3: gap weeks tagged unmodeled at import ('+umCount+' weeks)');
+    const umCount = D.weeks.filter(w=>w.date==='2025-08-02' && w.mode==='maint').length;
+    add(umCount===1, 'v22.14: summer-2025 weeks tagged maint at import ('+umCount+' weeks)');
     const impRun = cutRunWeeks(D.weeks);
     add(impRun.length>0 && impRun[0].date==='2026-02-21',
       'v18r3: cut history starts 2026-02-21 immediately after import (got '+(impRun.length?impRun[0].date:'none')+')');
@@ -9829,18 +9830,22 @@ function __selfTestRun() {
       'v19: pre-v17 stored cut on a bulk-phase date retags to bulk');
     add(migrateWeek({date:'2025-04-12', mode:'cut', weight:190}).mode==='cut',
       'v19: pre-v17 week on a cut-phase date stays cut');
-    add(migrateWeek({date:'2025-08-02', mode:'cut', weight:188}).mode==='unmodeled',
-      'v19: pre-v17 stored cut on a gap date retags to unmodeled');
+    add(migrateWeek({date:'2025-08-02', mode:'cut', weight:188}).mode==='maint',
+      'v22.14: pre-v17 stored cut on a summer-2025 date retags to maint');
+    add(migrateWeek({date:'2025-08-02', mode:'unmodeled', weight:188}).mode==='maint',
+      'v22.14: a stored unmodeled summer-2025 week re-tags to maint on load');
     add(migrateWeek({date:'2025-11-01', mode:'maint', weight:182}).mode==='bulk',
       'v19: pre-v17 stored non-cut mode is also overwritten by phase dates');
     // v19 R2 bulk boundary correction: bulk starts 2025-10-11 (not 10-25);
     // WE 10/11 + 10/18 (178.5, 179.0 lb) are the first two weeks of the rise
     add(migrateWeek({date:'2025-10-11', mode:'cut', weight:178.5}).mode==='bulk',
       'v19: bulk boundary WE 2025-10-11 → bulk');
-    add(migrateWeek({date:'2025-10-10', mode:'cut', weight:178}).mode==='unmodeled',
-      'v19: bulk boundary 2025-10-10 → unmodeled');
-    add(migrateWeek({date:'2025-10-04', mode:'cut', weight:178}).mode==='unmodeled',
-      'v19: WE 2025-10-04 → unmodeled (gap now 2025-06-29 → 2025-10-10)');
+    add(migrateWeek({date:'2025-10-10', mode:'cut', weight:178}).mode==='maint',
+      'v22.14: bulk boundary 2025-10-10 → maint');
+    add(migrateWeek({date:'2025-10-04', mode:'cut', weight:178}).mode==='maint',
+      'v22.14: WE 2025-10-04 → maint (summer maintenance 2025-06-29 → 2025-10-10)');
+    add(migrateWeek({date:'2025-06-28', mode:'maint', weight:178}).mode==='cut' && migrateWeek({date:'2025-07-05', mode:'cut', weight:178}).mode==='maint',
+      'v22.14: cut/maint boundary at 2025-06-28 / 2025-07-05');
   } finally {}
   // 23b: weeks dated 2026-09-25+ keep their stored mode untouched
   try{
@@ -9883,8 +9888,8 @@ function __selfTestRun() {
     const migFx = fx.map(migrateWeek);
     add(migFx.filter(x=>x.mode==='bulk').length===19,
       'v19: all 19 Oct–Feb bulk weeks retagged bulk despite stored cut ('+migFx.filter(x=>x.mode==='bulk').length+')');
-    add(migFx.filter(x=>x.mode==='unmodeled').length===14,
-      'v19: all 14 gap weeks unmodeled (gap now 2025-06-29 → 2025-10-10)');
+    add(migFx.filter(x=>x.mode==='maint').length===14 && migFx.every(x=>x.mode!=='unmodeled'),
+      'v22.14: all 14 summer-2025 weeks maint, none unmodeled');
     D.waistBaselineBreakDate = null;
     D.weeks = migFx;
     const hsFx = calcCutHistorySummary();
