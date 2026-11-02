@@ -937,6 +937,7 @@ select option{background:var(--s2);}
       <input type="file" id="suBackfillFile" accept=".csv" style="display:none" onchange="suBackfillLoadCsv(event)">
     </div>
     <pre id="suBackfillReport" style="font-size:10px;white-space:pre-wrap;color:var(--mu);margin-top:8px"></pre>
+    <div id="suBackfillPairs" style="margin-top:6px"></div>
     <div class="btn-row" id="suBackfillBtns" style="display:none">
       <button class="btn btn-p" onclick="suBackfillApply('fill')" style="font-size:11px">APPLY — FILL MISSING</button>
       <button class="btn btn-s" onclick="suBackfillApply('refresh')" style="font-size:11px">REFRESH SET COUNTS</button>
@@ -1686,6 +1687,103 @@ function verifySuBackfill(before, after, patchedKeys){
   });
   return {ok:!errors.length, errors};
 }
+// ══════════════════════════════════════════
+// v22.10: backfill probable-match reconciliation (report-only by default)
+// ══════════════════════════════════════════
+// An unmatched stored session + a CSV session on the SAME normalized date
+// under a different title (and not already stored) = probable match. Nothing
+// retitles unless Alex accepts that pair; accepted pairs are applied in the
+// next Apply pass (backup → retitle, verified → fill, verified → commit).
+function findProbableMatches(weeks, idx){
+  const plan = planSuBackfill(weeks, idx, 'fill');
+  const disagree = new Set(plan.disagreeWeeks), amb = new Set(plan.ambiguous);
+  const stored = new Set();
+  (weeks||[]).forEach(w=>weekStoredSessions(w).forEach(s=>{ const k = suSessionKey(s); if(k) stored.add(k); }));
+  const csvByDate = new Map();
+  idx.map.forEach((v,k)=>{ if(stored.has(k)) return; if(!csvByDate.has(v.d)) csvByDate.set(v.d, []); csvByDate.get(v.d).push(v); });
+  const pairs = [];
+  (weeks||[]).forEach(w=>{
+    if(disagree.has(w.date)) return;
+    weekStoredSessions(w).forEach(s=>{
+      const k = suSessionKey(s); if(!k || idx.map.has(k) || amb.has(k)) return;
+      const d = k.split('||')[0];
+      (csvByDate.get(d)||[]).forEach(c=>{ if(c.t!==s.t) pairs.push({id:k+'=>'+c.t, week:w.date, date:d, stored:k, storedTitle:s.t, csv:d+'||'+c.t, csvTitle:c.t}); });
+    });
+  });
+  return pairs;
+}
+// Retitle on a deep copy: only `t` changes, in BOTH week copies. A pair is
+// skipped when its target key is already stored (would duplicate) or its
+// stored session is no longer present (already retitled → idempotent).
+function applySuRetitle(weeks, pairs){
+  const before = weeks||[];
+  const out = JSON.parse(JSON.stringify(before));
+  const stored = new Set();
+  out.forEach(w=>[w.sessions, w.hevySessions].filter(Array.isArray).forEach(a=>a.forEach(x=>{ const k = suSessionKey(x); if(k) stored.add(k); })));
+  const applied = [], skipped = [];
+  (pairs||[]).forEach(p=>{
+    if(stored.has(p.csv)){ skipped.push({...p, why:'target key already stored'}); return; }
+    const w = out.find(x=>x.date===p.week);
+    const hits = w ? [w.sessions, w.hevySessions].filter(Array.isArray).map(a=>a.find(x=>suSessionKey(x)===p.stored)).filter(Boolean) : [];
+    if(!hits.length){ skipped.push({...p, why:'stored session not found'}); return; }
+    hits.forEach(x=>{ x.t = p.csvTitle; });
+    stored.delete(p.stored); stored.add(p.csv);
+    applied.push(p);
+  });
+  return {weeks:out, applied, skipped, check:verifySuRetitle(before, out, applied)};
+}
+// Only the title of each applied session may differ; session counts per copy
+// unchanged; each applied pair landed (new key present, old key gone); no
+// duplicate keys.
+function verifySuRetitle(before, after, applied){
+  const errors = [];
+  if(before.length!==after.length) errors.push('week count changed');
+  const back = {};   // week||newKey → old title
+  applied.forEach(p=>{ back[p.week+'||'+p.csv] = p.storedTitle; });
+  before.forEach((w,i)=>{
+    const a = after[i];
+    if(!a || a.date!==w.date){ errors.push('week order changed at '+i); return; }
+    const c = JSON.parse(JSON.stringify(a));
+    ['sessions','hevySessions'].forEach(f=>{
+      const bl = Array.isArray(w[f]) ? w[f].length : null, al = Array.isArray(a[f]) ? a[f].length : null;
+      if(bl!==al) errors.push('session count changed in '+w.date+' '+f);
+      if(Array.isArray(c[f])) c[f].forEach(x=>{ const k = suSessionKey(x); if(k && back[w.date+'||'+k]!=null) x.t = back[w.date+'||'+k]; });
+    });
+    if(JSON.stringify(c)!==JSON.stringify(w)) errors.push('field other than title changed in '+w.date);
+  });
+  applied.forEach(p=>{
+    const a = after.find(x=>x.date===p.week);
+    const keys = a ? weekStoredSessions(a).map(suSessionKey) : [];
+    if(!keys.includes(p.csv) || keys.includes(p.stored)) errors.push('retitle did not land for '+p.stored);
+  });
+  after.forEach(w=>['sessions','hevySessions'].forEach(f=>{
+    if(!Array.isArray(w[f])) return;
+    const ks = w[f].map(suSessionKey).filter(Boolean);
+    if(new Set(ks).size!==ks.length) errors.push('duplicate session key in '+w.date+' '+f);
+  }));
+  return {ok:!errors.length, errors};
+}
+let _suAcceptedPairs = new Map();
+function renderSuProbablePairs(){
+  const el = document.getElementById('suBackfillPairs'); if(!el || !_suBackfillIdx) return;
+  const pairs = findProbableMatches(D.weeks, _suBackfillIdx);
+  window._suProbablePairs = pairs;
+  [..._suAcceptedPairs.keys()].forEach(id=>{ if(!pairs.some(p=>p.id===id)) _suAcceptedPairs.delete(id); });
+  if(!pairs.length){ el.innerHTML = '<div style="font-size:10px;color:var(--mu)">Probable matches (same date, different title): none</div>'; return; }
+  el.innerHTML = '<div style="font-size:10px;color:var(--t);margin-bottom:4px">Probable matches (same date, different title) — report only until accepted; accepted pairs are retitled in the next Apply:</div>'
+    + pairs.map((p,i)=>{
+        const acc = _suAcceptedPairs.has(p.id);
+        return '<div style="font-size:10px;margin:3px 0">'+escHtml(p.date+': stored "'+p.storedTitle+'" ↔ CSV "'+p.csvTitle+'"')
+          +' <button class="btn btn-s" style="font-size:9px;width:auto;padding:1px 7px" onclick="uiSuTogglePair('+i+')">'+(acc?'✓ Accepted — undo':'Accept: retitle')+'</button></div>';
+      }).join('');
+}
+function uiSuTogglePair(i){
+  const p = (window._suProbablePairs||[])[i]; if(!p) return;
+  // one acceptance per stored session
+  if(_suAcceptedPairs.has(p.id)) _suAcceptedPairs.delete(p.id);
+  else { [..._suAcceptedPairs.values()].forEach(q=>{ if(q.stored===p.stored || q.csv===p.csv) _suAcceptedPairs.delete(q.id); }); _suAcceptedPairs.set(p.id, p); }
+  renderSuProbablePairs();
+}
 let _suBackfillIdx = null;
 function suBackfillLoadCsv(e){
   const file = e.target.files[0]; if(!file) return;
@@ -1714,20 +1812,28 @@ function renderSuBackfillReport(r){
     'In CSV, in neither (report only, never added): '+r.neither.length, list(r.neither, 10)
   ].join('\n');
   const btns = document.getElementById('suBackfillBtns'); if(btns) btns.style.display = 'flex';
+  safeCall('renderSuProbablePairs', renderSuProbablePairs);
 }
 // Commit path: automatic backup export → patch on a copy → checks → commit.
 function suBackfillApply(mode){
   if(!_suBackfillIdx){ suBackfillStatus('Load the Hevy CSV first (dry run).'); return; }
   if(mode==='refresh' && !confirm('Refresh set counts: overwrite existing sc on every matched session?')) return;
   try{ exportData(); } catch(e){ suBackfillStatus('✗ Backup export failed — backfill not run', 'var(--a3)'); return; }
-  const res = applySuBackfill(D.weeks, _suBackfillIdx, mode);
+  // v22.10: accepted retitles first (verified on a copy), then the fill on
+  // the retitled copy; commit only when both checks pass.
+  const accepted = [..._suAcceptedPairs.values()];
+  const rt = applySuRetitle(D.weeks, accepted);
+  if(!rt.check.ok){ suBackfillStatus('✗ Retitle checks failed — nothing written:\n'+rt.check.errors.slice(0,10).join('\n'), 'var(--a3)'); return; }
+  const res = applySuBackfill(rt.weeks, _suBackfillIdx, mode);
   if(!res.check.ok){ suBackfillStatus('✗ Checks failed — nothing written:\n'+res.check.errors.slice(0,10).join('\n'), 'var(--a3)'); return; }
   D.weeks = res.weeks;
+  _suAcceptedPairs = new Map();
   const saved = save();
   safeCall('mergeStoredSessions', mergeStoredSessions);
   markDirty(['history','training']);
   safeCall('renderHistory', renderHistory);
-  if(saved) suBackfillStatus('✓ Backfill ('+mode+'): '+res.patchedKeys.size+' sessions patched (both copies). Checks passed: non-sc fields identical, sc covers ts.', 'var(--g)');
+  if(saved) suBackfillStatus('✓ Backfill ('+mode+'): '+(rt.applied.length?rt.applied.length+' session'+(rt.applied.length===1?'':'s')+' retitled, ':'')+res.patchedKeys.size+' sessions patched (both copies). Checks passed: '+(rt.applied.length?'only titles changed in retitles; ':'')+'non-sc fields identical, sc covers ts.', 'var(--g)');
+  safeCall('renderSuProbablePairs', renderSuProbablePairs);
 }
 
 // ══════════════════════════════════════════
@@ -1824,6 +1930,57 @@ function suUnratedNames(){
   }));
   return out;
 }
+// ══════════════════════════════════════════
+// v22.10: rating history + one-click revert
+// ══════════════════════════════════════════
+// History is append-only: a revert applies the inverse change as a NEW
+// changelog entry (revertOf: index) and bumps the revision once. A value
+// revert is allowed only while the field still holds the entry's "to" value
+// (otherwise a later edit superseded it and reverting would clobber that).
+// Reverting a "created" entry removes the entry (logged as "removed" with a
+// snapshot); reverting a "removed" entry restores the snapshot.
+function suNormVal(f, x){ return f==='note' ? (x||'') : (x===undefined ? null : x); }
+function suRevertStatus(i){
+  const cfg = suCfg(), c = cfg.changelog[i];
+  if(!c) return {ok:false, why:'no such entry'};
+  const e = cfg.entries[c.name];
+  if(c.field==='created') return e ? {ok:true} : {ok:false, why:'entry already removed'};
+  if(c.field==='removed') return (!e && c.from && typeof c.from==='object') ? {ok:true} : {ok:false, why:e?'entry exists':'no snapshot'};
+  if(!SU_EDIT_FIELDS.includes(c.field)) return {ok:false, why:'not revertible'};
+  if(!e) return {ok:false, why:'entry removed'};
+  const cur = c.field==='note' ? (e.note||'') : e[c.field];
+  return suNormVal(c.field, cur)===suNormVal(c.field, c.to) ? {ok:true} : {ok:false, why:'superseded by a later edit'};
+}
+function suRevertChange(i, dateStr){
+  const st = suRevertStatus(i); if(!st.ok) return {ok:false, why:st.why};
+  const cfg = suCfg(), c = cfg.changelog[i];
+  const date = dateStr || localISODate();
+  const note = 'revert of #'+i;
+  if(c.field==='created'){
+    const snap = JSON.parse(JSON.stringify(cfg.entries[c.name]));
+    delete cfg.entries[c.name];
+    cfg.revision = (Number(cfg.revision)||0) + 1;
+    cfg.changelog.push({date, name:c.name, field:'removed', from:snap, to:null, note, revertOf:i});
+    return {ok:true};
+  }
+  if(c.field==='removed'){
+    cfg.entries[c.name] = JSON.parse(JSON.stringify(c.from));
+    cfg.revision = (Number(cfg.revision)||0) + 1;
+    cfg.changelog.push({date, name:c.name, field:'created', from:null, to:'entry', note, revertOf:i});
+    return {ok:true};
+  }
+  const n0 = cfg.changelog.length;
+  const changed = suApplyEdit(c.name, {[c.field]: c.from}, note, date);
+  if(!changed) return {ok:false, why:'inverse change rejected (e.g. SU on an exempt entry)'};
+  for(let k=n0; k<cfg.changelog.length; k++) cfg.changelog[k].revertOf = i;
+  return {ok:true};
+}
+function uiSuRevert(i){
+  const r = suRevertChange(i);
+  if(r.ok){ if(save()) toast('Reverted #'+i+' (rev '+D.stressConfig.revision+')'); }
+  else toast('Cannot revert #'+i+': '+r.why);
+  renderSuEditor();
+}
 let _suEditorNames = [];
 function renderSuEditor(){
   const el = document.getElementById('suEditorPanel'); if(!el) return;
@@ -1875,9 +2032,19 @@ function renderSuEditor(){
       <input type="text" placeholder="note (stimulus / observations)" style="width:100%;margin-top:4px" value="${escHtml(e.note||'')}" onchange="uiSuEdit(${i},'note',this.value)">
     </div>`;
   }).join('');
-  const cl = cfg.changelog.slice(-15).reverse();
-  h += `<div style="margin-top:12px;border-top:1px solid var(--b);padding-top:8px;font-size:10px;color:var(--mu)">Changelog (latest 15 of ${cfg.changelog.length})<br>`
-    + (cl.length ? cl.map(c=>escHtml(`${c.date} · ${c.name} · ${c.field}: ${c.from==null?'—':c.from} → ${c.to==null?'—':c.to}${c.note?' · '+c.note:''}`)).join('<br>') : 'no edits yet') + `</div>`;
+  // v22.10: rating history, most recent first, with per-entry revert
+  const HIST_N = 50;
+  const revertedBy = {}; cfg.changelog.forEach((c,k)=>{ if(c && c.revertOf!=null) revertedBy[c.revertOf] = k; });
+  const fmtV = x=>x==null ? '—' : (typeof x==='object' ? 'entry' : String(x));
+  const idxs = cfg.changelog.map((_,k)=>k).slice(-HIST_N).reverse();
+  h += `<div style="margin-top:12px;border-top:1px solid var(--b);padding-top:8px;font-size:10px;color:var(--mu)">Rating history (latest ${Math.min(HIST_N,cfg.changelog.length)} of ${cfg.changelog.length}, newest first)<br>`
+    + (idxs.length ? idxs.map(k=>{
+        const c = cfg.changelog[k], st = suRevertStatus(k);
+        const line = escHtml(`#${k} · ${c.date} · ${displayExName(c.name)} · ${c.field}: ${fmtV(c.from)} → ${fmtV(c.to)}${c.note?' · '+c.note:''}`);
+        const act = st.ok ? ` <button class="btn btn-s" style="font-size:9px;width:auto;padding:1px 7px" onclick="uiSuRevert(${k})">Revert</button>`
+          : ` <span style="opacity:.7">(${escHtml(revertedBy[k]!=null && st.why!=='not revertible' ? 'reverted by #'+revertedBy[k] : st.why)})</span>`;
+        return '<div style="margin:2px 0">'+line+act+'</div>';
+      }).join('') : 'no edits yet') + `</div>`;
   el.innerHTML = h;
 }
 function uiSuEdit(i, field, value){
@@ -10427,6 +10594,62 @@ function __selfTestRun() {
       try{ if(savedLast==null) localStorage.removeItem(LAST_EXPORT_KEY); else localStorage.setItem(LAST_EXPORT_KEY, savedLast); }catch(e){}
       safeCall('renderBackupFreshness', renderBackupFreshness);
     }
+  }
+
+  // ── Group 37 (v22.10): rating history revert + probable-match retitle
+  {
+    const savedSc = D.stressConfig;
+    try{
+      D.stressConfig = freshStressConfig();
+      suApplyEdit('Supine Press', {su:2}, 'a', '2026-11-20');               // #0
+      add(suRevertStatus(0).ok, 'v22.10: fresh edit is revertible');
+      add(suRevertChange(0, '2026-11-21').ok && D.stressConfig.entries['Supine Press'].su===1.5, 'v22.10: revert restores the old value');
+      const c1 = D.stressConfig.changelog[1];
+      add(D.stressConfig.changelog.length===2 && c1.revertOf===0 && c1.from===2 && c1.to===1.5 && D.stressConfig.revision===2, 'v22.10: revert is a NEW entry (history kept), revision +1');
+      add(!suRevertStatus(0).ok, 'v22.10: reverted entry no longer revertible (superseded)');
+      add(suRevertChange(1, '2026-11-22').ok && D.stressConfig.entries['Supine Press'].su===2 && D.stressConfig.changelog[2].revertOf===1 && D.stressConfig.revision===3,
+        'v22.10: revert-of-revert re-applies the change as a third entry');
+      suApplyEdit('Supine Press', {su:2.5});                                // #3
+      add(!suRevertStatus(2).ok && /superseded/.test(suRevertStatus(2).why), 'v22.10: later edit blocks reverting an older entry');
+      suAddEntry('Custom Row', '', '2026-11-23');                           // #4
+      const ci = D.stressConfig.changelog.length-1;
+      suApplyEdit('Custom Row', {su:1.5, region:'upper'});
+      add(suRevertChange(ci).ok && !D.stressConfig.entries['Custom Row'] && D.stressConfig.changelog.slice(-1)[0].field==='removed', 'v22.10: reverting "created" removes the entry (snapshot logged)');
+      const ri = D.stressConfig.changelog.length-1;
+      add(suRevertChange(ri).ok && D.stressConfig.entries['Custom Row'] && D.stressConfig.entries['Custom Row'].su===1.5 && D.stressConfig.entries['Custom Row'].region==='upper',
+        'v22.10: reverting the removal restores the entry as it was');
+      add(sanitizeStressConfig(D.stressConfig).changelog.every((c,k)=>c.revertOf===D.stressConfig.changelog[k].revertOf), 'v22.10: revertOf survives sanitize/backup');
+      suApplyEdit('Leg Extension (Machine)', {exempt:true});
+      const suIdx = D.stressConfig.changelog.length-1;                     // the su→null entry
+      add(!suRevertChange(suIdx).ok && D.stressConfig.entries['Leg Extension (Machine)'].su===null, 'v22.10: inverse SU on an exempt entry is rejected, nothing written');
+      // probable matches + retitle
+      const H='title,start_time,end_time,description,exercise_title,superset_id,exercise_notes,set_index,set_type,weight_lbs,reps,distance_miles,duration_seconds,rpe';
+      const r=(t,d,ex)=>['"'+t+'"','"'+d+'"','"'+d+'"','""','"'+ex+'"','','""',0,'normal',100,8,'','',7].join(',');
+      const idx = buildCsvSessionIndex([H, r('At Gym Upper','29 Oct 2026, 07:00','Supine Press'), r('At Gym Upper','29 Oct 2026, 07:00','Supine Press'),
+        r('Upper Day (Home)','26 Oct 2026, 07:00','Chin Up'), r('Lower Day (Home)','31 Oct 2026, 07:00','Belted Squat')].join('\n'));
+      const mk = (d,t,ts)=>({d,t,m:'upper',ts:ts||{},vol:1});
+      const weeks = [{...cloneDefaultWeek(), date:'2026-10-31', weight:171, blockId:'b1',
+        sessions:[mk('2026-10-29','Upper B (Gym)',{'Supine Press':{w:370,r:8}}), mk('2026-10-26','Upper Day (Home)'), mk('2026-10-28','Rest Notes')],
+        hevySessions:[{...mk('2026-10-29','Upper B (Gym)',{'Supine Press':{w:370,r:8}}),we:'2026-10-31'}, {...mk('2026-10-26','Upper Day (Home)'),we:'2026-10-31'}, {...mk('2026-10-28','Rest Notes'),we:'2026-10-31'}]}];
+      const pairs = findProbableMatches(weeks, idx);
+      add(pairs.length===1 && pairs[0].storedTitle==='Upper B (Gym)' && pairs[0].csvTitle==='At Gym Upper' && pairs[0].date==='2026-10-29',
+        'v22.10: probable match = unmatched stored + same-date CSV under another title (no-CSV-date session not paired)');
+      const before = JSON.stringify(weeks);
+      const rt = applySuRetitle(weeks, pairs);
+      add(JSON.stringify(weeks)===before && rt.check.ok && rt.applied.length===1, 'v22.10: retitle on a copy, verifier passes ('+rt.check.errors.join('; ')+')');
+      const w0 = rt.weeks[0];
+      add(w0.sessions[0].t==='At Gym Upper' && w0.hevySessions[0].t==='At Gym Upper' && w0.hevySessions[0].ts['Supine Press'].w===370 && w0.blockId==='b1' && w0.weight===171,
+        'v22.10: title changed in both copies, nothing else');
+      const fill = applySuBackfill(rt.weeks, idx, 'fill');
+      add(fill.check.ok && fill.weeks[0].hevySessions[0].sc['Supine Press']===2, 'v22.10: fill prices the retitled session in the same pass');
+      const again = applySuRetitle(rt.weeks, pairs);
+      add(again.applied.length===0 && JSON.stringify(again.weeks)===JSON.stringify(rt.weeks) && again.check.ok, 'v22.10: retitle is idempotent (second run changes nothing)');
+      const bad = JSON.parse(JSON.stringify(rt.weeks)); bad[0].hevySessions[0].vol = 9;
+      add(!verifySuRetitle(weeks, bad, rt.applied).ok, 'v22.10: retitle verifier catches a non-title change');
+      const dup = applySuRetitle(weeks, [{...pairs[0], csv:'2026-10-26||Upper Day (Home)', csvTitle:'Upper Day (Home)'}]);
+      add(dup.applied.length===0 && dup.skipped[0].why==='target key already stored', 'v22.10: retitle refused when the target key is already stored');
+    } catch(e){ add(false, 'v22.10: Group 37 threw', String(e&&e.message||e)); }
+    finally { D.stressConfig = savedSc; }
   }
 
   const failed = out.checks.filter(c=>!c.ok).length;
