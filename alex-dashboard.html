@@ -1467,6 +1467,159 @@ function assignWeekToBlock(date, blockId, confirmFn){
   w.blockId = b.id; return true;
 }
 // Block rollup — derived only from member weeks (blockId).
+// ══════════════════════════════════════════
+// v22.14: RELATIVE LOAD CLASS + NEXT-WEEK COST (load classes, not easy/hard verdicts)
+// ══════════════════════════════════════════
+// PROVISIONAL thresholds (Alex-approved design, 2026-11-02) — the one place to
+// tune them. ratio = week SU ÷ mean SU of the previous LOAD_BASELINE_WEEKS
+// eligible weeks: same phase, priced, not deload-tagged, completed — regardless
+// of block (v22.14c; block context is carried by % of block median). The walk
+// back stays inside the current phase run: it skips deload-tagged weeks of any
+// mode, unpriced weeks and in-progress weeks, and stops at the first priced,
+// non-deload week of a different phase, so a maint week never reaches back a
+// year to the previous maintenance phase.
+const LOAD_BANDS_PROVISIONAL = {light:0.8, steady:1.1, stepUp:1.3};   // <0.8 light · 0.8–1.1 steady · 1.1–1.3 step-up · >1.3 spike
+const LOAD_BASELINE_WEEKS = 4;
+const COST_MIN_N = 6;                                                  // bands with fewer weeks are greyed out
+const LOAD_CLASS_LABEL = {light:'light', steady:'steady', stepUp:'step-up', spike:'spike', deload:'deload'};
+function isDeloadWeek(w){ return !!(w && (w.deload===true || (Array.isArray(w.tags) && w.tags.includes('deload')))); }
+function loadBand(ratio){
+  const t = LOAD_BANDS_PROVISIONAL;
+  return ratio < t.light ? 'light' : ratio <= t.steady ? 'steady' : ratio <= t.stepUp ? 'stepUp' : 'spike';
+}
+function medianOf(a){ if(!a.length) return null; const x = a.slice().sort((p,q)=>p-q), m = Math.floor(x.length/2); return x.length%2 ? x[m] : (x[m-1]+x[m])/2; }
+// Per-week load info keyed by week date. cls is null when no label applies;
+// `status` then says why: 'no block' | 'unpriced' | 'in progress' | 'baseline forming'.
+function computeLoadClasses(weeks, cfg, today){
+  const tday = today || localISODate();
+  const ws = (weeks||[]).filter(w=>w && w.date).slice().sort((a,b)=>a.date.localeCompare(b.date));
+  const su = new Map(ws.map(w=>[w.date, computeWeekSU(w, cfg)]));
+  const medByBlock = new Map();
+  ws.forEach(w=>{ if(w.blockId==null || w.date>tday) return; const r = su.get(w.date); if(!r) return;
+    if(!medByBlock.has(w.blockId)) medByBlock.set(w.blockId, []); medByBlock.get(w.blockId).push(r.su); });
+  const out = new Map();
+  ws.forEach((w,i)=>{
+    const r = su.get(w.date), sessions = weekStoredSessions(w).length;
+    const o = {date:w.date, blockId:w.blockId==null?null:w.blockId, phase:weekModeOf(w), su:r?r.su:null, sessions,
+      suPerSession: (r && r.pricedSessions) ? r.su/r.pricedSessions : null, ratio:null, cls:null, status:null,
+      pctBlockMedian:null, baseline:[]};
+    const med = w.blockId!=null ? medianOf(medByBlock.get(w.blockId)||[]) : null;
+    if(r && med) o.pctBlockMedian = r.su/med*100;
+    if(w.blockId==null){ o.status = 'no block'; out.set(w.date, o); return; }
+    if(w.date>tday){ o.status = 'in progress'; out.set(w.date, o); return; }
+    if(!r){ o.status = 'unpriced'; out.set(w.date, o); return; }
+    const base = [];
+    for(let j=i-1; j>=0 && base.length<LOAD_BASELINE_WEEKS; j--){
+      const p = ws[j];
+      if(p.date>tday || isDeloadWeek(p)) continue;           // v22.14c: block boundaries no longer restart the baseline
+      const pr = su.get(p.date); if(!pr) continue;
+      if(weekModeOf(p)!==o.phase) break;                     // phase-run boundary
+      base.push(p);
+    }
+    o.baseline = base.map(p=>p.date);
+    if(base.length===LOAD_BASELINE_WEEKS){
+      const mean = base.reduce((a,p)=>a+su.get(p.date).su,0)/base.length;
+      if(mean>0) o.ratio = r.su/mean;
+    }
+    if(isDeloadWeek(w)) o.cls = 'deload';
+    else if(o.ratio!=null) o.cls = loadBand(o.ratio);
+    else o.status = 'baseline forming';
+    out.set(w.date, o);
+  });
+  return out;
+}
+function loadClassText(o){
+  if(!o) return '';
+  if(!o.cls) return o.status==='baseline forming' ? 'baseline forming' : '';
+  return LOAD_CLASS_LABEL[o.cls]+(o.ratio!=null?' '+o.ratio.toFixed(2)+'×':'');
+}
+// Next-week cost: pairs each labelled (non-deload) week with the following
+// week (exactly 7 days later, same phase, completed, not deload-tagged).
+// Outcomes: anchor-lift e1RM change (same ts key = same exercise+setup, max
+// e1RM per week, averaged over keys trained in both weeks); sessions vs his
+// usual (mean of the labelled week's baseline weeks); next-week RHR vs the
+// mean of the 4 stored weeks ending with the labelled week; sleep change.
+// Suppression / drained-day outcome classes are NOT computed: the app does
+// not store suppression or drained flags (they live only in the packets).
+function weekTopE1rm(w){
+  const m = {};
+  weekStoredSessions(w).forEach(s=>Object.entries((s&&s.ts)||{}).forEach(([k,t])=>{
+    const e = t && Number(t.e1rm); if(!(e>0)) return; if(!(m[k]>=e)) m[k] = e; }));
+  return m;
+}
+const _numOrNull = x=>{ const n = Number(x); return (x==null || x==='' || !Number.isFinite(n)) ? null : n; };
+function computeNextWeekCost(weeks, cfg, today){
+  const tday = today || localISODate();
+  const ws = (weeks||[]).filter(w=>w && w.date).slice().sort((a,b)=>a.date.localeCompare(b.date));
+  const lc = computeLoadClasses(ws, cfg, tday);
+  const byDate = new Map(ws.map(w=>[w.date, w]));
+  const plus7 = d=>{ const x = new Date(d+'T12:00:00Z'); x.setUTCDate(x.getUTCDate()+7); return x.toISOString().split('T')[0]; };
+  const rows = [];
+  ws.forEach((w,i)=>{
+    const o = lc.get(w.date);
+    if(!o || !o.cls || o.cls==='deload') return;
+    const row = {date:w.date, phase:o.phase, blockId:o.blockId, cls:o.cls, ratio:o.ratio, excluded:null,
+      e1rmPct:null, e1rmN:0, sessionsDelta:null, rhrDelta:null, sleepDelta:null};
+    const n = byDate.get(plus7(w.date));
+    if(!n) row.excluded = 'no next week';
+    else if(n.date>tday) row.excluded = 'next week in progress';
+    else if(weekModeOf(n)!==o.phase) row.excluded = 'next week in another phase';
+    else if(isDeloadWeek(n)) row.excluded = 'next week is a deload';
+    if(!row.excluded){
+      const a = weekTopE1rm(w), b = weekTopE1rm(n);
+      const ks = Object.keys(a).filter(k=>k in b);
+      if(ks.length){ row.e1rmPct = ks.reduce((t,k)=>t+(b[k]/a[k]-1)*100,0)/ks.length; row.e1rmN = ks.length; }
+      const usual = o.baseline.map(d=>weekStoredSessions(byDate.get(d)).length);
+      if(usual.length) row.sessionsDelta = weekStoredSessions(n).length - usual.reduce((t,x)=>t+x,0)/usual.length;
+      const rh = ws.slice(Math.max(0,i-3), i+1).map(x=>_numOrNull(x.rhr)).filter(x=>x!=null);
+      const nr = _numOrNull(n.rhr);
+      if(nr!=null && rh.length>=2) row.rhrDelta = nr - rh.reduce((t,x)=>t+x,0)/rh.length;
+      const s0 = _numOrNull(w.sleep), s1 = _numOrNull(n.sleep);
+      if(s0!=null && s1!=null) row.sleepDelta = s1 - s0;
+    }
+    rows.push(row);
+  });
+  // Summary per phase × band (never pooled across phases).
+  const summary = {};
+  rows.filter(r=>!r.excluded).forEach(r=>{
+    const key = r.phase+'|'+r.cls;
+    const g = summary[key] || (summary[key] = {phase:r.phase, cls:r.cls, n:0, e1rm:[], sessions:[], rhr:[], sleep:[]});
+    g.n++;
+    if(r.e1rmPct!=null) g.e1rm.push(r.e1rmPct);
+    if(r.sessionsDelta!=null) g.sessions.push(r.sessionsDelta);
+    if(r.rhrDelta!=null) g.rhr.push(r.rhrDelta);
+    if(r.sleepDelta!=null) g.sleep.push(r.sleepDelta);
+  });
+  const mean = a=>a.length ? a.reduce((t,x)=>t+x,0)/a.length : null;
+  Object.values(summary).forEach(g=>{
+    g.meanE1rmPct = mean(g.e1rm); g.meanSessions = mean(g.sessions); g.meanRhr = mean(g.rhr); g.meanSleep = mean(g.sleep);
+    g.greyed = g.n < COST_MIN_N;
+  });
+  return {rows, summary};
+}
+function renderCostTable(){
+  const el = document.getElementById('costTable'); if(!el) return;
+  const c = computeNextWeekCost(D.weeks);
+  const order = ['light','steady','stepUp','spike'];
+  const phases = [...new Set(Object.values(c.summary).map(g=>g.phase))].sort();
+  const f = (x,d,suf)=>x==null ? '—' : (x>0?'+':'')+x.toFixed(d)+(suf||'');
+  const used = c.rows.filter(r=>!r.excluded).length, excl = c.rows.length - used;
+  let h = '<div style="font-size:10px;color:var(--mu);margin-bottom:6px">Next-week outcomes by load class, within each phase (never pooled). '
+    +used+' week pairs used, '+excl+' excluded (no next week / next week deload, other phase, or in progress). Bands with fewer than '+COST_MIN_N+' weeks are greyed. Thresholds are provisional.</div>';
+  if(!phases.length){ el.innerHTML = h+'<div class="note">No labelled weeks yet — each block needs '+LOAD_BASELINE_WEEKS+' eligible weeks before labels start.</div>'; return; }
+  phases.forEach(ph=>{
+    h += '<div style="font-size:11px;margin-top:8px"><b>'+escHtml(String(ph).toUpperCase())+'</b></div>'
+      + '<table class="tbl" style="font-size:10px"><thead><tr><th>Class</th><th>n</th><th>e1RM Δ</th><th>Sessions Δ</th><th>RHR Δ</th><th>Sleep Δ</th></tr></thead><tbody>'
+      + order.map(k=>{
+          const g = c.summary[ph+'|'+k];
+          if(!g) return '<tr style="opacity:.4"><td>'+LOAD_CLASS_LABEL[k]+'</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>';
+          return '<tr'+(g.greyed?' style="opacity:.45"':'')+'><td>'+LOAD_CLASS_LABEL[k]+'</td><td>'+g.n+'</td><td>'+f(g.meanE1rmPct,1,'%')+' <span style="opacity:.6">('+g.e1rm.length+')</span></td><td>'
+            +f(g.meanSessions,1)+'</td><td>'+f(g.meanRhr,1,' bpm')+' <span style="opacity:.6">('+g.rhr.length+')</span></td><td>'+f(g.meanSleep,2,' h')+' <span style="opacity:.6">('+g.sleep.length+')</span></td></tr>';
+        }).join('') + '</tbody></table>';
+  });
+  h += '<div style="font-size:9px;color:var(--mu);margin-top:6px">Suppression / drained-day classes (Clean · Caution · Cost) are not shown: the app does not store those ratings.</div>';
+  el.innerHTML = h;
+}
 function computeBlockRollup(blockId, cfg){
   const weeks = D.weeks.filter(w=>w.blockId===blockId).sort((a,b)=>a.date.localeCompare(b.date));
   const r = {weeks:weeks.length, pricedWeeks:0, su:0, lower:0, upper:0, core:0, other:0, unratedSets:0,
@@ -1488,6 +1641,10 @@ function computeBlockRollup(blockId, cfg){
     });
     r.triggers += weekTriggers(w, cfg).count;
   });
+  // v22.14: load-class counts for the block
+  const lcb = computeLoadClasses(D.weeks, cfg);
+  r.stepUpWeeks = weeks.filter(w=>(lcb.get(w.date)||{}).cls==='stepUp').length;
+  r.spikeWeeks = weeks.filter(w=>(lcb.get(w.date)||{}).cls==='spike').length;
   r.phases = [...ph];
   if(r.pricedWeeks) r.avg = r.su/r.pricedWeeks;
   r.legShare = r.su>0 ? r.lower/r.su*100 : null;
@@ -2140,6 +2297,7 @@ function suExportLines(w){
   const r = computeWeekSU(w), t = weekTriggers(w), cfg = suCfg();
   const blk = w && w.blockId ? getBlockById(w.blockId) : null;
   const leg = suLegShare(r);
+  const lo = w && w.date ? computeLoadClasses(D.weeks.some(x=>x.date===w.date) ? D.weeks : [...D.weeks, w]).get(w.date) : null;   // v22.14
   const human = 'Stress units:        '+(r ? r.su.toFixed(1)+' SU'+(r.unratedSets?' + ? ('+r.unratedSets+' unrated sets)':'')
       +' · legs '+(leg!=null?leg.toFixed(0)+'%':'n/a')+' · lower '+r.lower.toFixed(1)+' / upper '+r.upper.toFixed(1)+' / core '+r.core.toFixed(1)
       +' · '+r.pricedSessions+'/'+r.sessions+' sessions priced' : 'not priced (no set counts)')
@@ -2153,9 +2311,15 @@ function suExportLines(w){
     'su_sessions_priced:        '+(r ? r.pricedSessions+'/'+r.sessions : '0/'+weekStoredSessions(w).length),
     'su_back_y_sets:            '+t.backYSets,
     'su_trigger_count:          '+t.count+(t.count ? ' ['+[t.backFired?'back':null, ...t.sessionFires.map(f=>f.area+'@'+f.d)].filter(Boolean).join(', ')+']' : ''),
-    'su_block:                  '+(blk ? (blk.name||blk.id) : 'none')
+    'su_block:                  '+(blk ? (blk.name||blk.id) : 'none'),
+    // v22.14: relative load class (provisional thresholds)
+    'su_load_class:             '+(lo ? (lo.cls ? LOAD_CLASS_LABEL[lo.cls] : (lo.status||'n/a')) : 'n/a'),
+    'su_load_ratio_4wk:         '+(lo && lo.ratio!=null ? lo.ratio.toFixed(2) : 'n/a'),
+    'su_pct_block_median:       '+(lo && lo.pctBlockMedian!=null ? lo.pctBlockMedian.toFixed(0) : 'n/a'),
+    'su_sessions_week:          '+(lo ? lo.sessions : weekStoredSessions(w).length),
+    'su_per_session:            '+(lo && lo.suPerSession!=null ? lo.suPerSession.toFixed(1) : 'n/a')
   ];
-  return {human, machine};
+  return {human: human + (lo && (lo.cls || lo.status==='baseline forming') ? ' · load '+loadClassText(lo)+(lo.pctBlockMedian!=null?' ('+lo.pctBlockMedian.toFixed(0)+'% of block median)':'') : ''), machine};
 }
 
 // ── Blocks card (Training → Blocks)
@@ -2182,8 +2346,11 @@ function renderBlocks(){
       <div>Yellow foot (sets): ${it(r.yellow.foot)}</div>
       <div>Yellow elbow (sets): ${it(r.yellow.elbow)}</div>
       <div>Review triggers: ${r.triggers}</div>
+      <div>Load classes: ${r.stepUpWeeks} step-up · ${r.spikeWeeks} spike week${r.spikeWeeks===1?'':'s'} (provisional thresholds)</div>
     </div>`;
   }
+  // v22.14: next-week cost table (one surface, here in Blocks)
+  h += `<div style="margin-top:12px;border-top:1px solid var(--b);padding-top:10px"><div class="ct" style="font-size:11px">// Load vs next-week cost</div><div id="costTable"></div></div>`;
   h += `<div style="margin-top:12px;border-top:1px solid var(--b);padding-top:10px">
     <div class="field"><label>New block name</label><input id="blkName" type="text" placeholder="e.g. Leg block 1"></div>
     <div class="field"><label>Note</label><input id="blkNote" type="text"></div>
@@ -2197,6 +2364,7 @@ function renderBlocks(){
         <select onchange="uiAssignWeek('${escHtml(w.date)}', this.value)">${opt('', '— none —', w.blockId||'')}${blocks.map(b=>opt(b.id, b.name||b.id, w.blockId||'')).join('')}</select>
       </div>`).join('') + `</div>`;
   el.innerHTML = h;
+  safeCall('renderCostTable', renderCostTable);
 }
 function uiStartBlock(){
   const res = startNewBlock(v('blkName'), v('blkNote'), v('blkFrom'));
@@ -6732,6 +6900,7 @@ function renderHistory(){
   // Week list
   const wrap=document.getElementById('histList');
   if(!D.weeks.length){wrap.innerHTML='<div class="empty"><div class="empty-icon">📅</div>No weeks logged yet.</div>';return;}
+  const _histLoad = computeLoadClasses(D.weeks);   // v22.14
   wrap.innerHTML=[...D.weeks].reverse().map(w=>{
     const wTags = w.tags||[];
     const isRefeed = w.refeed||wTags.includes('refeed');
@@ -6746,7 +6915,14 @@ function renderHistory(){
     const wLeg = suLegShare(wSu);
     const suHtml = !wSes.length ? '' : ((w.photo||w.notes)?' &middot; ':'')+'<span'+(wSu&&wSu.unratedSets?' style="color:var(--w)"':'')+'>'+escHtml(fmtSU(wSu))
       +(wLeg!=null?' · legs '+wLeg.toFixed(0)+'%':'')
-      +(wSu&&wSu.pricedSessions<wSu.sessions?' ('+wSu.pricedSessions+'/'+wSu.sessions+' sessions priced)':'')+'</span>';
+      +(wSu&&wSu.pricedSessions<wSu.sessions?' ('+wSu.pricedSessions+'/'+wSu.sessions+' sessions priced)':'')
+      // v22.14: relative load class (provisional), % of block median, sessions, SU/session
+      +(()=>{ const o = _histLoad && _histLoad.get(w.date); if(!o) return '';
+          const t = loadClassText(o); const parts = [];
+          if(t) parts.push(t);
+          if(o.pctBlockMedian!=null) parts.push(o.pctBlockMedian.toFixed(0)+'% of block median');
+          if(o.su!=null) parts.push(o.sessions+' sessions'+(o.suPerSession!=null?', '+o.suPerSession.toFixed(1)+' SU/session':''));
+          return parts.length ? ' · '+escHtml(parts.join(' · ')) : ''; })()+'</span>';
     return `<div class="hi" onclick="loadWeek('${w.date}')">
       <div>
         <div style="font-size:12px;margin-bottom:2px">${fmtD(w.date)}${isRefeed?'<span class="refeed-badge">REFEED</span>':''}${isDeload?'<span style="display:inline-block;background:rgba(71,184,255,.12);color:var(--a2);border:1px solid var(--a2);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:1px;margin-left:5px">DELOAD</span>':''}${modeBadge}${blockChipHtml(w)}${w._historical?'<span style="font-size:9px;color:var(--mu);margin-left:6px">hist</span>':''}</div>
@@ -10765,6 +10941,81 @@ function __selfTestRun() {
       add(/joins block "Bridge" on save/.test(document.getElementById('wBlockNote').textContent), 'v22.13: Log tab shows the open block a new week will join');
     } catch(e){ add(false, 'v22.13: Group 40 threw', String(e&&e.message||e)); }
     finally { D.weeks = savedWeeks; D.blocks = savedBlocks; sv('wDate', savedDate); safeCall('renderWeekBlockNote', renderWeekBlockNote); safeCall('renderHistory', renderHistory); }
+  }
+
+  // ── Group 41 (v22.14): relative load class + next-week cost
+  {
+    const savedWeeks = D.weeks, savedBlocks = D.blocks;
+    try{
+      // Fixture dates are post-2026-09-25 so migrateWeek keeps the stated mode.
+      const dt = i=>{ const x = new Date('2027-03-06T12:00:00Z'); x.setUTCDate(x.getUTCDate()+7*i); return x.toISOString().split('T')[0]; };
+      const mk = (i, sc, extra)=>{ const date = dt(i); return migrateWeek({date, mode:'bulk', blockId:'B', ...(extra||{}),
+        hevySessions: sc ? [{d:date, t:'S1 '+date, m:'legs', ts:{'Belted Squat':{w:290,r:20,rpe:7,e1rm:(extra&&extra.e1rm)||483}}, vol:1, sc}] : null}); };
+      const BS = n=>({'Belted Squat':n});
+      const today = '2027-12-31';
+      // One bulk block; SU = 2 × Belted Squat count.
+      const W = [mk(0,BS(10)), mk(1,BS(10)), mk(2,BS(10)), mk(3,BS(10),{rhr:50}),
+        mk(4,BS(10),{rhr:50, sleep:7.0}),                 // ratio 1.00 → steady
+        mk(5,BS(13),{rhr:50, sleep:7.2, e1rm:500}),       // 26/20 = 1.30 → step-up (boundary inclusive)
+        mk(6,BS(14)),                                     // 28/21.5 → spike
+        mk(7,BS(4),{tags:['deload'], deload:true}),       // deload
+        mk(8,BS(20)),                                     // 40/23.5 → spike (deload skipped in baseline)
+        mk(9,BS(6)),                                      // 12/28.5 → light
+        mk(10,null),                                      // unpriced
+        mk(11,BS(10),{blockId:'C'}),                      // new block, same phase → baseline carries across (v22.14c)
+        mk(60,BS(10)),                                    // future → in progress
+        mk(-1,BS(10),{blockId:null, mode:'maint'})];      // unassigned (other phase, so it doesn't seed the bulk baseline)
+      D.weeks = W; D.blocks = [{id:'B',name:'Bulk 1',phaseRef:'bulk',note:'',closed:true},{id:'C',name:'Bulk 2',phaseRef:'bulk',note:'',closed:false}];
+      const lc = computeLoadClasses(D.weeks, null, today);
+      const g = i=>lc.get(dt(i))||{};
+      add(g(0).status==='baseline forming' && g(3).status==='baseline forming', 'v22.14: fewer than 4 eligible baseline weeks → baseline forming');
+      add(g(4).cls==='steady' && Math.abs(g(4).ratio-1)<1e-9, 'v22.14: 5th week steady (1.00×)');
+      add(g(5).cls==='stepUp' && Math.abs(g(5).ratio-1.3)<1e-9, 'v22.14: 1.30× is step-up (boundary inclusive)');
+      add(g(6).cls==='spike', 'v22.14: >1.3× is spike');
+      add(g(7).cls==='deload', 'v22.14: deload tag overrides the band');
+      add(g(8).cls==='spike' && g(8).baseline.indexOf(dt(7))<0, 'v22.14: deload week excluded from the next baseline');
+      add(g(9).cls==='light', 'v22.14: <0.8× is light');
+      add(g(10).status==='unpriced' && g(60).status==='in progress' && g(-1).status==='no block',
+        'v22.14: unpriced / in-progress / unassigned weeks carry no label');
+      add(g(11).cls==='light' && Math.abs(g(11).ratio-20/26.5)<1e-9 && g(11).baseline.join()===[dt(9),dt(8),dt(6),dt(5)].join(),
+        'v22.14c: baseline carries across a block boundary within the same phase (skips unpriced + deload weeks)');
+      const lr = computeLoadClasses([mk(0,BS(10),{mode:'maint'}), mk(1,BS(10),{mode:'maint'}), mk(2,BS(10),{mode:'maint'}), mk(3,BS(10),{mode:'maint'}),
+        mk(4,BS(10)), mk(5,BS(10)), mk(6,BS(10),{mode:'maint', tags:['deload'], deload:true}), mk(7,BS(10)), mk(8,BS(10)), mk(9,BS(10))], null, today);
+      add(lr.get(dt(8)).status==='baseline forming' && lr.get(dt(9)).cls==='steady' && lr.get(dt(9)).baseline.join()===[dt(8),dt(7),dt(5),dt(4)].join(),
+        'v22.14c: other-phase weeks end the walk-back (no reach into an earlier phase); a deload-tagged week of another mode is skipped, not a boundary');
+      const med = medianOf([20,20,20,20,20,26,28,8,40,12]);
+      add(Math.abs(g(5).pctBlockMedian - 26/med*100)<1e-9 && g(5).sessions===1 && g(5).suPerSession===26,
+        'v22.14: % of block median, sessions and SU/session alongside');
+      const lm = computeLoadClasses([mk(0,BS(10)), mk(1,BS(10)), mk(2,BS(10)), mk(3,BS(10),{mode:'maint'}), mk(4,BS(10))], null, today);
+      add(lm.get(dt(4)).status==='baseline forming', 'v22.14: baseline uses same-phase weeks only');
+      // cost table
+      const c = computeNextWeekCost(D.weeks, null, today);
+      const row = i=>c.rows.find(r=>r.date===dt(i))||{};
+      const r4 = row(4);
+      add(!r4.excluded && Math.abs(r4.e1rmPct - (500/483-1)*100)<1e-9 && r4.e1rmN===1 && r4.sessionsDelta===0
+          && r4.rhrDelta===0 && Math.abs(r4.sleepDelta-0.2)<1e-9, 'v22.14: next-week e1RM %, sessions vs usual, RHR vs 4-wk mean, sleep change', JSON.stringify(r4));
+      add(row(6).excluded==='next week is a deload', 'v22.14: pair excluded when the next week is a deload');
+      add(row(9).e1rmPct==null && row(9).sessionsDelta===-1, 'v22.14: unpriced next week contributes no e1RM; session shortfall shows');
+      const s1 = c.summary['bulk|stepUp'];
+      add(s1 && s1.n===1 && s1.greyed===true, 'v22.14: band summary with n, greyed below '+COST_MIN_N, JSON.stringify(c.summary));
+      const cx = computeNextWeekCost([...D.weeks.filter(w=>w.date<dt(5) && w.blockId==='B'), mk(5,BS(10),{mode:'maint'})], null, today);
+      add((cx.rows.find(r=>r.date===dt(4))||{}).excluded==='next week in another phase', 'v22.14: no cross-phase pairing');
+      // Surfaces use the real clock; pin it to the fixture's "today" for these three checks.
+      const _realToday = window.localISODate; window.localISODate = ()=>today;
+      try{
+      const ex = suExportLines(D.weeks.find(w=>w.date===dt(5)));
+      add(ex.machine.some(l=>/^su_load_class:\s+step-up$/.test(l)) && ex.machine.some(l=>/^su_load_ratio_4wk:\s+1\.30$/.test(l)) && /load step-up 1\.30×/.test(ex.human),
+        'v22.14: AI export carries the load class');
+      safeCall('renderHistory', renderHistory);
+      add(/step-up 1\.30×/.test(document.getElementById('histList').textContent), 'v22.14: History row shows the load class');
+      const ro = computeBlockRollup('B');
+      add(ro.stepUpWeeks===1 && ro.spikeWeeks===2, 'v22.14: Blocks rollup counts step-up and spike weeks');
+      safeCall('renderBlocks', renderBlocks);
+      const ctEl = document.getElementById('costTable'), ctTxt = ctEl ? ctEl.textContent : '';
+      add(/BULK/.test(ctTxt) && /step-up/.test(ctTxt) && /does not store/.test(ctTxt), 'v22.14: cost table renders in Blocks (per phase, with the no-suppression note)', ctTxt.slice(0,160));
+      } finally { window.localISODate = _realToday; }
+    } catch(e){ add(false, 'v22.14: Group 41 threw', String(e&&e.message||e)); }
+    finally { D.weeks = savedWeeks; D.blocks = savedBlocks; safeCall('renderHistory', renderHistory); safeCall('renderBlocks', renderBlocks); }
   }
 
   const failed = out.checks.filter(c=>!c.ok).length;
