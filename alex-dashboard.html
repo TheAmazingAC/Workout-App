@@ -1208,6 +1208,95 @@ function applySuBackupRestore(target, parsed){
     target.blocks = [...byId.values()];
   }
 }
+
+// ══════════════════════════════════════════
+// v22.1: SU computation (derived at runtime — never stored)
+// ══════════════════════════════════════════
+// sc = {canonicalExerciseName: workSetCount}, stored on each imported session
+// (both week copies, C3). Built from the same set rows as ts, which
+// groupBySessions has already stripped of warmups, so every non-warmup set
+// counts (normal, drop, failure). Keys go through canonicalizeRename ONLY.
+function buildSessionSetCounts(sets){
+  const sc = {};
+  (sets||[]).forEach(r=>{
+    if(!r || r.set_type==='warmup') return;
+    const key = canonicalizeRename(r.exercise_title);
+    if(!key) return;
+    sc[key] = (sc[key]||0) + 1;
+  });
+  return sc;
+}
+// Price one session against the CURRENT library. Returns null when the session
+// has no sc (embedded history / pre-v22.1 imports → displayed as "—").
+// Exempt entries contribute 0 and are NOT unrated. A name missing from the
+// library, or rated with su null, is unrated: its sets are counted and shown
+// as "+ ?", never priced as 0 silently.
+function computeSessionSU(ses, cfg){
+  if(!ses || !ses.sc || typeof ses.sc!=='object' || Array.isArray(ses.sc)) return null;
+  const entries = (cfg && cfg.entries) || (typeof D!=='undefined' && D.stressConfig && D.stressConfig.entries) || {};
+  const out = {su:0, lower:0, upper:0, core:0, other:0, sets:0, exemptSets:0, unratedSets:0,
+    unrated:{}, yellow:{backYSets:0, footEx:[], elbowYEx:[]}};
+  const counts = {};
+  Object.entries(ses.sc).forEach(([name,n])=>{
+    const c = Number(n);
+    if(!Number.isInteger(c) || c<=0) return;
+    const key = canonicalizeRename(name);
+    counts[key] = (counts[key]||0) + c;
+  });
+  Object.entries(counts).forEach(([key,c])=>{
+    out.sets += c;
+    const e = entries[key];
+    if(e && e.exempt){ out.exemptSets += c; }
+    else if(!e || e.su==null){ out.unratedSets += c; out.unrated[key] = c; return; }
+    else {
+      const v = e.su*c;
+      out.su += v;
+      if(e.region==='lower') out.lower += v;
+      else if(e.region==='upper') out.upper += v;
+      else if(e.region==='core') out.core += v;
+      else out.other += v;
+    }
+    // Joint exposure (never part of SU). Exempt drills are logged too.
+    if(e.back==='Y') out.yellow.backYSets += c;
+    if(e.foot==='y' || e.foot==='Y') out.yellow.footEx.push(key);
+    if(e.elbow==='Y') out.yellow.elbowYEx.push(key);
+  });
+  return out;
+}
+// The stored sessions of a week: hevySessions (the copy merged into
+// HEVY_DATA), falling back to the legacy sessions copy.
+function weekStoredSessions(w){
+  if(!w) return [];
+  if(Array.isArray(w.hevySessions) && w.hevySessions.length) return w.hevySessions;
+  return Array.isArray(w.sessions) ? w.sessions : [];
+}
+// Week rollup. null when the week has no priced session.
+function computeWeekSU(w, cfg){
+  const ses = weekStoredSessions(w);
+  const priced = ses.map(s=>computeSessionSU(s, cfg)).filter(Boolean);
+  if(!priced.length) return null;
+  const out = {su:0, lower:0, upper:0, core:0, other:0, sets:0, exemptSets:0, unratedSets:0, unrated:{},
+    yellow:{backYSets:0, footEx:[], elbowYEx:[]}, sessions:ses.length, pricedSessions:priced.length};
+  priced.forEach(r=>{
+    ['su','lower','upper','core','other','sets','exemptSets','unratedSets'].forEach(k=>out[k]+=r[k]);
+    Object.entries(r.unrated).forEach(([k,c])=>out.unrated[k]=(out.unrated[k]||0)+c);
+    out.yellow.backYSets += r.yellow.backYSets;
+    out.yellow.footEx.push(...r.yellow.footEx);
+    out.yellow.elbowYEx.push(...r.yellow.elbowYEx);
+  });
+  return out;
+}
+// Leg share of RATED SU (lower / all rated). null when nothing is rated.
+function suLegShare(r){
+  return (r && r.su>0) ? r.lower/r.su*100 : null;
+}
+// "9.5 SU", "9.5 SU + ? (2 unrated sets)", or "SU —" when unpriced.
+function fmtSU(r){
+  if(!r) return 'SU —';
+  let t = r.su.toFixed(1)+' SU';
+  if(r.unratedSets) t += ' + ? ('+r.unratedSets+' unrated set'+(r.unratedSets===1?'':'s')+')';
+  return t;
+}
 // Maintenance targets (Alex's bridge plan): protein is a DYNAMIC equation —
 // 0.8g/lb of current 7-day-average body weight (Alex decision 2026-09-25; at
 // ~172.5 lb ≈ 138g). Fat 60g; carbs derived: (2500 − protein×4 − 60×9) / 4 —
@@ -4311,6 +4400,10 @@ function confirmHevyImport(){
       })(),
       _sessionType: s.type,
       _setsForPeaks: s.type==='gym',
+      // v22.1: per-exercise work-set counts — the only stored SU input.
+      // saveWeek copies these staged objects into BOTH week.sessions and
+      // week.hevySessions, so both copies carry the same sc (C3).
+      sc: buildSessionSetCounts(s.sets),
       we: '', // filled at save time
       ts,
       vol: Math.round(vol),
@@ -5264,13 +5357,17 @@ function renderSessions(){
   const muscleBadge={push:'<span style="color:var(--a)">push</span>',pull:'<span style="color:var(--a2)">pull</span>',legs:'<span style="color:var(--g)">legs</span>',upper:'<span style="color:var(--w)">upper</span>',mobility:'<span style="color:var(--pur)">mobility</span>',other:'<span style="color:var(--mu)">other</span>'};
   document.getElementById('sesLog').innerHTML=recent.map(s=>{
     // v21: session titles / exercise names come from CSV or backups — escaped
+    // v22.1: SU priced live from the current library; "—" when unpriced.
+    const suR=computeSessionSU(s);
+    const suTip=suR?`lower ${suR.lower.toFixed(1)} · upper ${suR.upper.toFixed(1)} · core ${suR.core.toFixed(1)}${suR.unratedSets?' · unrated: '+Object.entries(suR.unrated).map(([k,c])=>k+' ×'+c).join(', '):''}`:'Not priced (no set counts stored)';
+    const suStr=`<span title="${escHtml(suTip)}"${suR&&suR.unratedSets?' style="color:var(--w)"':''}>${escHtml(fmtSU(suR))}</span>`;
     const topStr=Object.entries(s.ts).slice(0,3).map(([ex,d])=>`${escHtml(String(ex))}: ${escHtml(String(d.w||'BW'))}lbs×${escHtml(String(d.r||'?'))}`).join('  ·  ');
     return`<div class="hi" style="display:block;padding:11px 0;">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
         <div style="font-size:12px">${escHtml(String(s.t))}</div>
         <div style="font-size:10px;color:var(--mu)">${fmtDShort(s.d)}</div>
       </div>
-      <div style="font-size:10px;color:var(--mu)">${muscleBadge[s.m]||muscleBadge.other} · vol: ${(s.vol/1000).toFixed(0)}k lbs</div>
+      <div style="font-size:10px;color:var(--mu)">${muscleBadge[s.m]||muscleBadge.other} · vol: ${(s.vol/1000).toFixed(0)}k lbs · ${suStr}</div>
       ${topStr?`<div style="font-size:9px;color:var(--mu);margin-top:4px;opacity:.7">${topStr}</div>`:''}
     </div>`;
   }).join('');
@@ -5637,10 +5734,17 @@ function renderHistory(){
     // v21: mode/tags/values can arrive from backups — escaped (identical for normal values)
     const modeBadge = w.mode&&w.mode!=='cut'
       ? `<span style="display:inline-block;background:rgba(107,107,138,.12);color:var(--mu);border:1px solid var(--b);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:1px;margin-left:5px">${escHtml(String(w.mode).toUpperCase())}</span>` : '';
+    // v22.1: week SU total + leg share (shown only when the week has stored sessions)
+    const wSes = weekStoredSessions(w);
+    const wSu = wSes.length ? computeWeekSU(w) : null;
+    const wLeg = suLegShare(wSu);
+    const suHtml = !wSes.length ? '' : ((w.photo||w.notes)?' &middot; ':'')+'<span'+(wSu&&wSu.unratedSets?' style="color:var(--w)"':'')+'>'+escHtml(fmtSU(wSu))
+      +(wLeg!=null?' · legs '+wLeg.toFixed(0)+'%':'')
+      +(wSu&&wSu.pricedSessions<wSu.sessions?' ('+wSu.pricedSessions+'/'+wSu.sessions+' sessions priced)':'')+'</span>';
     return `<div class="hi" onclick="loadWeek('${w.date}')">
       <div>
         <div style="font-size:12px;margin-bottom:2px">${fmtD(w.date)}${isRefeed?'<span class="refeed-badge">REFEED</span>':''}${isDeload?'<span style="display:inline-block;background:rgba(71,184,255,.12);color:var(--a2);border:1px solid var(--a2);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:1px;margin-left:5px">DELOAD</span>':''}${modeBadge}${w._historical?'<span style="font-size:9px;color:var(--mu);margin-left:6px">hist</span>':''}</div>
-        <div style="font-size:10px;color:var(--mu)">${(w.lifts||[]).filter(l=>l.weight).length} lifts${extraTags.map(t=>' <span style="font-size:8px;color:var(--mu)">#'+escHtml(String(t))+'</span>').join('')} &middot; ${w.photo?'📷 ':''}${w.notes?'📝 ':''}</div>
+        <div style="font-size:10px;color:var(--mu)">${(w.lifts||[]).filter(l=>l.weight).length} lifts${extraTags.map(t=>' <span style="font-size:8px;color:var(--mu)">#'+escHtml(String(t))+'</span>').join('')} &middot; ${w.photo?'📷 ':''}${w.notes?'📝 ':''}${suHtml}</div>
       </div>
       <div class="hact">
         <div class="hm">
@@ -9164,6 +9268,43 @@ function __selfTestRun() {
       add(back.stressConfig.revision===3 && back.blocks.length===1, 'v22.0: export→migrate round-trips stressConfig + blocks');
     } finally { D.stressConfig = savedSc; D.blocks = savedBl; }
   } catch(e){ add(false, 'v22.0: Group 27 threw', String(e&&e.message||e)); }
+
+  // ── Group 28 (v22.1): sc build + SU pricing
+  try{
+    const rows = [
+      {exercise_title:'Incline Bench Press (Vitruvian)', set_type:'warmup'},
+      {exercise_title:'Incline Bench Press (Vitruvian)', set_type:'normal'},
+      {exercise_title:'Incline Bench Press (Dumbbell)', set_type:'normal'},
+      {exercise_title:'Chin Up', set_type:'normal'},
+      {exercise_title:'Chin Up', set_type:'dropset'},
+      {exercise_title:'Bird Dog', set_type:'normal'},
+      {exercise_title:'Mystery Move', set_type:'normal'},
+    ];
+    const sc = buildSessionSetCounts(rows);
+    add(sc['Incline Bench Press (Dumbbell)']===2 && !sc['Incline Bench Press (Vitruvian)'] && sc['Chin Up']===2 && sc['Bird Dog']===1,
+      'v22.1: sc counts work sets only, true-rename collapses Vitruvian incline');
+    const cfg = freshStressConfig();
+    const r = computeSessionSU({sc}, cfg);
+    add(r.su===2*1.5+2*2 && r.upper===7 && r.lower===0, 'v22.1: SU = 2×1.5 incline + 2×2 chin = 7.0 (got '+r.su+')');
+    add(r.exemptSets===1 && !r.unrated['Bird Dog'], 'v22.1: exempt contributes 0 and is not unrated');
+    add(r.unratedSets===1 && r.unrated['Mystery Move']===1 && /\+ \? \(1 unrated set\)/.test(fmtSU(r)),
+      'v22.1: unknown exercise surfaces as "+ ?" with count');
+    add(computeSessionSU({ts:{}}, cfg)===null && fmtSU(null)==='SU —', 'v22.1: session without sc is unpriced ("SU —")');
+    const cfg2 = freshStressConfig(); cfg2.entries['Chin Up'].su = 2.5;
+    add(computeSessionSU({sc}, cfg2).su===8, 'v22.1: SU recomputes live from the current library (no staleness)');
+    const legSes = {sc:{'Romanian Deadlift (Barbell)':2,'Belted Squat':2,'Leg Extension (Hyper Pro)':2,'Lying Leg Curl (Machine)':1,'Standing Calf Raise (Hyper Pro)':2}};
+    const rl = computeSessionSU(legSes, cfg);
+    add(rl.su===15 && rl.lower===15 && rl.yellow.backYSets===2 && rl.yellow.footEx.length===1,
+      'v22.1: Lower B card (RDL2 belt2 ext2 curl1 calf2) = 15 SU; back-Y 2 sets; 1 yellow-foot exercise');
+    const wk = {hevySessions:[{sc}, legSes, {ts:{}}]};
+    const wr = computeWeekSU(wk, cfg);
+    add(wr.su===22 && wr.pricedSessions===2 && wr.sessions===3 && Math.abs(suLegShare(wr)-15/22*100)<1e-9,
+      'v22.1: week rollup sums priced sessions, counts unpriced, leg share of rated SU');
+    add(computeWeekSU({hevySessions:[{ts:{}}]}, cfg)===null && computeWeekSU({sessions:[legSes]}, cfg).su===15,
+      'v22.1: week with no priced session → null; falls back to legacy sessions copy');
+    const tsKeys = Object.keys(buildSessionTopSets(rows.filter(x=>x.set_type!=='warmup').map(x=>({...x, weight_lbs:'50', reps:'8', rpe:'7'}))));
+    add(tsKeys.every(k=>k in sc), 'v22.1: sc keys cover ts keys for the same set rows');
+  } catch(e){ add(false, 'v22.1: Group 28 threw', String(e&&e.message||e)); }
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
