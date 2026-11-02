@@ -925,6 +925,8 @@ select option{background:var(--s2);}
       <input type="file" id="importFile" accept=".json" style="display:none" onchange="importData(event)">
     </div>
     <div id="backupStatus" style="font-size:10px;color:var(--mu);text-align:center;margin-top:8px;display:none"></div>
+    <!-- v22.9: backup freshness + approximate storage -->
+    <div id="backupFreshness" style="font-size:10px;color:var(--mu);text-align:center;margin-top:8px;line-height:1.6"></div>
   </div>
   <!-- v22.4: SU backfill -->
   <div class="card">
@@ -1772,7 +1774,7 @@ function suApplyEdit(name, changes, reason, dateStr){
   const cfg = suCfg();
   const aliasOf = suAliasTarget(name); if(aliasOf) name = aliasOf;
   const e = cfg.entries[name]; if(!e) return 0;
-  const date = dateStr || new Date().toISOString().split('T')[0];
+  const date = dateStr || localISODate();
   const log = [];
   const set = (f, nv)=>{
     const ov = (f==='note') ? (e.note||'') : e[f];
@@ -1806,7 +1808,7 @@ function suAddEntry(name, reason, dateStr){
   if(!name || cfg.entries[name]) return false;
   cfg.entries[name] = {su:null, exempt:false, region:null, back:null, foot:null, elbow:null};
   cfg.revision = (Number(cfg.revision)||0) + 1;
-  cfg.changelog.push({date:dateStr||new Date().toISOString().split('T')[0], name, field:'created', from:null, to:'entry', note:String(reason||'')});
+  cfg.changelog.push({date:dateStr||localISODate(), name, field:'created', from:null, to:'entry', note:String(reason||'')});
   return true;
 }
 // Names logged in stored sessions that the library cannot price (missing, or
@@ -4120,7 +4122,7 @@ window.onload = ()=>{
   // v22.6: move embedded history into stored weeks first (no-op once done).
   safeCall('runEmbeddedMigration', runEmbeddedMigration);
   safeCall('mergeStoredSessions', mergeStoredSessions);
-  sv('wDate', new Date().toISOString().split('T')[0]);
+  sv('wDate', localISODate());   // v22.9: local date, not UTC
   sv('phaseRef', D.mode || 'cut');
   if(D.targetWeight) sv('targetWt', D.targetWeight);
   safeCall('buildPrimaryMuscleMap', buildPrimaryMuscleMap);
@@ -4290,6 +4292,47 @@ const EX_DISPLAY_NAMES = Object.freeze({
 function displayExName(key){ return (key && EX_DISPLAY_NAMES[key]) || key; }
 // v22.8: backup filename (phase-neutral).
 function backupFilename(dateStr){ return 'alex-dashboard-backup-'+dateStr+'.json'; }
+// v22.9: the user's LOCAL calendar date as YYYY-MM-DD. For user-facing
+// defaults only (week-date default, changelog dates, backup filename) —
+// getWeekEndingFromDate, parseHevyDate and the Saturday week keys stay on
+// UTC noon by design.
+function localISODate(d){
+  const x = d instanceof Date ? d : new Date();
+  return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')+'-'+String(x.getDate()).padStart(2,'0');
+}
+// v22.9: backup freshness — a per-browser record (the risk is per-browser),
+// kept OUT of D so it never enters the backup file's schema.
+const LAST_EXPORT_KEY = 'alexDash_lastExportAt';
+const STORAGE_BUDGET_CHARS = 5*1024*1024;   // ~5 MB typical localStorage budget (approx)
+const BACKUP_STALE_DAYS = 7;
+function getLastExportAt(){ try{ return localStorage.getItem(LAST_EXPORT_KEY); }catch(e){ return null; } }
+function recordBackupExport(when){ try{ localStorage.setItem(LAST_EXPORT_KEY, (when||new Date()).toISOString()); return true; }catch(e){ return false; } }
+// Pure: {never, label, days, stale}. Days counted between LOCAL calendar dates.
+function backupFreshnessInfo(lastIso, now){
+  const n = now instanceof Date ? now : new Date();
+  const t = lastIso ? new Date(lastIso) : null;
+  if(!t || Number.isNaN(t.getTime())) return {never:true, days:null, stale:true, label:'Last exported: never'};
+  const day0 = d=>new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.max(0, Math.round((day0(n)-day0(t))/86400000));
+  return {never:false, days, stale:days>BACKUP_STALE_DAYS,
+    label:'Last exported: '+localISODate(t)+' ('+(days===0?'today':days===1?'1 day ago':days+' days ago')+')'};
+}
+// Pure: approximate stored-state size vs the budget (localStorage counts
+// UTF-16 characters; the stored state is ASCII JSON, so chars ≈ bytes).
+function storageApproxInfo(storedStr){
+  const chars = (storedStr||'').length;
+  const pct = chars/STORAGE_BUDGET_CHARS*100;
+  const fmt = c=>c>=1024*1024 ? (c/1024/1024).toFixed(2)+' MB' : Math.round(c/1024)+' KB';
+  return {chars, pct, label:'Storage (approx): '+fmt(chars)+' of ~5 MB ('+pct.toFixed(pct<10?1:0)+'%)'};
+}
+function renderBackupFreshness(){
+  const el = document.getElementById('backupFreshness'); if(!el) return;
+  const f = backupFreshnessInfo(getLastExportAt());
+  let stored = ''; try{ stored = localStorage.getItem(SK)||''; }catch(e){}
+  const st = storageApproxInfo(stored);
+  el.innerHTML = '<span style="color:'+(f.stale?'var(--w)':'var(--mu)')+'">'+escHtml(f.label)+(f.stale?' — export a backup':'')+'</span>'
+    + '<br><span style="color:'+(st.pct>=80?'var(--w)':'var(--mu)')+'">'+escHtml(st.label)+'</span>';
+}
 
 // ══════════════════════════════════════════
 // PATCH F: MUSCLE COUNTING METHOD
@@ -4757,6 +4800,11 @@ function saveWeek(){
   }
   D.weeks.sort((a,b)=>a.date.localeCompare(b.date));
   const saved = save();
+  // v22.9: consume the staged import once it is persisted (as _importedLiftSrc
+  // is) — otherwise the next week saved in the same sitting inherited these
+  // sessions. Re-saving this week later keeps them via the v22.2 rule; a
+  // failed save keeps them staged so the save can be retried.
+  if(saved) window._importedSessions = null;
   // v21: the week is already persisted here; an analytics-merge failure must
   // not skip the UI refresh, the snapshot reset and the confirmation below.
   safeCall('mergeStoredSessions', mergeStoredSessions);
@@ -6443,6 +6491,7 @@ function deleteWeek(date, ev){
 }
 
 function renderHistory(){
+  safeCall('renderBackupFreshness', renderBackupFreshness);
   // Photo strip
   const withPhotos=D.weeks.filter(w=>w.photo).reverse();
   if(withPhotos.length){
@@ -6510,11 +6559,14 @@ function exportData(){
   const blob = new Blob([json], {type: 'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const date = new Date().toISOString().split('T')[0];
+  const date = localISODate();   // v22.9: local date in the filename
   a.href = url;
   a.download = backupFilename(date);
   a.click();
   URL.revokeObjectURL(url);
+  // v22.9: per-browser freshness record (not part of the backup schema)
+  recordBackupExport();
+  safeCall('renderBackupFreshness', renderBackupFreshness);
   const photoCount = D.weeks.filter(w => w.photo).length;
   const st = document.getElementById('backupStatus');
   st.style.display = 'block';
@@ -10325,6 +10377,56 @@ function __selfTestRun() {
         'v22.8: summary card copy phase-neutral');
     } catch(e){ add(false, 'v22.8: Group 35 threw', String(e&&e.message||e)); }
     finally { D.weeks = savedWeeks; }
+  }
+
+  // ── Group 36 (v22.9): staged-import leak, local dates, backup freshness
+  {
+    const savedWeeks = D.weeks, savedStaged = window._importedSessions, savedDate = v('wDate');
+    let savedLast = null; try{ savedLast = localStorage.getItem(LAST_EXPORT_KEY); }catch(e){}
+    try{
+      D.weeks = [];
+      const A = [{d:'2026-10-31', t:'Lower Day (Home)', m:'legs', ts:{}, vol:1, sc:{'Belted Squat':2}}];
+      window._importedSessions = A;
+      sv('wDate','2026-10-31'); saveWeek();
+      const wa = D.weeks.find(w=>w.date==='2026-10-31');
+      add(wa && wa.hevySessions && wa.hevySessions.length===1 && window._importedSessions===null, 'v22.9: save consumes the staged import');
+      sv('wDate','2026-11-07'); saveWeek();
+      const wb = D.weeks.find(w=>w.date==='2026-11-07');
+      add(wb && !(Array.isArray(wb.hevySessions) && wb.hevySessions.length) && !(Array.isArray(wb.sessions) && wb.sessions.length), 'v22.9: next week saved without an import carries none of week A\'s sessions');
+      const aBefore = JSON.stringify(D.weeks.find(w=>w.date==='2026-10-31').hevySessions);
+      sv('wDate','2026-10-31'); saveWeek();
+      add(JSON.stringify(D.weeks.find(w=>w.date==='2026-10-31').hevySessions)===aBefore, 'v22.9: re-saving A with nothing staged keeps its sessions (v22.2)');
+      window._importedSessions = [{d:'2026-10-30', t:'Upper Day (Home)', m:'upper', ts:{}, vol:1, sc:{'Chin Up':1}}];
+      saveWeek();
+      add(D.weeks.find(w=>w.date==='2026-10-31').hevySessions[0].t==='Upper Day (Home)', 'v22.9: a staged import still replaces');
+      // local dates
+      add(localISODate(new Date(2026,10,2,23,30))==='2026-11-02' && localISODate(new Date(2026,0,5,0,5))==='2026-01-05', 'v22.9: localISODate uses the local calendar date');
+      const sc0 = freshStressConfig(); const keep = D.stressConfig; D.stressConfig = sc0;
+      suApplyEdit('Supine Press', {su:2});
+      add(D.stressConfig.changelog.slice(-1)[0].date===localISODate(), 'v22.9: changelog default date is local');
+      D.stressConfig = keep;
+      add(getWeekEndingFromDate('2026-11-02')==='2026-11-07', 'v22.9: week-ending math unchanged (UTC noon)');
+      // freshness
+      const now = new Date(2026,10,10,9,0);
+      add(backupFreshnessInfo(null, now).never && backupFreshnessInfo(null, now).stale && /never/.test(backupFreshnessInfo(null, now).label), 'v22.9: no export recorded → "never", amber');
+      const f3 = backupFreshnessInfo(new Date(2026,10,7,22,0).toISOString(), now);
+      add(f3.days===3 && !f3.stale && /3 days ago/.test(f3.label), 'v22.9: 3 days → not stale');
+      const f8 = backupFreshnessInfo(new Date(2026,10,2,8,0).toISOString(), now);
+      add(f8.days===8 && f8.stale, 'v22.9: 8 days → stale (> 7)');
+      add(!backupFreshnessInfo(new Date(2026,10,3,8,0).toISOString(), now).stale, 'v22.9: exactly 7 days → not yet stale');
+      const si = storageApproxInfo('x'.repeat(330*1024));
+      add(si.chars===330*1024 && /330 KB of ~5 MB/.test(si.label) && /approx/.test(si.label), 'v22.9: storage readout approx KB of ~5 MB');
+      const dBefore = JSON.stringify(D);
+      recordBackupExport(new Date(2026,10,2,12,0));
+      add(JSON.stringify(D)===dBefore && !('lastExportAt' in D) && !!getLastExportAt(), 'v22.9: export record stays out of D (and the backup schema)');
+      renderBackupFreshness();
+      add(/Last exported: 2026-11-02/.test(document.getElementById('backupFreshness').textContent), 'v22.9: Data Backup card shows the last export');
+    } catch(e){ add(false, 'v22.9: Group 36 threw', String(e&&e.message||e)); }
+    finally {
+      D.weeks = savedWeeks; window._importedSessions = savedStaged; sv('wDate', savedDate);
+      try{ if(savedLast==null) localStorage.removeItem(LAST_EXPORT_KEY); else localStorage.setItem(LAST_EXPORT_KEY, savedLast); }catch(e){}
+      safeCall('renderBackupFreshness', renderBackupFreshness);
+    }
   }
 
   const failed = out.checks.filter(c=>!c.ok).length;
