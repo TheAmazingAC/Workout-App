@@ -1456,6 +1456,115 @@ function computeBlockRollup(blockId, cfg){
 // parse time — before onload merges stored sessions in — so the report can tell
 // "in CSV, embedded, not patchable" from "in CSV, in neither" (C2).
 const HEVY_EMBEDDED_KEYS = new Set((HEVY_DATA.sessions||[]).map(s=>(parseHevyDate(s&&s.d||'')||String(s&&s.d))+'||'+(s&&s.t)));
+// ══════════════════════════════════════════
+// v22.6: EMBEDDED HISTORY → STORED WEEKS (migration only; no sc here)
+// ══════════════════════════════════════════
+// The inline HEVY_DATA sessions (captured here, before onload merges stored
+// sessions into HEVY_DATA.sessions) are copied into D.weeks as ordinary
+// sessions + hevySessions, grouped by week-ending (we). Data-driven and exact:
+// an embedded session is placed only when its date||title key is absent from
+// EVERY stored week, so a second load, a re-import of a migrated backup, or a
+// partially migrated state never duplicates; a restored pre-migration backup
+// (which wipes those weeks' sessions on merge) is healed on the next run.
+// Placement rules:
+//  - week-ending exists → append to that week's two session copies; every
+//    other field of the week is untouched;
+//  - week-ending absent and NOT a HIST_DATA date → create the week from the
+//    default-week shape (marked _embeddedMigrated);
+//  - week-ending absent but covered by HIST_DATA → deferred (never created),
+//    so a later "LOAD 53 WEEKS" import is not blocked by a sessions-only week.
+// Migration-local alias: the one verified legacy name in the copied ts keys
+// ('Bulgarian Split Squat' → 'Bulgarian Split Squat (Dumbbell)', matching the
+// CSV and the library). TRUE_RENAME_MAP is unchanged.
+const HEVY_EMBEDDED_SESSIONS = HEVY_DATA.sessions;
+const EMBEDDED_TS_ALIASES = {'Bulgarian Split Squat':'Bulgarian Split Squat (Dumbbell)'};
+function embeddedCopy(ses){
+  const c = JSON.parse(JSON.stringify(ses));
+  const ts = {};
+  Object.entries(c.ts||{}).forEach(([k,t])=>{
+    const key = EMBEDDED_TS_ALIASES[k] || k;
+    const prev = ts[key];
+    if(!prev || (t && t.e1rm!=null && (prev.e1rm==null || t.e1rm>prev.e1rm))) ts[key] = t;
+  });
+  c.ts = ts;
+  return c;
+}
+function migrateEmbeddedSessions(weeks, embedded, histDates){
+  const before = weeks||[];
+  const out = JSON.parse(JSON.stringify(before));
+  const hist = histDates instanceof Set ? histDates : new Set(histDates||[]);
+  const stored = new Set();
+  out.forEach(w=>[w.sessions, w.hevySessions].filter(Array.isArray).forEach(a=>a.forEach(x=>{ const k = suSessionKey(x); if(k) stored.add(k); })));
+  const rep = {embedded:(embedded||[]).length, alreadyStored:0, placed:0, created:0, patchedWeeks:0, deferred:0, invalid:0, createdDates:[], deferredKeys:[]};
+  const byDate = new Map(out.map(w=>[w.date, w]));
+  const touched = new Set();
+  (embedded||[]).forEach(src=>{
+    const k = suSessionKey(src);
+    const we = (src && (src.we || getWeekEndingFromDate(parseHevyDate(src.d||''))));
+    if(!k || !we){ rep.invalid++; return; }
+    if(stored.has(k)){ rep.alreadyStored++; return; }
+    let w = byDate.get(we);
+    if(!w){
+      if(hist.has(we)){ rep.deferred++; rep.deferredKeys.push(k); return; }
+      w = migrateWeek({...cloneDefaultWeek(), date:we, _embeddedMigrated:true});
+      out.push(w); byDate.set(we, w); rep.created++; rep.createdDates.push(we);
+    }
+    const c = embeddedCopy(src);
+    if(!Array.isArray(w.sessions)) w.sessions = [];
+    if(!Array.isArray(w.hevySessions)) w.hevySessions = [];
+    w.sessions.push(JSON.parse(JSON.stringify(c)));
+    w.hevySessions.push(c);
+    stored.add(k); rep.placed++;
+    if(!w._embeddedMigrated) touched.add(we);
+  });
+  rep.patchedWeeks = touched.size;
+  out.sort((a,b)=>a.date.localeCompare(b.date));
+  return {weeks:out, report:rep, check:verifyEmbeddedMigration(before, out, rep)};
+}
+// Checks: pre-existing weeks all present, byte-identical outside the two
+// session fields, their original session entries kept as a prefix of each
+// copy; created weeks are new dates only; counts reconcile; no duplicate
+// key in any copy; dates sorted.
+function verifyEmbeddedMigration(before, after, rep){
+  const errors = [];
+  const strip = w=>{ const c = JSON.parse(JSON.stringify(w)); delete c.sessions; delete c.hevySessions; return JSON.stringify(c); };
+  const aBy = new Map(after.map(w=>[w.date, w]));
+  before.forEach(w=>{
+    const a = aBy.get(w.date);
+    if(!a){ errors.push('week lost '+w.date); return; }
+    if(strip(w)!==strip(a)) errors.push('non-session field changed in '+w.date);
+    ['sessions','hevySessions'].forEach(f=>{
+      const o = Array.isArray(w[f]) ? w[f] : [];
+      const n = Array.isArray(a[f]) ? a[f] : (w[f]==null ? [] : null);
+      if(n===null || JSON.stringify(n.slice(0,o.length))!==JSON.stringify(o)) errors.push('existing '+f+' altered in '+w.date);
+    });
+  });
+  if(after.length !== before.length + rep.created) errors.push('week count mismatch');
+  for(let i=1;i<after.length;i++) if(after[i-1].date > after[i].date) errors.push('weeks not sorted');
+  if(rep.placed + rep.alreadyStored + rep.deferred + rep.invalid !== rep.embedded) errors.push('session count does not reconcile');
+  after.forEach(w=>['sessions','hevySessions'].forEach(f=>{
+    if(!Array.isArray(w[f])) return;
+    const ks = w[f].map(suSessionKey).filter(Boolean);
+    if(new Set(ks).size!==ks.length) errors.push('duplicate session key in '+w.date+' '+f);
+  }));
+  return {ok:!errors.length, errors};
+}
+// Run against D and commit only when the checks pass. Returns the report.
+function runEmbeddedMigration(opts){
+  // Fresh install (no weeks yet): wait — weeks are created only once real
+  // data exists, so "LOAD 53 WEEKS" stays the first-run path. The migration
+  // runs again after that import and on every load.
+  if(!Array.isArray(D.weeks) || !D.weeks.length){ window._embeddedMigrationReport = {skipped:'no weeks yet'}; return window._embeddedMigrationReport; }
+  const res = migrateEmbeddedSessions(D.weeks, HEVY_EMBEDDED_SESSIONS, new Set(HIST_DATA.map(h=>h.date)));
+  window._embeddedMigrationReport = {...res.report, ok:res.check.ok, errors:res.check.errors};
+  if(!res.check.ok){ console.warn('[alex-dashboard] embedded migration checks failed — nothing written', res.check.errors); return window._embeddedMigrationReport; }
+  if(res.report.placed){
+    D.weeks = res.weeks;
+    if(!(opts && opts.noSave)) save();
+    console.info('[alex-dashboard] embedded migration placed '+res.report.placed+' sessions ('+res.report.created+' weeks created, '+res.report.patchedWeeks+' patched, '+res.report.deferred+' deferred)');
+  }
+  return window._embeddedMigrationReport;
+}
 function suSessionKey(s){ const d = parseHevyDate((s&&s.d)||''); return (d && s && typeof s.t==='string') ? d+'||'+s.t : null; }
 function hasSc(s){ return !!(s && s.sc && typeof s.sc==='object' && !Array.isArray(s.sc) && Object.keys(s.sc).length); }
 // CSV → {map:key→{sc, d, t}, dupKeys}. groupBySessions drops warmups.
@@ -3963,6 +4072,8 @@ function mergeStoredSessions(){
 window.onload = ()=>{
   // v21: init steps are isolated — a failure in one (e.g. malformed stored
   // session data) no longer skips every step after it.
+  // v22.6: move embedded history into stored weeks first (no-op once done).
+  safeCall('runEmbeddedMigration', runEmbeddedMigration);
   safeCall('mergeStoredSessions', mergeStoredSessions);
   sv('wDate', new Date().toISOString().split('T')[0]);
   sv('phaseRef', D.mode || 'cut');
@@ -6235,6 +6346,8 @@ function importHistorical(){
     else{D.weeks.push(migrateWeek(hw));added++;}
   });
   D.weeks.sort((a,b)=>a.date.localeCompare(b.date));
+  // v22.6: sessions deferred because their HIST week did not exist yet
+  safeCall('runEmbeddedMigration', ()=>runEmbeddedMigration({noSave:true}));
   const saved = save();
   document.getElementById('importBanner').style.display='none';
   if(saved) toast(`Loaded ${added} weeks${skipped?' ('+skipped+' skipped)':''} ✓`);
@@ -6394,6 +6507,10 @@ function importData(e){
       const merged = mergeBackupWeeks(D.weeks, imported.weeks);
       const added = merged.added, updated = merged.updated, skipped = merged.skipped;
       D.weeks = merged.weeks;
+      // v22.6: a pre-migration backup replaces weeks without their embedded
+      // sessions — re-place them (data-driven; no-op for migrated backups).
+      // Saved by the save() below.
+      safeCall('runEmbeddedMigration', ()=>runEmbeddedMigration({noSave:true}));
       // Also restore deficit settings if present
       if(imported.defHeight) D.defHeight = imported.defHeight;
       if(imported.defAge) D.defAge = imported.defAge;
@@ -10004,6 +10121,53 @@ function __selfTestRun() {
     } catch(e){ add(false, 'v22.5: Group 32 threw', String(e&&e.message||e)); }
     finally { D.stressConfig = savedSc; D.weeks = savedWeeks; D.blocks = savedBlocks; }
   }
+
+  // ── Group 33 (v22.6): embedded history migration
+  try{
+    const emb = [
+      {d:'2024-12-24', t:'Morning workout', m:'other', we:'2024-12-28', ts:{'Hack Squat (Machine)':{w:160,r:10,rpe:0,e1rm:213}}, vol:1600},
+      {d:'2024-12-26', t:'Leg day', m:'legs', we:'2024-12-28', ts:{'Bulgarian Split Squat':{w:40,r:10,rpe:0,e1rm:53}}, vol:400},
+      {d:'2025-02-20', t:'Push', m:'push', we:'2025-02-22', ts:{'Chin Up':{w:0,r:20,rpe:0,e1rm:0}}, vol:0},
+      {d:'2025-03-04', t:'Pull', m:'pull', we:'2025-03-08', ts:{}, vol:0},
+      {d:'2025-03-10', t:'Already', m:'pull', we:'2025-03-15', ts:{}, vol:0},
+    ];
+    const hist = new Set(['2025-02-22','2025-03-01','2025-03-08','2025-03-15']);
+    const weeks = [
+      migrateWeek({date:'2025-02-22', weight:192.5, notes:'hist', _historical:true}),
+      migrateWeek({date:'2025-03-15', weight:188, sessions:[{d:'2025-03-10', t:'Already', m:'pull', ts:{}, vol:0}], hevySessions:[{d:'2025-03-10', t:'Already', m:'pull', ts:{}, vol:0, we:'2025-03-15'}]}),
+    ];
+    const before = JSON.stringify(weeks);
+    const r = migrateEmbeddedSessions(weeks, emb, hist);
+    add(r.check.ok, 'v22.6: migration checks pass ('+r.check.errors.join('; ')+')');
+    add(JSON.stringify(weeks)===before, 'v22.6: migration works on a copy');
+    add(r.report.placed===3 && r.report.created===1 && r.report.patchedWeeks===1 && r.report.deferred===1 && r.report.alreadyStored===1,
+      'v22.6: placed 3, created 1, patched 1, deferred 1 (HIST week absent), already stored 1 — '+JSON.stringify(r.report));
+    const nw = r.weeks.find(w=>w.date==='2024-12-28');
+    add(nw && nw._embeddedMigrated===true && nw.sessions.length===2 && nw.hevySessions.length===2 && nw.weight==null, 'v22.6: new week created from default shape with both copies');
+    add(nw.hevySessions.find(x=>x.t==='Leg day').ts['Bulgarian Split Squat (Dumbbell)'] && !nw.hevySessions.find(x=>x.t==='Leg day').ts['Bulgarian Split Squat'], 'v22.6: legacy Bulgarian alias normalized in copied ts');
+    const hw = r.weeks.find(w=>w.date==='2025-02-22');
+    add(hw.weight===192.5 && hw.notes==='hist' && hw._historical===true && hw.hevySessions.length===1 && hw.sessions.length===1, 'v22.6: existing week patched, non-session fields untouched');
+    const aw = r.weeks.find(w=>w.date==='2025-03-15');
+    add(aw.hevySessions.length===1, 'v22.6: session already stored is not duplicated');
+    add(!r.weeks.find(w=>w.date==='2025-03-08'), 'v22.6: HIST-covered absent week is not created (deferred)');
+    add(emb[1].ts['Bulgarian Split Squat'] && !emb[1].ts['Bulgarian Split Squat (Dumbbell)'], 'v22.6: embedded source not mutated');
+    const r2 = migrateEmbeddedSessions(r.weeks, emb, hist);
+    add(r2.check.ok && r2.report.placed===0 && JSON.stringify(r2.weeks)===JSON.stringify(r.weeks), 'v22.6: second run is a no-op');
+    const exp = JSON.parse(JSON.stringify(r.weeks));
+    const r3 = migrateEmbeddedSessions(migrateState({weeks:exp}).weeks, emb, hist);
+    add(r3.report.placed===0, 'v22.6: export→migrate round-trip does not re-migrate');
+    const wiped = mergeBackupWeeks(r.weeks, [migrateWeek({date:'2025-02-22', weight:192.5})]).weeks;
+    const r4 = migrateEmbeddedSessions(wiped, emb, hist);
+    add(r4.report.placed===1 && r4.weeks.find(w=>w.date==='2025-02-22').hevySessions.length===1, 'v22.6: pre-migration backup restore is healed (1 re-placed)');
+    const withHist = [...r.weeks, migrateWeek({date:'2025-03-08', weight:187})].sort((a,b)=>a.date.localeCompare(b.date));
+    add(migrateEmbeddedSessions(withHist, emb, hist).report.placed===1, 'v22.6: deferred session placed once its HIST week exists');
+    const bad = JSON.parse(JSON.stringify(r.weeks)); bad.find(w=>w.date==='2025-02-22').weight = 1;
+    add(!verifyEmbeddedMigration(weeks, bad, r.report).ok, 'v22.6: verifier catches a non-session field change');
+    add(Array.isArray(HEVY_EMBEDDED_SESSIONS) && HEVY_EMBEDDED_SESSIONS.length===283, 'v22.6: 283 embedded sessions captured before merge');
+    const full = migrateEmbeddedSessions(HIST_DATA.map(migrateWeek), HEVY_EMBEDDED_SESSIONS, new Set(HIST_DATA.map(h=>h.date)));
+    add(full.check.ok && full.report.placed+full.report.deferred===283 && full.report.invalid===0,
+      'v22.6: real embedded block onto HIST_DATA weeks reconciles ('+JSON.stringify({placed:full.report.placed, created:full.report.created, patched:full.report.patchedWeeks, deferred:full.report.deferred})+')');
+  } catch(e){ add(false, 'v22.6: Group 33 threw', String(e&&e.message||e)); }
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
