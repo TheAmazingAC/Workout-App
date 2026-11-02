@@ -912,6 +912,20 @@ select option{background:var(--s2);}
     </div>
     <div id="backupStatus" style="font-size:10px;color:var(--mu);text-align:center;margin-top:8px;display:none"></div>
   </div>
+  <!-- v22.4: SU backfill -->
+  <div class="card">
+    <div class="ct">// SU Backfill — set counts from Hevy CSV</div>
+    <p class="note">Load your full Hevy export. A dry run reports matches first; applying exports a backup, then writes only set counts (sc) onto stored sessions that match on date + title. Nothing else changes, and no session is ever added.</p>
+    <div class="btn-row">
+      <button class="btn btn-s" onclick="document.getElementById('suBackfillFile').click()" style="font-size:11px">LOAD CSV (DRY RUN)</button>
+      <input type="file" id="suBackfillFile" accept=".csv" style="display:none" onchange="suBackfillLoadCsv(event)">
+    </div>
+    <pre id="suBackfillReport" style="font-size:10px;white-space:pre-wrap;color:var(--mu);margin-top:8px"></pre>
+    <div class="btn-row" id="suBackfillBtns" style="display:none">
+      <button class="btn btn-p" onclick="suBackfillApply('fill')" style="font-size:11px">APPLY — FILL MISSING</button>
+      <button class="btn btn-s" onclick="suBackfillApply('refresh')" style="font-size:11px">REFRESH SET COUNTS</button>
+    </div>
+  </div>
   <div class="card">
     <div class="ct">// Photo Progress Strip</div>
     <p class="note">Tap any photo to expand.</p>
@@ -1404,6 +1418,162 @@ function computeBlockRollup(blockId, cfg){
   r.legShare = r.su>0 ? r.lower/r.su*100 : null;
   return r;
 }
+// ══════════════════════════════════════════
+// v22.4: SU BACKFILL — patch-only set counts from the full Hevy CSV
+// ══════════════════════════════════════════
+// Keys are normalized date||title (parseHevyDate + exact title), the same key
+// upsertHevySessions uses — but this path NEVER calls upsertHevySessions and
+// never adds a session. It writes only `sc`, into BOTH stored week copies
+// (week.sessions, week.hevySessions), on a deep copy, and commits only after
+// the post-write checks pass.
+// Embedded sessions (inline HEVY_DATA, 2024-12 → 2026-02) are captured here at
+// parse time — before onload merges stored sessions in — so the report can tell
+// "in CSV, embedded, not patchable" from "in CSV, in neither" (C2).
+const HEVY_EMBEDDED_KEYS = new Set((HEVY_DATA.sessions||[]).map(s=>(parseHevyDate(s&&s.d||'')||String(s&&s.d))+'||'+(s&&s.t)));
+function suSessionKey(s){ const d = parseHevyDate((s&&s.d)||''); return (d && s && typeof s.t==='string') ? d+'||'+s.t : null; }
+function hasSc(s){ return !!(s && s.sc && typeof s.sc==='object' && !Array.isArray(s.sc) && Object.keys(s.sc).length); }
+// CSV → {map:key→{sc, d, t}, dupKeys}. groupBySessions drops warmups.
+function buildCsvSessionIndex(csvText){
+  const groups = groupBySessions(parseHevyCsvRows(csvText||''));
+  const map = new Map(), dupKeys = new Set();
+  groups.forEach(g=>{
+    const d = g.dateSort; if(!d || !g.title) return;
+    const key = d+'||'+g.title;
+    if(map.has(key)) dupKeys.add(key);
+    map.set(key, {d, t:g.title, sc:buildSessionSetCounts(g.sets)});
+  });
+  return {map, dupKeys, total:groups.length};
+}
+// Dry run — reads only. Categories: matched / unmatchedStored /
+// embeddedNotPatchable / neither, plus ambiguous, disagreeing weeks and
+// ts-coverage failures (reported, never patched).
+function planSuBackfill(weeks, idx, mode){
+  const rep = {mode, storedTotal:0, matched:[], toPatch:0, alreadyHaveSc:0, unmatchedStored:[], embeddedNotPatchable:[],
+    neither:[], ambiguous:[], disagreeWeeks:[], coverageFail:[], csvTotal:idx.total};
+  const keyOwner = new Map(), storedDup = new Set();
+  const weekKeys = (arr)=>Array.isArray(arr) ? arr.map(suSessionKey) : null;
+  (weeks||[]).forEach(w=>{
+    const a = weekKeys(w.sessions), b = weekKeys(w.hevySessions);
+    if(a && b && (a.length!==b.length || JSON.stringify([...a].sort())!==JSON.stringify([...b].sort()))){ rep.disagreeWeeks.push(w.date); w._suDisagree = true; }
+    weekStoredSessions(w).forEach(s=>{ const k = suSessionKey(s); if(!k) return; if(keyOwner.has(k)) storedDup.add(k); else keyOwner.set(k, w.date); });
+  });
+  const storedKeys = new Set();
+  (weeks||[]).forEach(w=>{
+    const disagree = w._suDisagree; delete w._suDisagree;
+    weekStoredSessions(w).forEach(s=>{
+      const k = suSessionKey(s);
+      rep.storedTotal++;
+      if(!k){ rep.unmatchedStored.push('(undated) '+String(s&&s.t)); return; }
+      storedKeys.add(k);
+      if(disagree) return;                                   // reported via disagreeWeeks
+      if(storedDup.has(k) || idx.dupKeys.has(k)){ rep.ambiguous.push(k); return; }
+      const c = idx.map.get(k);
+      if(!c){ rep.unmatchedStored.push(k); return; }
+      const tsKeys = Object.keys((s&&s.ts)||{}).map(canonicalizeRename);
+      const cover = tsKeys.every(t=>t in c.sc);
+      if(!cover){ rep.coverageFail.push(k); return; }
+      const copies = [w.sessions, w.hevySessions].filter(Array.isArray).map(arr=>arr.find(x=>suSessionKey(x)===k)).filter(Boolean);
+      const need = mode==='refresh' ? copies.length : copies.filter(x=>!hasSc(x)).length;
+      rep.matched.push({key:k, week:w.date});
+      if(need) rep.toPatch++; else rep.alreadyHaveSc++;
+    });
+  });
+  idx.map.forEach((v,k)=>{
+    if(storedKeys.has(k)) return;
+    if(HEVY_EMBEDDED_KEYS.has(k)) rep.embeddedNotPatchable.push(k); else rep.neither.push(k);
+  });
+  return rep;
+}
+// Strip sc from every session of both copies — the "everything else" view.
+function suStripSc(w){
+  const c = JSON.parse(JSON.stringify(w));
+  ['sessions','hevySessions'].forEach(f=>{ if(Array.isArray(c[f])) c[f].forEach(x=>{ if(x && typeof x==='object') delete x.sc; }); });
+  return JSON.stringify(c);
+}
+// Write on a deep copy; returns {weeks, patchedKeys, check}. Nothing is
+// committed here — the caller commits only when check.ok.
+function applySuBackfill(weeks, idx, mode){
+  const plan = planSuBackfill(weeks, idx, mode);
+  const allowed = new Set(plan.matched.map(m=>m.key));
+  const out = JSON.parse(JSON.stringify(weeks||[]));
+  const patchedKeys = new Set();
+  out.forEach(w=>{
+    [w.sessions, w.hevySessions].filter(Array.isArray).forEach(arr=>arr.forEach(x=>{
+      const k = suSessionKey(x); if(!k || !allowed.has(k)) return;
+      if(mode!=='refresh' && hasSc(x)) return;
+      x.sc = JSON.parse(JSON.stringify(idx.map.get(k).sc));
+      patchedKeys.add(k);
+    }));
+  });
+  return {weeks:out, patchedKeys, plan, check:verifySuBackfill(weeks||[], out, patchedKeys)};
+}
+// Post-write checks: every non-sc field of both copies byte-identical, sc
+// changed only on patched sessions, each patched session's sc covers its ts.
+function verifySuBackfill(before, after, patchedKeys){
+  const errors = [];
+  if(before.length!==after.length) errors.push('week count changed');
+  before.forEach((w,i)=>{
+    const a = after[i];
+    if(!a || a.date!==w.date){ errors.push('week order changed at '+i); return; }
+    if(suStripSc(w)!==suStripSc(a)) errors.push('non-sc field changed in week '+w.date);
+    ['sessions','hevySessions'].forEach(f=>{
+      if(!Array.isArray(a[f])) return;
+      a[f].forEach((x,j)=>{
+        const k = suSessionKey(x), prev = Array.isArray(w[f]) ? w[f][j] : null;
+        if(JSON.stringify(prev&&prev.sc)!==JSON.stringify(x&&x.sc) && !patchedKeys.has(k)) errors.push('sc changed on unpatched '+k);
+        if(patchedKeys.has(k)){
+          const ts = Object.keys((x&&x.ts)||{}).map(canonicalizeRename);
+          if(!ts.every(t=>x.sc && t in x.sc)) errors.push('sc does not cover ts for '+k);
+        }
+      });
+    });
+  });
+  return {ok:!errors.length, errors};
+}
+let _suBackfillIdx = null;
+function suBackfillLoadCsv(e){
+  const file = e.target.files[0]; if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ev=>{
+    try{ _suBackfillIdx = buildCsvSessionIndex(ev.target.result); renderSuBackfillReport(planSuBackfill(D.weeks, _suBackfillIdx, 'fill')); }
+    catch(err){ console.error(err); suBackfillStatus('✗ Could not read the CSV', 'var(--a3)'); }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+function suBackfillStatus(msg, color){ const el = document.getElementById('suBackfillReport'); if(el){ el.style.color = color||'var(--mu)'; el.textContent = msg; } }
+function renderSuBackfillReport(r){
+  const el = document.getElementById('suBackfillReport'); if(!el) return;
+  const list = (a,n)=>a.length ? a.slice(0,n).map(x=>'    '+x).join('\n')+(a.length>n?'\n    … +'+(a.length-n)+' more':'') : '    none';
+  el.style.color = 'var(--t)';
+  el.textContent = [
+    'DRY RUN — nothing written',
+    'CSV sessions: '+r.csvTotal+' · stored sessions: '+r.storedTotal,
+    'Matched: '+r.matched.length+' ('+r.toPatch+' need sc'+(r.alreadyHaveSc?', '+r.alreadyHaveSc+' already have sc':'')+')',
+    'Unmatched stored: '+r.unmatchedStored.length, list(r.unmatchedStored, 20),
+    'Ambiguous keys (not patched): '+r.ambiguous.length, list(r.ambiguous, 20),
+    'Weeks whose two copies disagree (not patched): '+r.disagreeWeeks.length, list(r.disagreeWeeks, 20),
+    'ts coverage failures (not patched): '+r.coverageFail.length, list(r.coverageFail, 20),
+    'In CSV, embedded history, not patchable: '+r.embeddedNotPatchable.length,
+    'In CSV, in neither (report only, never added): '+r.neither.length, list(r.neither, 10)
+  ].join('\n');
+  const btns = document.getElementById('suBackfillBtns'); if(btns) btns.style.display = 'flex';
+}
+// Commit path: automatic backup export → patch on a copy → checks → commit.
+function suBackfillApply(mode){
+  if(!_suBackfillIdx){ suBackfillStatus('Load the Hevy CSV first (dry run).'); return; }
+  if(mode==='refresh' && !confirm('Refresh set counts: overwrite existing sc on every matched session?')) return;
+  try{ exportData(); } catch(e){ suBackfillStatus('✗ Backup export failed — backfill not run', 'var(--a3)'); return; }
+  const res = applySuBackfill(D.weeks, _suBackfillIdx, mode);
+  if(!res.check.ok){ suBackfillStatus('✗ Checks failed — nothing written:\n'+res.check.errors.slice(0,10).join('\n'), 'var(--a3)'); return; }
+  D.weeks = res.weeks;
+  const saved = save();
+  safeCall('mergeStoredSessions', mergeStoredSessions);
+  markDirty(['history','training']);
+  safeCall('renderHistory', renderHistory);
+  if(saved) suBackfillStatus('✓ Backfill ('+mode+'): '+res.patchedKeys.size+' sessions patched (both copies). Checks passed: non-sc fields identical, sc covers ts.', 'var(--g)');
+}
+
 // ── Blocks card (Training → Blocks)
 function renderBlocks(){
   const el = document.getElementById('blocksPanel'); if(!el) return;
@@ -9546,6 +9716,57 @@ function __selfTestRun() {
     } catch(e){ add(false, 'v22.3: Group 30 threw', String(e&&e.message||e)); }
     finally { D.weeks = savedWeeks; D.blocks = savedBlocks; }
   }
+
+  // ── Group 31 (v22.4): SU backfill — patch-only, both copies, checks, idempotent
+  try{
+    const H='title,start_time,end_time,description,exercise_title,superset_id,exercise_notes,set_index,set_type,weight_lbs,reps,distance_miles,duration_seconds,rpe';
+    const r=(t,d,ex,ty)=>['"'+t+'"','"'+d+'"','"'+d+'"','""','"'+ex+'"','','""',0,ty,100,8,'','',7].join(',');
+    const csv=[H,
+      r('Lower Day (Home)','31 Oct 2026, 07:00','Romanian Deadlift (Vitruvian)','warmup'),
+      r('Lower Day (Home)','31 Oct 2026, 07:00','Romanian Deadlift (Vitruvian)','normal'),
+      r('Lower Day (Home)','31 Oct 2026, 07:00','Belted Squat','normal'),
+      r('Lower Day (Home)','31 Oct 2026, 07:00','Belted Squat','normal'),
+      r('Upper Day (Home)','26 Oct 2026, 07:00','Chin Up','normal'),
+      r('Leg Day (Gym)','27 Oct 2026, 07:00','Hack Squat (Machine)','normal'),
+      r('Brand New','28 Oct 2026, 07:00','Chin Up','normal'),
+      r(HEVY_DATA_FIRST_T(),HEVY_DATA_FIRST_D(),'Chin Up','normal')].join('\n');
+    function HEVY_DATA_FIRST_T(){ return [...HEVY_EMBEDDED_KEYS][0].split('||')[1]; }
+    function HEVY_DATA_FIRST_D(){ return [...HEVY_EMBEDDED_KEYS][0].split('||')[0]; }
+    const idx = buildCsvSessionIndex(csv);
+    const ses = (d,t,ts,extra)=>({d,t,m:'legs',ts,vol:1,...(extra||{})});
+    const weeks = [
+      {...cloneDefaultWeek(), date:'2026-10-31', weight:171, blockId:'b1',
+        sessions:[ses('2026-10-31','Lower Day (Home)',{'Romanian Deadlift (Barbell)':{w:290,r:12}}), ses('2026-10-26','Upper Day (Home)',{'Chin Up':{w:0,r:20}},{sc:{'Chin Up':9}})],
+        hevySessions:[ses('2026-10-31','Lower Day (Home)',{'Romanian Deadlift (Barbell)':{w:290,r:12}},{we:'2026-10-31'}), ses('2026-10-26','Upper Day (Home)',{'Chin Up':{w:0,r:20}},{we:'2026-10-31'})]},
+      {...cloneDefaultWeek(), date:'2026-10-24', sessions:null, hevySessions:[ses('2026-10-20','Gone From CSV',{})]},
+      {...cloneDefaultWeek(), date:'2026-10-17', sessions:[ses('2026-10-27','Leg Day (Gym)',{})], hevySessions:[ses('2026-10-27','Different Title',{})]},
+      {...cloneDefaultWeek(), date:'2026-10-10', hevySessions:[ses('2026-10-27','Leg Day (Gym)',{'Leg Press (Machine)':{w:1,r:1}})]},
+    ];
+    const plan = planSuBackfill(weeks, idx, 'fill');
+    add(plan.storedTotal===5 && plan.matched.length===2 && plan.toPatch===2, 'v22.4: dry run — 5 stored, 2 matched, 2 need sc (got '+plan.storedTotal+'/'+plan.matched.length+'/'+plan.toPatch+')');
+    add(plan.unmatchedStored.length===1 && plan.unmatchedStored[0]==='2026-10-20||Gone From CSV', 'v22.4: unmatched stored reported');
+    add(plan.disagreeWeeks.length===1 && plan.disagreeWeeks[0]==='2026-10-17', 'v22.4: week whose copies disagree is reported, not patched');
+    add(plan.coverageFail.length===1 && plan.coverageFail[0]==='2026-10-27||Leg Day (Gym)', 'v22.4: ts-coverage failure reported, not patched');
+    add(plan.embeddedNotPatchable.length===1 && plan.neither.length===1 && plan.neither[0]==='2026-10-28||Brand New', 'v22.4: CSV-only split into embedded vs neither');
+    const before = JSON.stringify(weeks);
+    const res = applySuBackfill(weeks, idx, 'fill');
+    add(JSON.stringify(weeks)===before, 'v22.4: apply works on a copy (input weeks untouched)');
+    add(res.check.ok, 'v22.4: post-write checks pass ('+res.check.errors.join('; ')+')');
+    const w0 = res.weeks[0];
+    add(w0.sessions[0].sc['Romanian Deadlift (Barbell)']===1 && w0.sessions[0].sc['Belted Squat']===2 && w0.hevySessions[0].sc['Belted Squat']===2,
+      'v22.4: both copies patched; warmup excluded; Vitruvian RDL renamed');
+    add(w0.sessions[1].sc['Chin Up']===9 && w0.hevySessions[1].sc['Chin Up']===1, 'v22.4: fill-missing keeps existing sc, fills the copy that lacked it');
+    add(res.weeks[3].sc===undefined && res.weeks[3].hevySessions[0].sc===undefined && w0.blockId==='b1' && w0.weight===171, 'v22.4: coverage-fail untouched; week fields intact');
+    const again = applySuBackfill(res.weeks, idx, 'fill');
+    add(again.patchedKeys.size===0 && JSON.stringify(again.weeks)===JSON.stringify(res.weeks), 'v22.4: fill is idempotent (second run patches 0)');
+    const rf = applySuBackfill(res.weeks, idx, 'refresh');
+    add(rf.check.ok && rf.weeks[0].sessions[1].sc['Chin Up']===1, 'v22.4: refresh overwrites existing sc');
+    const rf2 = applySuBackfill(rf.weeks, idx, 'refresh');
+    add(JSON.stringify(rf2.weeks)===JSON.stringify(rf.weeks), 'v22.4: refresh is idempotent');
+    const tampered = JSON.parse(JSON.stringify(res.weeks)); tampered[0].hevySessions[0].vol = 999;
+    add(!verifySuBackfill(weeks, tampered, res.patchedKeys).ok, 'v22.4: verifier catches a non-sc field change');
+    add(HEVY_EMBEDDED_KEYS.size>0 && HEVY_EMBEDDED_KEYS.size<=283, 'v22.4: embedded keys captured before merge ('+HEVY_EMBEDDED_KEYS.size+')');
+  } catch(e){ add(false, 'v22.4: Group 31 threw', String(e&&e.message||e)); }
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
