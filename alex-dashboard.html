@@ -644,6 +644,7 @@ select option{background:var(--s2);}
     <button class="stab" onclick="showTrainView('retention',this)">Strength Retention</button>
     <button class="stab" onclick="showTrainView('sessions',this)">Session Log</button>
     <button class="stab" onclick="showTrainView('blocks',this)">Blocks</button>
+    <button class="stab" onclick="showTrainView('suratings',this)">SU Ratings</button>
   </div>
 
   <!-- Lifts view -->
@@ -718,6 +719,19 @@ select option{background:var(--s2);}
       <div class="ct">// Blocks — stress units</div>
       <p class="note">Week membership is set here (blockId on each week). SU is priced live from the current ratings; weeks without stored set counts show as uncovered.</p>
       <div id="blocksPanel"></div>
+    </div>
+  </div>
+
+  <!-- v22.5: SU rating editor -->
+  <div id="tv-suratings" style="display:none">
+    <div class="card">
+      <div class="ct">// Stress Unit Ratings</div>
+      <p class="note">SU per work set and joint flags (G green · y monitor · Y controlled). Edits change your stored copy only — the built-in seed never overwrites it. Every edit is logged and bumps the library revision.</p>
+      <div class="field"><label>Search</label><input id="suSearch" type="text" oninput="renderSuEditor()"></div>
+      <div class="field"><label>Show</label><select id="suFilter" onchange="renderSuEditor()">
+        <option value="">All</option><option value="differs">Differs from seed</option><option value="unrated">Unrated</option><option value="exempt">Exempt</option><option value="yellow">Any Yellow flag</option></select></div>
+      <div class="field"><label>Change note (optional, recorded with each edit)</label><input id="suReason" type="text"></div>
+      <div id="suEditorPanel"></div>
     </div>
   </div>
 </div>
@@ -1186,6 +1200,10 @@ function sanitizeStressConfig(raw){
       foot:  SU_FLAGS.includes(v.foot)  ? v.foot  : null,
       elbow: SU_FLAGS.includes(v.elbow) ? v.elbow : null
     };
+    // v22.5: free-text observation note per exercise (stimulus notes replace a
+    // formal stimulus rating). Kept only when non-empty, so seed-shaped
+    // entries are unchanged.
+    if(typeof v.note==='string' && v.note) entries[k].note = v.note;
   });
   if(!Object.keys(entries).length) return null;
   const rev = Number(raw.revision);
@@ -1340,16 +1358,24 @@ function sessionJointExposure(ses, cfg){
   return out;
 }
 // Trigger evaluation for one week: back per week; foot/elbow per session.
+// v22.5: per-session trigger counts (exempt drills excluded), shared by the
+// week evaluation, the Session Log badges and the export.
+function sessionTriggerCounts(s, cfg){
+  const ex = sessionJointExposure(s, cfg); if(!ex) return null;
+  const counted = k=>!ex.exempt[k];
+  return {
+    backYSets: Object.entries(ex.backY).filter(([k])=>counted(k)).reduce((a,[,c])=>a+c,0),
+    footN: Object.keys(ex.foot).filter(counted).length,
+    elbowN: Object.keys(ex.elbowY).filter(counted).length
+  };
+}
 function weekTriggers(w, cfg){
   const res = {backYSets:0, backFired:false, sessionFires:[], count:0};
   weekStoredSessions(w).forEach(s=>{
-    const ex = sessionJointExposure(s, cfg); if(!ex) return;
-    const counted = k=>!ex.exempt[k];
-    res.backYSets += Object.entries(ex.backY).filter(([k])=>counted(k)).reduce((a,[,c])=>a+c,0);
-    const footN = Object.keys(ex.foot).filter(counted).length;
-    const elbowN = Object.keys(ex.elbowY).filter(counted).length;
-    if(footN > SU_TRIGGERS.footY_session) res.sessionFires.push({d:s.d, t:s.t, area:'foot', n:footN});
-    if(elbowN > SU_TRIGGERS.elbowY_session) res.sessionFires.push({d:s.d, t:s.t, area:'elbow', n:elbowN});
+    const tc = sessionTriggerCounts(s, cfg); if(!tc) return;
+    res.backYSets += tc.backYSets;
+    if(tc.footN > SU_TRIGGERS.footY_session) res.sessionFires.push({d:s.d, t:s.t, area:'foot', n:tc.footN});
+    if(tc.elbowN > SU_TRIGGERS.elbowY_session) res.sessionFires.push({d:s.d, t:s.t, area:'elbow', n:tc.elbowN});
   });
   res.backFired = res.backYSets > SU_TRIGGERS.backY_week;
   res.count = (res.backFired?1:0) + res.sessionFires.length;
@@ -1572,6 +1598,177 @@ function suBackfillApply(mode){
   markDirty(['history','training']);
   safeCall('renderHistory', renderHistory);
   if(saved) suBackfillStatus('✓ Backfill ('+mode+'): '+res.patchedKeys.size+' sessions patched (both copies). Checks passed: non-sc fields identical, sc covers ts.', 'var(--g)');
+}
+
+// ══════════════════════════════════════════
+// v22.5: rating editor (Option A — edits the stored copy only)
+// ══════════════════════════════════════════
+const SU_EDIT_FIELDS = ['su','exempt','region','back','foot','elbow','note'];
+const SU_RATING_FIELDS = ['su','exempt','region','back','foot','elbow'];
+function suCfg(){ if(!D.stressConfig || !D.stressConfig.entries) D.stressConfig = freshStressConfig(); return D.stressConfig; }
+// Fields where the stored entry differs from the CURRENT build's seed;
+// ['custom'] when the name is not in the seed at all.
+function suSeedDiff(name){
+  const e = suCfg().entries[name], sd = SU_LIBRARY_SEED.entries[name];
+  if(!e) return [];
+  if(!sd) return ['custom'];
+  return SU_RATING_FIELDS.filter(f=>e[f]!==sd[f]);
+}
+function suValidate(field, value){
+  if(field==='su'){
+    if(value===null || value==='' ) return {ok:true, v:null};
+    const n = Number(value);
+    if(!Number.isFinite(n) || n<0 || n>10 || Math.round(n*2)!==n*2) return {ok:false};
+    return {ok:true, v:n};
+  }
+  if(field==='exempt') return {ok:true, v:value===true || value==='true'};
+  if(field==='region') return (value===null || value==='' ) ? {ok:true, v:null} : (SU_REGIONS.includes(value) ? {ok:true, v:value} : {ok:false});
+  if(field==='back' || field==='foot' || field==='elbow') return (value===null || value==='') ? {ok:true, v:null} : (SU_FLAGS.includes(value) ? {ok:true, v:value} : {ok:false});
+  if(field==='note') return {ok:true, v:String(value==null?'':value).slice(0,500)};
+  return {ok:false};
+}
+// Apply changes {field:value} to one entry. Every changed field is logged
+// (date, exercise, field, old, new, optional reason); one revision per edit.
+// Exempt=true clears su (exempt entries never carry SU). Returns #fields changed.
+function suApplyEdit(name, changes, reason, dateStr){
+  const cfg = suCfg();
+  const e = cfg.entries[name]; if(!e) return 0;
+  const date = dateStr || new Date().toISOString().split('T')[0];
+  const log = [];
+  const set = (f, nv)=>{
+    const ov = (f==='note') ? (e.note||'') : e[f];
+    if(ov===nv) return;
+    if(f==='note'){ if(nv) e.note = nv; else delete e.note; } else e[f] = nv;
+    log.push({date, name, field:f, from:ov===undefined?null:ov, to:nv, note:String(reason||'')});
+  };
+  Object.keys(changes||{}).forEach(f=>{
+    if(!SU_EDIT_FIELDS.includes(f)) return;
+    const r = suValidate(f, changes[f]); if(!r.ok) return;
+    if(f==='su' && e.exempt && r.v!=null) return;            // exempt entries carry no SU
+    set(f, r.v);
+    if(f==='exempt' && r.v===true) set('su', null);
+  });
+  if(log.length){ cfg.revision = (Number(cfg.revision)||0) + 1; cfg.changelog.push(...log); }
+  return log.length;
+}
+// Per-row reset to the CURRENT seed (ratings only; the note is kept).
+function suResetToSeed(name, reason, dateStr){
+  const sd = SU_LIBRARY_SEED.entries[name]; if(!sd) return 0;
+  const ch = {}; SU_RATING_FIELDS.forEach(f=>ch[f]=sd[f]);
+  // exempt first so su:null is accepted, then su
+  const e = suCfg().entries[name]; if(!e) return 0;
+  if(e.exempt && !sd.exempt){ const ordered = {exempt:false, ...ch}; return suApplyEdit(name, ordered, reason||'reset to seed', dateStr); }
+  return suApplyEdit(name, ch, reason||'reset to seed', dateStr);
+}
+// Add an unrated name to the library (flags start unset; su null until rated).
+function suAddEntry(name, reason, dateStr){
+  const cfg = suCfg();
+  if(!name || cfg.entries[name]) return false;
+  cfg.entries[name] = {su:null, exempt:false, region:null, back:null, foot:null, elbow:null};
+  cfg.revision = (Number(cfg.revision)||0) + 1;
+  cfg.changelog.push({date:dateStr||new Date().toISOString().split('T')[0], name, field:'created', from:null, to:'entry', note:String(reason||'')});
+  return true;
+}
+// Names logged in stored sessions that the library cannot price (missing, or
+// su null and not exempt), with set counts.
+function suUnratedNames(){
+  const ent = suCfg().entries, out = {};
+  D.weeks.forEach(w=>weekStoredSessions(w).forEach(s=>{
+    if(!s || !s.sc || typeof s.sc!=='object') return;
+    Object.entries(s.sc).forEach(([n,c])=>{
+      const k = canonicalizeRename(n), e = ent[k];
+      if(!e || (!e.exempt && e.su==null)) out[k] = (out[k]||0) + (Number(c)||0);
+    });
+  }));
+  return out;
+}
+let _suEditorNames = [];
+function renderSuEditor(){
+  const el = document.getElementById('suEditorPanel'); if(!el) return;
+  const cfg = suCfg();
+  const q = (v('suSearch')||'').toLowerCase();
+  const flt = v('suFilter')||'';
+  const unrated = suUnratedNames();
+  const names = Object.keys(cfg.entries).sort((a,b)=>a.localeCompare(b)).filter(n=>{
+    const e = cfg.entries[n];
+    if(q && !n.toLowerCase().includes(q)) return false;
+    if(flt==='differs') return suSeedDiff(n).length>0;
+    if(flt==='unrated') return !e.exempt && e.su==null;
+    if(flt==='exempt') return e.exempt;
+    if(flt==='yellow') return [e.back,e.foot,e.elbow].some(x=>x==='y'||x==='Y');
+    return true;
+  });
+  _suEditorNames = names;
+  const opt = (val,label,cur)=>`<option value="${escHtml(String(val))}"${val===cur?' selected':''}>${escHtml(String(label))}</option>`;
+  const flagSel = (i,f,cur)=>`<select onchange="uiSuEdit(${i},'${f}',this.value)">${opt('','?',cur==null?'':cur)}${opt('G','G',cur)}${opt('y','y',cur)}${opt('Y','Y',cur)}</select>`;
+  const ur = Object.entries(unrated);
+  let h = `<div style="font-size:10px;color:var(--mu);margin-bottom:8px">Library revision ${cfg.revision} (libVersion) · seed v${SU_LIBRARY_SEED.version} · ${Object.keys(cfg.entries).length} exercises · showing ${names.length}</div>`;
+  if(ur.length) h += `<div style="font-size:11px;color:var(--w);margin-bottom:10px">Unrated in your logged sessions:<br>`
+    + ur.map(([n,c])=>`${escHtml(n)} (${c} sets)${cfg.entries[n]?'':` <button class="btn btn-s" style="font-size:9px;width:auto;padding:2px 8px" onclick="uiSuAdd(${JSON.stringify(n).replace(/"/g,'&quot;')})">Add</button>`}`).join('<br>') + `</div>`;
+  h += names.map((n,i)=>{
+    const e = cfg.entries[n], diff = suSeedDiff(n);
+    return `<div style="border-top:1px solid var(--b);padding:6px 0;font-size:11px">
+      <div style="display:flex;justify-content:space-between"><span>${escHtml(n)}</span>
+        <span>${diff.length?`<span style="color:var(--w)">≠ seed: ${escHtml(diff.join(', '))}</span>${SU_LIBRARY_SEED.entries[n]?` <button class="btn btn-s" style="font-size:9px;width:auto;padding:2px 8px" onclick="uiSuReset(${i})">Reset</button>`:''}`:''}</span></div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:4px">
+        SU <input type="number" step="0.5" min="0" max="10" style="width:64px" value="${e.su==null?'':e.su}" ${e.exempt?'disabled':''} onchange="uiSuEdit(${i},'su',this.value)">
+        <label style="display:inline-flex;gap:3px;align-items:center"><input type="checkbox" ${e.exempt?'checked':''} onchange="uiSuEdit(${i},'exempt',this.checked)">exempt</label>
+        <select onchange="uiSuEdit(${i},'region',this.value)">${opt('','region ?',e.region==null?'':e.region)}${opt('lower','lower',e.region)}${opt('upper','upper',e.region)}${opt('core','core',e.region)}</select>
+        Back ${flagSel(i,'back',e.back)} Foot ${flagSel(i,'foot',e.foot)} Elbow ${flagSel(i,'elbow',e.elbow)}
+      </div>
+      <input type="text" placeholder="note (stimulus / observations)" style="width:100%;margin-top:4px" value="${escHtml(e.note||'')}" onchange="uiSuEdit(${i},'note',this.value)">
+    </div>`;
+  }).join('');
+  const cl = cfg.changelog.slice(-15).reverse();
+  h += `<div style="margin-top:12px;border-top:1px solid var(--b);padding-top:8px;font-size:10px;color:var(--mu)">Changelog (latest 15 of ${cfg.changelog.length})<br>`
+    + (cl.length ? cl.map(c=>escHtml(`${c.date} · ${c.name} · ${c.field}: ${c.from==null?'—':c.from} → ${c.to==null?'—':c.to}${c.note?' · '+c.note:''}`)).join('<br>') : 'no edits yet') + `</div>`;
+  el.innerHTML = h;
+}
+function uiSuEdit(i, field, value){
+  const n = _suEditorNames[i]; if(!n) return;
+  const changed = suApplyEdit(n, {[field]: value}, v('suReason'));
+  if(changed){ if(save()) toast('Rating updated (rev '+D.stressConfig.revision+')'); }
+  else toast('No change (invalid value or same as before)');
+  renderSuEditor();
+}
+function uiSuReset(i){ const n = _suEditorNames[i]; if(n && suResetToSeed(n, v('suReason')) && save()) toast('Reset to seed: '+n); renderSuEditor(); }
+function uiSuAdd(n){ if(suAddEntry(n, v('suReason')) && save()) toast('Added to library: '+n); renderSuEditor(); }
+// ── Trigger badges (review prompts, never blocks)
+function suChip(text){ return '<span style="display:inline-block;color:var(--w);border:1px solid var(--w);border-radius:20px;font-size:9px;padding:0 6px;margin-left:4px">'+escHtml(text)+'</span>'; }
+function sessionTriggerBadges(s){
+  const tc = sessionTriggerCounts(s); if(!tc) return '';
+  let h = '';
+  if(tc.footN > SU_TRIGGERS.footY_session) h += suChip('Foot '+tc.footN+'/'+SU_TRIGGERS.footY_session);
+  if(tc.elbowN > SU_TRIGGERS.elbowY_session) h += suChip('Elbow '+tc.elbowN+'/'+SU_TRIGGERS.elbowY_session);
+  return h;
+}
+function weekTriggerBadges(w){
+  const t = weekTriggers(w); let h = '';
+  if(t.backFired) h += suChip('Back Y '+t.backYSets+'/'+SU_TRIGGERS.backY_week);
+  t.sessionFires.forEach(f=>{ h += suChip((f.area==='foot'?'Foot ':'Elbow ')+f.n+'/'+(f.area==='foot'?SU_TRIGGERS.footY_session:SU_TRIGGERS.elbowY_session)+' '+fmtDShort(f.d)); });
+  return h;
+}
+// AI-export lines for one week (human + machine), stamped with libVersion.
+function suExportLines(w){
+  const r = computeWeekSU(w), t = weekTriggers(w), cfg = suCfg();
+  const blk = w && w.blockId ? getBlockById(w.blockId) : null;
+  const leg = suLegShare(r);
+  const human = 'Stress units:        '+(r ? r.su.toFixed(1)+' SU'+(r.unratedSets?' + ? ('+r.unratedSets+' unrated sets)':'')
+      +' · legs '+(leg!=null?leg.toFixed(0)+'%':'n/a')+' · lower '+r.lower.toFixed(1)+' / upper '+r.upper.toFixed(1)+' / core '+r.core.toFixed(1)
+      +' · '+r.pricedSessions+'/'+r.sessions+' sessions priced' : 'not priced (no set counts)')
+    +' · back-Y '+t.backYSets+' sets · triggers '+t.count+' · block '+(blk?(blk.name||blk.id):'none')+' · lib rev '+cfg.revision;
+  const machine = [
+    'su_lib_version:            '+cfg.revision,
+    'su_week_total:             '+(r ? r.su.toFixed(1) : 'n/a'),
+    'su_lower_upper_core:       '+(r ? r.lower.toFixed(1)+'/'+r.upper.toFixed(1)+'/'+r.core.toFixed(1) : 'n/a'),
+    'su_leg_share_pct:          '+(leg!=null ? leg.toFixed(1) : 'n/a'),
+    'su_unrated_sets:           '+(r ? r.unratedSets : 'n/a'),
+    'su_sessions_priced:        '+(r ? r.pricedSessions+'/'+r.sessions : '0/'+weekStoredSessions(w).length),
+    'su_back_y_sets:            '+t.backYSets,
+    'su_trigger_count:          '+t.count+(t.count ? ' ['+[t.backFired?'back':null, ...t.sessionFires.map(f=>f.area+'@'+f.d)].filter(Boolean).join(', ')+']' : ''),
+    'su_block:                  '+(blk ? (blk.name||blk.id) : 'none')
+  ];
+  return {human, machine};
 }
 
 // ── Blocks card (Training → Blocks)
@@ -5378,6 +5575,9 @@ function genSummary(){
     '',
     ...(wkMode==='bulk' ? ['── SURPLUS GUARDRAILS (status only — no auto-prescription) ──',
       surplusGuardrailsExportLines(cvSum.rollingRate, wWeight, D.weeks.slice(0,idx)), ''] : []),
+    // v22.5: stress units (priced live, stamped with libVersion)
+    suExportLines(w).human,
+    '',
     '── NOTES ──',
     wNotes||'None',
     '',
@@ -5391,6 +5591,7 @@ function genSummary(){
     'phase_transition_status:   '+transTextSum,
     'data_completeness:         weight:'+(dcSum.weight?'present':'missing')+', calories:'+(dcSum.calories?'present':'missing')+', protein:'+(dcSum.protein?'present':'missing')+', training:'+(dcSum.training?'present':'missing')+', recovery:'+dcSum.recovery,
     'analysis_anchor_week:      '+(w?.date || 'n/a'),
+    ...suExportLines(w).machine,
     'rolling_rate_pct_per_week_2wk: '+rateStrMachine(phaseComputed.rollingRate),
     'short_term_rate_pct_per_week_2wk: '+rateStrMachine(phaseComputed.shortTermRate),
     'signal_conflict:           '+boolStr(signalConflict !== null),
@@ -5572,13 +5773,14 @@ function buildExSelectors(){
 function renderTraining(){buildExSelectors();}
 
 function showTrainView(view, btn){
-  ['lifts','orm','retention','sessions','blocks'].forEach(v=>{const el=document.getElementById('tv-'+v);if(el)el.style.display='none';});
+  ['lifts','orm','retention','sessions','blocks','suratings'].forEach(v=>{const el=document.getElementById('tv-'+v);if(el)el.style.display='none';});
   document.getElementById('tv-'+view).style.display='block';
   document.querySelectorAll('#sec-training .stab').forEach(t=>t.classList.remove('active'));
   if(btn)btn.classList.add('active');
   if(view==='sessions')renderSessions();
   if(view==='retention')renderRetention();
   if(view==='blocks')safeCall('renderBlocks', renderBlocks);
+  if(view==='suratings')safeCall('renderSuEditor', renderSuEditor);
 }
 
 // Get all top-set data for an exercise across HEVY sessions + weekly manual logs
@@ -5720,7 +5922,7 @@ function renderSessions(){
         <div style="font-size:12px">${escHtml(String(s.t))}</div>
         <div style="font-size:10px;color:var(--mu)">${fmtDShort(s.d)}</div>
       </div>
-      <div style="font-size:10px;color:var(--mu)">${muscleBadge[s.m]||muscleBadge.other} · vol: ${(s.vol/1000).toFixed(0)}k lbs · ${suStr}</div>
+      <div style="font-size:10px;color:var(--mu)">${muscleBadge[s.m]||muscleBadge.other} · vol: ${(s.vol/1000).toFixed(0)}k lbs · ${suStr}${sessionTriggerBadges(s)}</div>
       ${topStr?`<div style="font-size:9px;color:var(--mu);margin-top:4px;opacity:.7">${topStr}</div>`:''}
     </div>`;
   }).join('');
@@ -6097,7 +6299,7 @@ function renderHistory(){
     return `<div class="hi" onclick="loadWeek('${w.date}')">
       <div>
         <div style="font-size:12px;margin-bottom:2px">${fmtD(w.date)}${isRefeed?'<span class="refeed-badge">REFEED</span>':''}${isDeload?'<span style="display:inline-block;background:rgba(71,184,255,.12);color:var(--a2);border:1px solid var(--a2);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:1px;margin-left:5px">DELOAD</span>':''}${modeBadge}${w._historical?'<span style="font-size:9px;color:var(--mu);margin-left:6px">hist</span>':''}</div>
-        <div style="font-size:10px;color:var(--mu)">${(w.lifts||[]).filter(l=>l.weight).length} lifts${extraTags.map(t=>' <span style="font-size:8px;color:var(--mu)">#'+escHtml(String(t))+'</span>').join('')} &middot; ${w.photo?'📷 ':''}${w.notes?'📝 ':''}${suHtml}</div>
+        <div style="font-size:10px;color:var(--mu)">${(w.lifts||[]).filter(l=>l.weight).length} lifts${extraTags.map(t=>' <span style="font-size:8px;color:var(--mu)">#'+escHtml(String(t))+'</span>').join('')} &middot; ${w.photo?'📷 ':''}${w.notes?'📝 ':''}${suHtml}${wSes.length?weekTriggerBadges(w):''}</div>
       </div>
       <div class="hact">
         <div class="hm">
@@ -9767,6 +9969,41 @@ function __selfTestRun() {
     add(!verifySuBackfill(weeks, tampered, res.patchedKeys).ok, 'v22.4: verifier catches a non-sc field change');
     add(HEVY_EMBEDDED_KEYS.size>0 && HEVY_EMBEDDED_KEYS.size<=283, 'v22.4: embedded keys captured before merge ('+HEVY_EMBEDDED_KEYS.size+')');
   } catch(e){ add(false, 'v22.4: Group 31 threw', String(e&&e.message||e)); }
+
+  // ── Group 32 (v22.5): rating editor, badges, export line
+  {
+    const savedSc = D.stressConfig, savedWeeks = D.weeks, savedBlocks = D.blocks;
+    try{
+      D.stressConfig = freshStressConfig();
+      const n1 = suApplyEdit('Supine Press', {su:2}, 'felt heavier', '2026-11-20');
+      add(n1===1 && D.stressConfig.revision===1 && D.stressConfig.entries['Supine Press'].su===2, 'v22.5: SU edit applied, revision +1');
+      const c = D.stressConfig.changelog.slice(-1)[0];
+      add(c.date==='2026-11-20' && c.name==='Supine Press' && c.field==='su' && c.from===1.5 && c.to===2 && c.note==='felt heavier', 'v22.5: changelog records date/exercise/field/old/new/note');
+      add(suApplyEdit('Supine Press', {su:1.25})===0 && suApplyEdit('Supine Press', {su:2})===0 && D.stressConfig.revision===1, 'v22.5: non-0.5-step and unchanged values rejected, no revision bump');
+      suApplyEdit('Chin Up', {elbow:'Y'}, '');
+      add(D.stressConfig.changelog.slice(-1)[0].note==='' && D.stressConfig.revision===2, 'v22.5: changelog note optional');
+      add(JSON.stringify(suSeedDiff('Supine Press'))==='["su"]' && suSeedDiff('Leg Extension (Machine)').length===0, 'v22.5: differs-from-seed marker');
+      suApplyEdit('Leg Extension (Machine)', {exempt:true});
+      add(D.stressConfig.entries['Leg Extension (Machine)'].su===null && suApplyEdit('Leg Extension (Machine)', {su:1})===0, 'v22.5: exempt clears SU; exempt entries cannot carry SU');
+      add(suResetToSeed('Leg Extension (Machine)')>0 && D.stressConfig.entries['Leg Extension (Machine)'].su===1 && !D.stressConfig.entries['Leg Extension (Machine)'].exempt, 'v22.5: reset to seed restores exempt + SU');
+      suApplyEdit('Belted Squat', {note:'good quad tension'});
+      add(D.stressConfig.entries['Belted Squat'].note==='good quad tension' && sanitizeStressConfig(D.stressConfig).entries['Belted Squat'].note==='good quad tension', 'v22.5: free-text note stored and survives sanitize');
+      add(suResetToSeed('Belted Squat')===0 && D.stressConfig.entries['Belted Squat'].note==='good quad tension', 'v22.5: reset keeps the note');
+      D.weeks = [{...cloneDefaultWeek(), date:'2026-11-07', hevySessions:[{d:'2026-11-05', t:'X', ts:{}, sc:{'Mystery Row':2,'Chin Up (Weighted)':1,'Skullcrusher (Dumbbell)':1,'Towel Scrunches (Plantar Fascia)':1}}]}];
+      add(suUnratedNames()['Mystery Row']===2, 'v22.5: unrated names surfaced from logged sessions');
+      add(suAddEntry('Mystery Row','', '2026-11-21') && D.stressConfig.entries['Mystery Row'].su===null && suUnratedNames()['Mystery Row']===2, 'v22.5: added entry stays unrated until SU set');
+      suApplyEdit('Mystery Row', {su:1.5, region:'upper', back:'G', foot:'G', elbow:'G'});
+      add(!suUnratedNames()['Mystery Row'] && computeWeekSU(D.weeks[0]).su===3+2.5+1.5, 'v22.5: rating the new entry prices the week live');
+      add(/Elbow 2\/1/.test(sessionTriggerBadges(D.weeks[0].hevySessions[0])) && !/Foot/.test(sessionTriggerBadges(D.weeks[0].hevySessions[0])), 'v22.5: elbow badge fires; exempt foot drill does not');
+      add(/Elbow 2\/1/.test(weekTriggerBadges(D.weeks[0])), 'v22.5: week badge lists session fire');
+      const ex = suExportLines(D.weeks[0]);
+      add(/lib rev \d+/.test(ex.human) && ex.machine.some(l=>/^su_lib_version:\s+\d+$/.test(l) && l.endsWith(String(D.stressConfig.revision))), 'v22.5: export stamped with libVersion = revision');
+      add(ex.machine.some(l=>/^su_week_total:\s+7\.0$/.test(l)) && ex.machine.some(l=>/^su_trigger_count:\s+1 \[elbow@2026-11-05\]$/.test(l)), 'v22.5: export SU total + trigger detail');
+      const ex0 = suExportLines({...cloneDefaultWeek(), date:'2026-11-14'});
+      add(/not priced/.test(ex0.human) && ex0.machine.some(l=>/^su_week_total:\s+n\/a$/.test(l)), 'v22.5: unpriced week exports n/a');
+    } catch(e){ add(false, 'v22.5: Group 32 threw', String(e&&e.message||e)); }
+    finally { D.stressConfig = savedSc; D.weeks = savedWeeks; D.blocks = savedBlocks; }
+  }
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
