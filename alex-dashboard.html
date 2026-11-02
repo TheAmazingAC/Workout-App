@@ -960,6 +960,254 @@ const HEVY_DATA = {"sessions":[{"d":"2024-12-24","t":"Morning workout \u2600\ufe
 // ══════════════════════════════════════════
 const SK = 'alexCutDash_v3';
 const SCHEMA_VERSION = 1;
+
+// ══════════════════════════════════════════
+// v22.0: STRESS UNITS (SU) — library seed + persisted config
+// ══════════════════════════════════════════
+// SU = stress units per WORK set (warmups never count). Library keyed by the
+// exact Hevy exercise name AFTER canonicalizeRename (true renames only — never
+// CANONICAL_EXERCISE_MAP). Per entry:
+//   su      number per work set, or null when exempt
+//   exempt  true = mobility/rehab/warmup drill: contributes 0, NOT "unrated"
+//   region  'lower' | 'upper' | 'core'
+//   back/foot/elbow  joint flag: 'G' green, 'y' yellow-monitor,
+//                    'Y' yellow-controlled. Red is a symptom state and is
+//                    never assigned to an exercise. Flags never enter SU math.
+// Option A (Alex, 2026-11-02): the seed is copied ONCE into D.stressConfig on
+// first run; after that the stored copy is authoritative and this seed never
+// overwrites it. libVersion = D.stressConfig.revision (+1 per rating edit).
+// Names preserved exactly as logged in Hevy, including the double space in
+// 'Lying Chest Fly -  Vitruvian' and the lowercase 'bayesian Curl'.
+const SU_LIBRARY_SEED = {
+  version: 1,
+  entries: {
+    "Reverse Tyler Twists (Flexbar)": {su:null,exempt:true,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Lateral Raise (Cable)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Incline Bench Press (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Chin Up": {su:2,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Chest Supported Reverse Fly (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Shoulder Press (Dumbbell)": {su:2,exempt:false,region:"upper",back:"y",foot:"G",elbow:"y"},
+    "Leg Extension (Machine)": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Seated Cable Row - Bar Grip": {su:1.5,exempt:false,region:"upper",back:"y",foot:"G",elbow:"G"},
+    "Push Up": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Bird Dog": {su:null,exempt:true,region:"core",back:"G",foot:"G",elbow:"G"},
+    "Triceps Dip": {su:2,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Tyler Twists (Flexbar)": {su:null,exempt:true,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Side Plank": {su:null,exempt:true,region:"core",back:"G",foot:"G",elbow:"G"},
+    "Curl Up": {su:null,exempt:true,region:"core",back:"G",foot:"G",elbow:"G"},
+    "bayesian Curl": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Standing Calf Raise (Dumbbell)": {su:1.5,exempt:false,region:"lower",back:"G",foot:"Y",elbow:"G"},
+    "Bicep Curl (Cable)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Chest Supported Incline Row (Dumbbell)": {su:2,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Lying Leg Curl (Machine)": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Seated Leg Curl (Machine)": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Face Pull": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Rear Delt Reverse Fly (Machine)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Back Extension (Weighted Hyperextension)": {su:2,exempt:false,region:"lower",back:"Y",foot:"G",elbow:"G"},
+    "Standing Calf Raise (Machine)": {su:1,exempt:false,region:"lower",back:"y",foot:"Y",elbow:"G"},
+    "Deadlift (Barbell)": {su:3,exempt:false,region:"lower",back:"Y",foot:"G",elbow:"G"},
+    "Preacher Curl (Machine)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Romanian Deadlift (Barbell)": {su:3,exempt:false,region:"lower",back:"Y",foot:"G",elbow:"G"},
+    "Belted Squat": {su:2,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Seated Incline Curl (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Seated Calf Raise": {su:1,exempt:false,region:"lower",back:"G",foot:"Y",elbow:"G"},
+    "Triceps Dip (Weighted)": {su:2.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"Y"},
+    "Nordic Hamstrings Curls": {su:2,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Lateral Raise (Machine)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Leg Extension (Hyper Pro)": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Chest Fly (Machine)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Chest Supported Incline Row (Vitruvian)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Chest Fly (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Squat (Bodyweight)": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Standing Calf Raise (Hyper Pro)": {su:1,exempt:false,region:"lower",back:"y",foot:"Y",elbow:"G"},
+    "Supine Press": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Cable Crunch": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Decline Push Up": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Kneeling Glute Kickback (with Cable)": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Bulgarian Split Squat (Dumbbell)": {su:3,exempt:false,region:"lower",back:"y",foot:"y",elbow:"G"},
+    "Lateral Raise (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Goblet Squat": {su:2.5,exempt:false,region:"lower",back:"y",foot:"y",elbow:"G"},
+    "Leg Press Horizontal (Machine)": {su:2,exempt:false,region:"lower",back:"y",foot:"G",elbow:"G"},
+    "Leg Press (Machine)": {su:2,exempt:false,region:"lower",back:"y",foot:"G",elbow:"G"},
+    "Lat Pulldown (Machine)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Crunch (Weighted)": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Ab Wheel": {su:1.5,exempt:false,region:"core",back:"Y",foot:"G",elbow:"G"},
+    "Lat Pulldown - Close Grip (Cable)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Back Extension (Hyperextension)": {su:1.5,exempt:false,region:"lower",back:"y",foot:"G",elbow:"G"},
+    "Chest Press (Machine)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Pullover (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Rear Delt Reverse Fly (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Hack Squat (Machine)": {su:3,exempt:false,region:"lower",back:"y",foot:"G",elbow:"G"},
+    "Lying Chest Fly -  Vitruvian": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Towel Scrunches (Plantar Fascia)": {su:null,exempt:true,region:"lower",back:"G",foot:"y",elbow:"G"},
+    "Straight Arm Lat Pulldown (Cable)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Chest Fly (Suspension)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Reverse Hyperextension": {su:1.5,exempt:false,region:"lower",back:"y",foot:"G",elbow:"G"},
+    "Lying Leg Raise": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "TRX Bicep Curl": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Bent Over Row (Dumbbell)": {su:2,exempt:false,region:"upper",back:"Y",foot:"G",elbow:"G"},
+    "Pull Up": {su:2,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Seated Calf Raise (Vitruvian)": {su:1,exempt:false,region:"lower",back:"G",foot:"Y",elbow:"G"},
+    "Triceps Pushdown": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Shoulder Press (Machine Plates)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Calf Extension (Machine)": {su:1,exempt:false,region:"lower",back:"G",foot:"Y",elbow:"G"},
+    "Romanian Deadlift (Dumbbell)": {su:3,exempt:false,region:"lower",back:"Y",foot:"G",elbow:"G"},
+    "Crunch (Machine)": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Hip Abduction (Machine)": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Hip Adduction (Machine)": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Seated Cable Row - V Grip (Cable)": {su:1.5,exempt:false,region:"upper",back:"y",foot:"G",elbow:"G"},
+    "Wide Pull Up": {su:2,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Standing Calf Raise": {su:1,exempt:false,region:"lower",back:"y",foot:"Y",elbow:"G"},
+    "Triceps Extension (Cable)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Standing Calf Raise (Barbell)": {su:1.5,exempt:false,region:"lower",back:"Y",foot:"Y",elbow:"G"},
+    "Overhead Press (Dumbbell)": {su:2,exempt:false,region:"upper",back:"y",foot:"G",elbow:"y"},
+    "Lat Pulldown (Cable)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Hammer Curl (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Incline Bench Press (Vitruvian)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Low Row (Suspension)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Incline Chest Press (Machine)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Arnold Press (Dumbbell)": {su:2,exempt:false,region:"upper",back:"y",foot:"G",elbow:"y"},
+    "Split Squat (Dumbbell)": {su:3,exempt:false,region:"lower",back:"y",foot:"y",elbow:"G"},
+    "Squat (Dumbbell)": {su:2.5,exempt:false,region:"lower",back:"y",foot:"y",elbow:"G"},
+    "Frog Pumps (Dumbbell)": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Bench Dip": {su:2,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Suitcase Carry": {su:1.5,exempt:false,region:"core",back:"y",foot:"y",elbow:"G"},
+    "Decline Bench Press (Machine)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Hanging Knee Raise": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Lateral Raise (Vitruvian)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Chest Supported Reverse Fly (Vitruvian)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Bicep Curl (Vitruvian)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Iso-Lateral Row (Machine)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Tibialis Raises": {su:1,exempt:false,region:"lower",back:"G",foot:"y",elbow:"G"},
+    "Pull Up (Weighted)": {su:2.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"Y"},
+    "Front Rack Carry": {su:1.5,exempt:false,region:"core",back:"y",foot:"y",elbow:"G"},
+    "Bicep Curl (Suspension)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Incline Bench Press (Barbell)": {su:2,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Glute Bridge": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Skullcrusher (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"Y"},
+    "Straight Leg Deadlift": {su:3,exempt:false,region:"lower",back:"Y",foot:"G",elbow:"G"},
+    "Zottman Curl (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"Y"},
+    "Bicep Curl (Barbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"Y"},
+    "Single Arm Tricep Extension (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Seated Row (Machine)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Chest Fly (Vitruvian)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Decline Crunch (Weighted)": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Seated Chest Flys (Cable)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Hanging Leg Raise": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Chin Up (Weighted)": {su:2.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"Y"},
+    "Single Leg Romanian Deadlift (Dumbbell)": {su:2.5,exempt:false,region:"lower",back:"y",foot:"y",elbow:"G"},
+    "Decline Crunch": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Candlesticks": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Single Leg Standing Calf Raise (Dumbbell)": {su:1.5,exempt:false,region:"lower",back:"G",foot:"Y",elbow:"G"},
+    "Preacher Curl (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Banded Cable Crunch": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Reverse Grip Row": {su:2,exempt:false,region:"upper",back:"Y",foot:"G",elbow:"y"},
+    "Bench Press (Dumbbell)": {su:2,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Seated Dip Machine": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Seated Shoulder Press (Machine)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Seated Calf Raise (Dumbells)": {su:1,exempt:false,region:"lower",back:"G",foot:"Y",elbow:"G"},
+    "Weighted Incline Sit Up": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Decline Sit Up": {su:1,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Hip Thrust (Barbell)": {su:2,exempt:false,region:"lower",back:"y",foot:"G",elbow:"G"},
+    "Cabled Glute Bridge": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Lateral Raise (Band)": {su:0.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Front Raise (with Roller/Band)": {su:0.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Band Pullaparts": {su:null,exempt:true,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Glute Kickback on Floor": {su:0.5,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Banded Side Leg Raise": {su:0.5,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Kneeling Arm Extension": {su:null,exempt:true,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Bent Over Row (Barbell)": {su:2.5,exempt:false,region:"upper",back:"Y",foot:"G",elbow:"G"},
+    "Push Up - Close Grip": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Reverse Curl (Barbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"Y"},
+    "Seated Incline Curl (Vitruvian)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Bayesian Curl (Vitruvian)": {su:1,exempt:false,region:"upper",back:"G",foot:"G",elbow:"y"},
+    "Cable Row (Chest Supported Cable Stack)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Crunch": {su:0.5,exempt:false,region:"core",back:"y",foot:"G",elbow:"G"},
+    "Single Leg Extensions": {su:1,exempt:false,region:"lower",back:"G",foot:"G",elbow:"G"},
+    "Plank Pushup": {su:1,exempt:false,region:"core",back:"G",foot:"G",elbow:"G"},
+    "Bench Press (Barbell)": {su:2,exempt:false,region:"upper",back:"G",foot:"G",elbow:"G"},
+    "Reverse Curl (Dumbbell)": {su:1.5,exempt:false,region:"upper",back:"G",foot:"G",elbow:"Y"}
+  }
+};
+const SU_REGIONS = ['lower','upper','core'];
+const SU_FLAGS = ['G','y','Y'];
+// Fresh, deep-copied config built from the seed (first run / invalid stored copy).
+function freshStressConfig(){
+  return {
+    revision: 0,
+    seedVersionAtCreation: SU_LIBRARY_SEED.version,
+    entries: JSON.parse(JSON.stringify(SU_LIBRARY_SEED.entries)),
+    changelog: []
+  };
+}
+// Sanitize a stored/imported stressConfig. Returns null when the block is
+// missing or unusable (caller falls back to fresh seed or keeps current).
+// Malformed entries are dropped (they then surface as unrated, never as a
+// silent number); malformed fields become null.
+function sanitizeStressConfig(raw){
+  if(!raw || typeof raw!=='object' || Array.isArray(raw)) return null;
+  const re = raw.entries;
+  if(!re || typeof re!=='object' || Array.isArray(re)) return null;
+  const entries = {};
+  Object.keys(re).forEach(k=>{
+    const v = re[k];
+    if(!k || !v || typeof v!=='object' || Array.isArray(v)) return;
+    const exempt = v.exempt===true;
+    const n = Number(v.su);
+    entries[k] = {
+      su: (!exempt && v.su!=null && Number.isFinite(n) && n>=0) ? n : null,
+      exempt,
+      region: SU_REGIONS.includes(v.region) ? v.region : null,
+      back:  SU_FLAGS.includes(v.back)  ? v.back  : null,
+      foot:  SU_FLAGS.includes(v.foot)  ? v.foot  : null,
+      elbow: SU_FLAGS.includes(v.elbow) ? v.elbow : null
+    };
+  });
+  if(!Object.keys(entries).length) return null;
+  const rev = Number(raw.revision);
+  const sv0 = Number(raw.seedVersionAtCreation);
+  return {
+    revision: (Number.isInteger(rev) && rev>=0) ? rev : 0,
+    seedVersionAtCreation: (Number.isInteger(sv0) && sv0>0) ? sv0 : SU_LIBRARY_SEED.version,
+    entries,
+    changelog: Array.isArray(raw.changelog)
+      ? raw.changelog.filter(c=>c && typeof c==='object' && !Array.isArray(c)).map(c=>({...c}))
+      : []
+  };
+}
+// Block registry: metadata only {id, name, phaseRef, note}. Week membership
+// is the week's own blockId (Stage 3), never derived from dates.
+function sanitizeBlocks(raw){
+  if(!Array.isArray(raw)) return [];
+  const seen = new Set();
+  const out = [];
+  raw.forEach(b=>{
+    if(!b || typeof b!=='object' || typeof b.id!=='string' || !b.id || seen.has(b.id)) return;
+    seen.add(b.id);
+    out.push({
+      id: b.id,
+      name: typeof b.name==='string' ? b.name : '',
+      phaseRef: typeof b.phaseRef==='string' ? b.phaseRef : null,
+      note: typeof b.note==='string' ? b.note : ''
+    });
+  });
+  return out;
+}
+// Backup restore for the two new top-level blocks (C1 semantics):
+//  - stressConfig: replaced wholesale when the FILE carries a valid copy
+//    (same rule as maintTargets); absent/invalid → current copy kept.
+//  - blocks: merged by id, imported entry wins (same rule as bodyComp's
+//    id merge, except imported wins on a shared id).
+function applySuBackupRestore(target, parsed){
+  if(!target || !parsed || typeof parsed!=='object') return;
+  const sc = sanitizeStressConfig(parsed.stressConfig);
+  if(sc) target.stressConfig = sc;
+  if(Array.isArray(parsed.blocks)){
+    const byId = new Map(sanitizeBlocks(target.blocks).map(b=>[b.id,b]));
+    sanitizeBlocks(parsed.blocks).forEach(b=>byId.set(b.id,b));
+    target.blocks = [...byId.values()];
+  }
+}
 // Maintenance targets (Alex's bridge plan): protein is a DYNAMIC equation —
 // 0.8g/lb of current 7-day-average body weight (Alex decision 2026-09-25; at
 // ~172.5 lb ≈ 138g). Fat 60g; carbs derived: (2500 − protein×4 − 60×9) / 4 —
@@ -1095,7 +1343,11 @@ function cloneDefaultState(){
     // v18: per-mode protein target overrides (g/day). null = use the phase
     // equation; a number = Alex's persisted override.
     proteinOverrides:{cut:null,maint:null},
-    bodyComp:[]
+    bodyComp:[],
+    // v22.0: SU library (Option A — seeded once, then authoritative) and the
+    // block registry (metadata only; membership lives on weeks as blockId).
+    stressConfig:freshStressConfig(),
+    blocks:[]
   };
 }
 
@@ -1265,6 +1517,11 @@ function migrateState(raw){
   const rawPo = (raw.proteinOverrides && typeof raw.proteinOverrides==='object') ? raw.proteinOverrides : {};
   const cleanPo = k => { const n = Number(rawPo[k]); return (rawPo[k]!=null && Number.isFinite(n) && n>0) ? Math.round(n) : null; };
   migrated.proteinOverrides = {cut: cleanPo('cut'), maint: cleanPo('maint')};
+  // v22.0: SU config + block registry. A valid stored copy is kept as-is
+  // (the seed never overwrites it); missing/invalid → fresh copy of the seed.
+  // Idempotent: sanitizing an already-sanitized config is a fixed point.
+  migrated.stressConfig = sanitizeStressConfig(raw.stressConfig) || freshStressConfig();
+  migrated.blocks = sanitizeBlocks(raw.blocks);
   // v21: the global mode drives every MODE_CONFIG lookup in the UI. A stored
   // value outside cut/maint/bulk (corrupted/hand-edited storage) used to throw
   // in applyModeUI and break tab navigation; it now loads as 'cut', the same
@@ -1320,7 +1577,9 @@ const SURPLUS_GAIN_CAP_PCT_WK = 0.15;
 // v19: export schema version. ChatGPT (Cutting Strategy) reads the weekly
 // AI-ready export as its analysis interface; the schema version tells future
 // reviewers which export format they're looking at. Bump on export changes.
-const EXPORT_SCHEMA_VERSION = 'v19';
+// v22.0: 'v20' — additive only (stressConfig, blocks; sc/blockId in later
+// stages). Nothing renamed or removed; v19 backups still import.
+const EXPORT_SCHEMA_VERSION = 'v20';
 // (declared above DEFAULT_STATE so cloneDefaultState/migrateState can use it)
 // v20 R2: maintenance kcal source labels (UI + export). The STORED target is
 // Manual (Alex saved or applied a value — the only writers are
@@ -5414,7 +5673,7 @@ function exportData(){
       return photo ? {...rest, _hasPhoto: true} : rest;
     }),
     exportedAt: new Date().toISOString(),
-    version: 3
+    version: 4
   };
   const json = JSON.stringify(exportD, null, 2);
   const blob = new Blob([json], {type: 'application/json'});
@@ -5512,6 +5771,10 @@ function importData(e){
         }
       }
       if(parsed.waistBaselineOffsetIn!=null) D.waistBaselineOffsetIn = Number(imported.waistBaselineOffsetIn)||0;
+      // v22.0: SU config (wholesale, only when the file carries a valid copy)
+      // and block registry (merged by id, imported wins). Reads the raw file,
+      // never migrateState's seed fallback.
+      applySuBackupRestore(D, parsed);
       const saved = save();
       // v21: isolated — the import is already committed and saved; a history
       // render failure used to fall into the catch below and report
@@ -8504,8 +8767,8 @@ function __selfTestRun() {
   // ── Group 22 (v19): export-only additions — schema version, data
   // completeness, phase-transition metadata. Export-only; no logic reads these.
   try{
-    add(typeof EXPORT_SCHEMA_VERSION==='string' && EXPORT_SCHEMA_VERSION==='v19',
-      'v19: EXPORT_SCHEMA_VERSION is v19');
+    add(typeof EXPORT_SCHEMA_VERSION==='string' && EXPORT_SCHEMA_VERSION==='v20',
+      'v22.0: EXPORT_SCHEMA_VERSION is v20');
     // 22a: completeness flags on fixtures
     const dcFull = weekDataCompleteness({date:'2026-09-12', mode:'cut', weight:172, calories:2300, protein:175,
       lifts:[{name:'Squat', weight:225, reps:5}], hrv:55, rhr:44, sleep:7.5});
@@ -8580,8 +8843,8 @@ function __selfTestRun() {
       const parts19 = txt19.split('── COMPUTED VALUES (machine-readable) ──');
       const human19 = parts19[0]||'', mach19 = parts19[1]||'';
       add(!/EXPORT ERROR/.test(txt19), 'v19: genSummary smoke completes without export error');
-      add(/Export schema:\s+v19/.test(human19), 'v19: schema version in human export header');
-      add(mach19.includes('export_schema:') && /export_schema:\s+v19/.test(mach19) && mach19.includes('dashboard_version:'),
+      add(/Export schema:\s+v20/.test(human19), 'v22.0: schema version v20 in human export header');
+      add(mach19.includes('export_schema:') && /export_schema:\s+v20/.test(mach19) && mach19.includes('dashboard_version:'),
         'v19: export_schema + dashboard_version in machine section');
       add(/Data completeness:\s+Weight ✓, Calories ✓, Protein ✓, Training ✗, Recovery partial/.test(human19),
         'v19: completeness line flags correct (training missing, recovery partial)');
@@ -8844,6 +9107,63 @@ function __selfTestRun() {
     finally { if(hadChart26) window.Chart = chart26; else delete window.Chart; delete charts['__selftest_probe']; }
     add(chartRes26===null, 'v21: missing Chart.js skips the chart instead of throwing');
   } catch(e){ add(false, 'v21: Group 26 threw', String(e&&e.message||e)); }
+
+
+  // ── Group 27 (v22.0): SU schema groundwork — seed, stressConfig, blocks, restore
+  try{
+    const se = SU_LIBRARY_SEED.entries;
+    add(Object.keys(se).length===146, 'v22.0: seed has 146 entries (got '+Object.keys(se).length+')');
+    add(!!se['Lying Chest Fly -  Vitruvian'] && !!se['bayesian Curl'] && !!se['Bayesian Curl (Vitruvian)'],
+      'v22.0: seed keeps exact Hevy names (double space, lowercase bayesian)');
+    add(se['Hack Squat (Machine)'].su===3 && se['Romanian Deadlift (Barbell)'].su===3 && se['Belted Squat'].su===2 && se['Chin Up'].su===2,
+      'v22.0: decided anchors (hack 3, RDL 3, belt 2, chin 2)');
+    const exN = Object.values(se).filter(v=>v.exempt).length;
+    add(exN===8 && Object.values(se).every(v=>v.exempt ? v.su===null : (typeof v.su==='number' && v.su>0)),
+      'v22.0: 8 exempt entries with su null; every rated entry numeric (exempt '+exN+')');
+    add(Object.values(se).every(v=>SU_REGIONS.includes(v.region) && SU_FLAGS.includes(v.back) && SU_FLAGS.includes(v.foot) && SU_FLAGS.includes(v.elbow)),
+      'v22.0: every seed entry has valid region + flags');
+    add(Object.keys(se).every(k=>canonicalizeRename(k)===k || k==='Incline Bench Press (Vitruvian)'),
+      'v22.0: seed keys are post-rename (only the Vitruvian incline alias is a rename source)');
+    const fresh = freshStressConfig();
+    fresh.entries['Supine Press'].su = 99;
+    add(SU_LIBRARY_SEED.entries['Supine Press'].su===1.5, 'v22.0: freshStressConfig deep-copies (seed not mutated)');
+    const m0 = migrateState({weeks:[]});
+    add(m0.stressConfig && m0.stressConfig.revision===0 && Object.keys(m0.stressConfig.entries).length===146 && Array.isArray(m0.blocks) && m0.blocks.length===0,
+      'v22.0: v19-shaped state migrates to fresh stressConfig (rev 0, 146) + empty blocks');
+    const custom = freshStressConfig(); custom.revision = 3; custom.entries['Supine Press'].su = 2;
+    custom.changelog = [{date:'2026-11-20', name:'Supine Press', field:'su', from:1.5, to:2, note:''}];
+    const m1 = migrateState({weeks:[], stressConfig:custom, blocks:[{id:'b1',name:'Leg block 1',phaseRef:'bulk',note:''}]});
+    add(m1.stressConfig.revision===3 && m1.stressConfig.entries['Supine Press'].su===2 && m1.stressConfig.changelog.length===1,
+      'v22.0: stored stressConfig kept as-is (seed never overwrites)');
+    add(JSON.stringify(migrateState(JSON.parse(JSON.stringify(m1))).stressConfig)===JSON.stringify(m1.stressConfig),
+      'v22.0: stressConfig migration is idempotent');
+    add(m1.blocks.length===1 && m1.blocks[0].name==='Leg block 1', 'v22.0: blocks round-trip through migration');
+    const bad = sanitizeStressConfig({entries:{'X':{su:'abc',region:'arm',back:'R'}, 'Y':'junk'}});
+    add(bad && bad.entries['X'].su===null && bad.entries['X'].region===null && bad.entries['X'].back===null && !bad.entries['Y'],
+      'v22.0: malformed entry fields → null, non-object entries dropped');
+    add(sanitizeStressConfig({entries:{}})===null && sanitizeStressConfig(null)===null && sanitizeStressConfig({entries:[]})===null,
+      'v22.0: empty/invalid stressConfig rejected (fallback applies)');
+    add(sanitizeBlocks([{id:'a'},{id:'a'},{name:'no id'},null]).length===1, 'v22.0: blocks sanitized (dup/id-less dropped)');
+    // restore semantics
+    const tgt = {stressConfig:freshStressConfig(), blocks:[{id:'b1',name:'old',phaseRef:null,note:''},{id:'b2',name:'keep',phaseRef:null,note:''}]};
+    applySuBackupRestore(tgt, {weeks:[]});
+    add(tgt.stressConfig.revision===0 && tgt.blocks.length===2, 'v22.0: v19 backup (no SU fields) leaves stressConfig + blocks untouched');
+    applySuBackupRestore(tgt, {stressConfig:custom, blocks:[{id:'b1',name:'new',phaseRef:'bulk',note:'x'},{id:'b3',name:'added',phaseRef:null,note:''}]});
+    add(tgt.stressConfig.revision===3 && tgt.stressConfig.entries['Supine Press'].su===2,
+      'v22.0: valid backup stressConfig replaces wholesale');
+    add(tgt.blocks.length===3 && tgt.blocks[0].name==='new' && tgt.blocks[1].name==='keep' && tgt.blocks[2].id==='b3',
+      'v22.0: blocks merged by id, imported wins, order kept');
+    applySuBackupRestore(tgt, {stressConfig:{entries:{}}});
+    add(tgt.stressConfig.revision===3, 'v22.0: invalid backup stressConfig ignored (current kept)');
+    // export carries both blocks via the D spread
+    const savedSc = D.stressConfig, savedBl = D.blocks;
+    try{
+      D.stressConfig = custom; D.blocks = [{id:'b1',name:'n',phaseRef:null,note:''}];
+      const exp = JSON.parse(JSON.stringify({...D, version:4}));
+      const back = migrateState(exp);
+      add(back.stressConfig.revision===3 && back.blocks.length===1, 'v22.0: export→migrate round-trips stressConfig + blocks');
+    } finally { D.stressConfig = savedSc; D.blocks = savedBl; }
+  } catch(e){ add(false, 'v22.0: Group 27 threw', String(e&&e.message||e)); }
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
