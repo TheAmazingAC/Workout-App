@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Alex · Cut Dashboard</title>
+<title>Alex · Training Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <style>
@@ -597,8 +597,8 @@ select option{background:var(--s2);}
 <!-- ═══════════════ SUMMARY ═══════════════ -->
 <div class="sec" id="sec-summary">
   <div class="card">
-    <div class="ct">// Generate Claude Summary</div>
-    <p class="note">Formatted for Monday cut check-in. Paste directly into Claude.</p>
+    <div class="ct">// Generate Weekly Summary</div>
+    <p class="note">Formatted for the weekly check-in. Paste into your weekly review.</p>
     <div class="field"><label>Select Week</label>
       <select id="sumSel" onchange="genSummary()"><option value="">— Choose a week —</option></select>
     </div>
@@ -1831,7 +1831,7 @@ function renderSuEditor(){
   const unrated = suUnratedNames();
   const names = Object.keys(cfg.entries).sort((a,b)=>a.localeCompare(b)).filter(n=>{
     const e = cfg.entries[n];
-    if(q && !n.toLowerCase().includes(q)) return false;
+    if(q && !n.toLowerCase().includes(q) && !displayExName(n).toLowerCase().includes(q)) return false;
     if(flt==='differs') return !suAliasTarget(n) && suSeedDiff(n).length>0;
     if(flt==='unrated') return !suAliasTarget(n) && !e.exempt && !(e.su>0);
     if(flt==='incomplete') return !suAliasTarget(n) && suEntryIncomplete(e);
@@ -1848,21 +1848,21 @@ function renderSuEditor(){
   const zeroN = Object.keys(cfg.entries).filter(n=>{ const e = cfg.entries[n]; return !suAliasTarget(n) && !e.exempt && e.su!=null && !(e.su>0); }).length;
   if(incN || zeroN) h += `<div style="font-size:11px;color:var(--w);margin-bottom:10px">${incN?incN+' incomplete entr'+(incN===1?'y':'ies')+' (SU set but region or a joint flag missing — joint exposure understated). ':''}${zeroN?zeroN+' invalid SU (≤ 0) — treated as unrated.':''}</div>`;
   if(ur.length) h += `<div style="font-size:11px;color:var(--w);margin-bottom:10px">Unrated in your logged sessions:<br>`
-    + ur.map(([n,c])=>`${escHtml(n)} (${c} sets)${cfg.entries[n]?'':` <button class="btn btn-s" style="font-size:9px;width:auto;padding:2px 8px" onclick="uiSuAdd(${JSON.stringify(n).replace(/"/g,'&quot;')})">Add</button>`}`).join('<br>') + `</div>`;
+    + ur.map(([n,c])=>`${escHtml(displayExName(n))} (${c} sets)${cfg.entries[n]?'':` <button class="btn btn-s" style="font-size:9px;width:auto;padding:2px 8px" onclick="uiSuAdd(${JSON.stringify(n).replace(/"/g,'&quot;')})">Add</button>`}`).join('<br>') + `</div>`;
   h += names.map((n,i)=>{
     const e = cfg.entries[n], diff = suSeedDiff(n);
     const aliasOf = suAliasTarget(n);
     if(aliasOf){
       const ce = cfg.entries[aliasOf] || {};
       return `<div style="border-top:1px solid var(--b);padding:6px 0;font-size:11px;color:var(--mu)">
-        <div>${escHtml(n)} <span style="color:var(--a2)">↪ alias of ${escHtml(aliasOf)}</span></div>
+        <div>${escHtml(n)} <span style="color:var(--a2)">↪ alias of ${escHtml(aliasOf)} — seed alias row, priced as the entry shown as ${escHtml(displayExName(aliasOf))}</span></div>
         <div style="font-size:10px">Priced as the canonical entry: SU ${ce.exempt?'exempt':(ce.su==null?'—':escHtml(String(ce.su)))} · ${escHtml(String(ce.region||'region ?'))} · Back ${escHtml(String(ce.back||'?'))} Foot ${escHtml(String(ce.foot||'?'))} Elbow ${escHtml(String(ce.elbow||'?'))} — edit it there.</div>
       </div>`;
     }
     const badSu = !e.exempt && e.su!=null && !(e.su>0);
     const badge = (suEntryIncomplete(e)?suChip('incomplete'):'') + (badSu?suChip('invalid SU — unrated'):'');
     return `<div style="border-top:1px solid var(--b);padding:6px 0;font-size:11px">
-      <div style="display:flex;justify-content:space-between"><span>${escHtml(n)}${badge}</span>
+      <div style="display:flex;justify-content:space-between"><span>${escHtml(displayExName(n))}${displayExName(n)!==n?' <span style="color:var(--mu);font-size:9px">key: '+escHtml(n)+'</span>':''}${badge}</span>
         <span>${diff.length?`<span style="color:var(--w)">≠ seed: ${escHtml(diff.join(', '))}</span>${SU_LIBRARY_SEED.entries[n]?` <button class="btn btn-s" style="font-size:9px;width:auto;padding:2px 8px" onclick="uiSuReset(${i})">Reset</button>`:''}`:''}</span></div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:4px">
         SU <input type="number" step="0.5" min="0.5" max="10" style="width:64px" value="${e.su==null?'':e.su}" ${e.exempt?'disabled':''} onchange="uiSuEdit(${i},'su',this.value)">
@@ -1939,7 +1939,7 @@ function renderBlocks(){
   if(selId){
     const r = computeBlockRollup(selId);
     const b = getBlockById(selId);
-    const it = o=>Object.keys(o).length ? Object.entries(o).map(([k,c])=>escHtml(k)+' ×'+c).join(', ') : 'none';
+    const it = o=>Object.keys(o).length ? Object.entries(o).map(([k,c])=>escHtml(displayExName(k))+' ×'+c).join(', ') : 'none';
     h += `<div style="font-size:11px;line-height:1.7">
       <div><b>${escHtml(b.name||b.id)}</b> · phase ${escHtml(String(b.phaseRef||'—'))}${r.phases.length>1?' · <span style="color:var(--w)">spans '+escHtml(r.phases.join(' → '))+'</span>':''}${b.note?' · '+escHtml(b.note):''}</div>
       <div>Weeks: ${r.weeks}${r.start?' ('+escHtml(fmtDShort(r.start))+' → '+escHtml(fmtDShort(r.end))+')':''} · SU coverage ${r.pricedWeeks}/${r.weeks}</div>
@@ -4277,6 +4277,20 @@ function canonicalizeRename(rawName){
   return TRUE_RENAME_MAP[rawName] || rawName;
 }
 
+// v22.8: DISPLAY-ONLY exercise labels for human-facing surfaces. The canonical
+// key 'Incline Bench Press (Dumbbell)' has been Vitruvian work throughout
+// Alex's history (renamed in Hevy 2026-11; TRUE_RENAME_MAP folds the new name
+// to this key). Keys, stored data, TRUE_RENAME_MAP, pricing and every
+// machine-readable export line keep canonical keys; nothing reads a rendered
+// label back as a key (option values, hidden inputs and stored fields carry
+// the canonical key).
+const EX_DISPLAY_NAMES = Object.freeze({
+  'Incline Bench Press (Dumbbell)': 'Incline Bench Press (Vitruvian)',
+});
+function displayExName(key){ return (key && EX_DISPLAY_NAMES[key]) || key; }
+// v22.8: backup filename (phase-neutral).
+function backupFilename(dateStr){ return 'alex-dashboard-backup-'+dateStr+'.json'; }
+
 // ══════════════════════════════════════════
 // PATCH F: MUSCLE COUNTING METHOD
 // ══════════════════════════════════════════
@@ -4319,7 +4333,7 @@ function buildLiftRows(){
     PRIORITY_LIFTS.filter(l=>l.day===day).forEach(l=>{
       const i = l.slot;
       html += `<div class="lift-row">
-        <div class="lift-label">${l.name}</div>
+        <div class="lift-label">${displayExName(l.name)}</div>
         <div class="lift-inp">
           <input type="hidden" id="l${i}n" value="${l.name}">
           <div class="field"><label>Lbs</label><input type="number" id="l${i}w" placeholder="—" step="2.5"></div>
@@ -5009,7 +5023,7 @@ function showImportModal(){
     const found = PRIORITY_LIFTS.map(pl=>{
       const top = getTopSetForExercise(s.sets, pl.name);
       // v21: CSV text is escaped (identical output for normal text)
-      return top ? `${pl.name}: ${escHtml(String(top.weight_lbs||'BW'))}lbs × ${escHtml(String(top.reps))} @ RPE ${escHtml(String(top.rpe))}` : null;
+      return top ? `${displayExName(pl.name)}: ${escHtml(String(top.weight_lbs||'BW'))}lbs × ${escHtml(String(top.reps))} @ RPE ${escHtml(String(top.rpe))}` : null;
     }).filter(Boolean);
     const peakNote = s.type==='home' ? ' · excl. from peaks' : s.type==='deload' ? ' · fully excluded' : ' · sets peaks';
     return `<div class="ses-row ${s.type}" onclick="toggleSesRow(${idx})">
@@ -5347,7 +5361,7 @@ function genSummary(){
     const srcNote = (l.srcTitle||l.srcDate)
       ? ' [from "'+str(l.srcTitle||'?')+'"'+(l.srcDate?' '+str(l.srcDate):'')+']'
       : '';
-    return '  '+pl.day+' — '+pl.name+aliasNote+': '+(hasData
+    return '  '+pl.day+' — '+displayExName(pl.name)+aliasNote+': '+(hasData
       ? nd(l.weight)+' lbs × '+nd(l.reps)+' reps @ RPE '+nd(l.rpe)+srcNote
       : 'not trained');
   }).join('\n');
@@ -5365,7 +5379,7 @@ function genSummary(){
       if(cands.length){
         cands.sort((a,b)=>((b.e1rm??b.w))-((a.e1rm??a.w)));
         const c = cands[0];
-        out.push('  + alt location/equipment — '+c.ex+': '+nd(c.w)+' lbs × '+nd(c.r)+' reps @ RPE '+nd(c.rpe)
+        out.push('  + alt location/equipment — '+displayExName(c.ex)+': '+nd(c.w)+' lbs × '+nd(c.r)+' reps @ RPE '+nd(c.rpe)
           +(c.session?' [from "'+str(c.session)+'"'+(c.date?' '+str(c.date):'')+']':''));
       }
     });
@@ -5922,7 +5936,7 @@ function buildExSelectors(){
   ['liftSel','ormSel'].forEach(id=>{
     const sel=document.getElementById(id);
     sel.innerHTML='<option value="">— Select exercise —</option>';
-    names.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
+    names.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=displayExName(n);sel.appendChild(o);});
   });
 }
 
@@ -6070,9 +6084,9 @@ function renderSessions(){
     // v21: session titles / exercise names come from CSV or backups — escaped
     // v22.1: SU priced live from the current library; "—" when unpriced.
     const suR=computeSessionSU(s);
-    const suTip=suR?`lower ${suR.lower.toFixed(1)} · upper ${suR.upper.toFixed(1)} · core ${suR.core.toFixed(1)}${suR.unratedSets?' · unrated: '+Object.entries(suR.unrated).map(([k,c])=>k+' ×'+c).join(', '):''}`:'Not priced (no set counts stored)';
+    const suTip=suR?`lower ${suR.lower.toFixed(1)} · upper ${suR.upper.toFixed(1)} · core ${suR.core.toFixed(1)}${suR.unratedSets?' · unrated: '+Object.entries(suR.unrated).map(([k,c])=>displayExName(k)+' ×'+c).join(', '):''}`:'Not priced (no set counts stored)';
     const suStr=`<span title="${escHtml(suTip)}"${suR&&suR.unratedSets?' style="color:var(--w)"':''}>${escHtml(fmtSU(suR))}</span>`;
-    const topStr=Object.entries(s.ts).slice(0,3).map(([ex,d])=>`${escHtml(String(ex))}: ${escHtml(String(d.w||'BW'))}lbs×${escHtml(String(d.r||'?'))}`).join('  ·  ');
+    const topStr=Object.entries(s.ts).slice(0,3).map(([ex,d])=>`${escHtml(String(displayExName(ex)))}: ${escHtml(String(d.w||'BW'))}lbs×${escHtml(String(d.r||'?'))}`).join('  ·  ');
     return`<div class="hi" style="display:block;padding:11px 0;">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
         <div style="font-size:12px">${escHtml(String(s.t))}</div>
@@ -6498,7 +6512,7 @@ function exportData(){
   const a = document.createElement('a');
   const date = new Date().toISOString().split('T')[0];
   a.href = url;
-  a.download = `alex-cut-backup-${date}.json`;
+  a.download = backupFilename(date);
   a.click();
   URL.revokeObjectURL(url);
   const photoCount = D.weeks.filter(w => w.photo).length;
@@ -7619,7 +7633,7 @@ function renderRetention(){
     const barW = Math.min(100,Math.max(0,r.pct-70))/30*100; // map 70-100% to 0-100% width
     return `<div style="margin-bottom:14px">
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
-        <div style="font-size:11px;font-weight:600">${r.ex}</div>
+        <div style="font-size:11px;font-weight:600">${escHtml(displayExName(r.ex))}</div>
         <div style="font-size:10px;color:${col};font-family:'Syne',sans-serif;font-weight:700">${badge}</div>
       </div>
       <div style="font-size:9px;color:var(--mu);margin-bottom:3px">Peak e1RM: ${r.peak} lbs &nbsp;·&nbsp; Current: ${r.curr} lbs &nbsp;·&nbsp; ${r.pct}%</div>
@@ -10240,7 +10254,10 @@ function __selfTestRun() {
       document.getElementById('suFilter').value=''; document.getElementById('suSearch').value='Incline Bench Press (V';
       renderSuEditor();
       const panel = document.getElementById('suEditorPanel').innerHTML;
-      add(/alias of Incline Bench Press \(Dumbbell\)/.test(panel) && !/uiSuEdit\(0,'su'/.test(panel), 'v22.7: alias row rendered read-only with label');
+      // v22.8: search also matches display names, so the canonical row (shown
+      // as Vitruvian) is listed too — locate the alias row by name, not index 0.
+      const aliasIdx = _suEditorNames.indexOf('Incline Bench Press (Vitruvian)');
+      add(/alias of Incline Bench Press \(Dumbbell\)/.test(panel) && aliasIdx>=0 && !new RegExp("uiSuEdit\\("+aliasIdx+",'su'").test(panel), 'v22.7: alias row rendered read-only with label');
       document.getElementById('suSearch').value='';
       // 2. zero SU
       add(suApplyEdit('Supine Press', {su:0})===0 && suApplyEdit('Supine Press', {su:'0'})===0 && D.stressConfig.entries['Supine Press'].su===1.5, 'v22.7: SU 0 rejected for a non-exempt entry');
@@ -10269,6 +10286,45 @@ function __selfTestRun() {
       add(suImportOverwriteRisk(cw, JSON.parse(JSON.stringify(cw))).count===0, 'v22.7: a current backup carries no risk');
     } catch(e){ add(false, 'v22.7: Group 34 threw', String(e&&e.message||e)); }
     finally { D.stressConfig = savedSc; D.weeks = savedWeeks; const f=document.getElementById('suFilter'); if(f) f.value=''; const q=document.getElementById('suSearch'); if(q) q.value=''; }
+  }
+
+  // ── Group 35 (v22.8): display-name map + phase-neutral chrome
+  {
+    const savedWeeks = D.weeks;
+    try{
+      add(displayExName('Incline Bench Press (Dumbbell)')==='Incline Bench Press (Vitruvian)' && displayExName('Supine Press')==='Supine Press' && displayExName(null)===null,
+        'v22.8: display map renders the canonical incline key as Vitruvian, identity otherwise');
+      add(Object.isFrozen(EX_DISPLAY_NAMES) && canonicalizeRename('Incline Bench Press (Vitruvian)')==='Incline Bench Press (Dumbbell)' && Object.keys(TRUE_RENAME_MAP).length===2,
+        'v22.8: TRUE_RENAME_MAP unchanged; display map frozen');
+      add(computeSessionSU({sc:{'Incline Bench Press (Vitruvian)':1,'Incline Bench Press (Dumbbell)':1}}).su===3, 'v22.8: pricing unchanged (both names fold to the canonical key)');
+      // selectors: text is the display name, value stays the key
+      buildExSelectors();
+      const o = [...document.getElementById('liftSel').options].find(x=>x.value==='Incline Bench Press (Dumbbell)');
+      add(!o || o.textContent==='Incline Bench Press (Vitruvian)', 'v22.8: lift picker shows Vitruvian label, option value is the canonical key');
+      add(![...document.getElementById('liftSel').options].some(x=>x.value==='Incline Bench Press (Vitruvian)' && x.textContent==='Incline Bench Press (Vitruvian)' && o),
+        'v22.8: picker does not gain a second Vitruvian-keyed option');
+      const pl = PRIORITY_LIFTS.find(x=>x.name==='Incline Bench Press (Dumbbell)');
+      if(pl){
+        const hid = document.getElementById('l'+pl.slot+'n');
+        add(!hid || hid.value==='Incline Bench Press (Dumbbell)', 'v22.8: priority-lift hidden input keeps the canonical key');
+      }
+      // stored data untouched by rendering
+      const ses = {d:'2026-11-05', t:'Upper Day (Home)', m:'upper', ts:{'Incline Bench Press (Dumbbell)':{w:192,r:7,rpe:7.5,e1rm:237}}, vol:1, sc:{'Incline Bench Press (Dumbbell)':2}};
+      D.weeks = [migrateWeek({date:'2026-11-07', mode:'maint', weight:171, hevySessions:[JSON.parse(JSON.stringify(ses))], sessions:[JSON.parse(JSON.stringify(ses))]})];
+      const before = JSON.stringify(D.weeks);
+      safeCall('renderHistory', renderHistory);
+      const keysOk = JSON.stringify(D.weeks)===before && !/Incline Bench Press \(Vitruvian\)/.test(before);
+      add(keysOk, 'v22.8: rendering never writes display names into stored weeks');
+      // machine export lines keep canonical keys; human lines show the label
+      const ex = suExportLines(D.weeks[0]);
+      add(!ex.machine.some(l=>/Vitruvian/.test(l)), 'v22.8: su_* machine lines carry no display names');
+      add(backupFilename('2026-11-02')==='alex-dashboard-backup-2026-11-02.json', 'v22.8: backup filename phase-neutral');
+      add(/Training Dashboard/.test(document.title) && !/Cut Dashboard/.test(document.title), 'v22.8: document title phase-neutral ('+document.title+')');
+      const sumCard = document.querySelector('#sec-summary .ct');
+      add(sumCard && /Generate Weekly Summary/.test(sumCard.textContent) && !/Monday cut/.test(document.querySelector('#sec-summary .note').textContent),
+        'v22.8: summary card copy phase-neutral');
+    } catch(e){ add(false, 'v22.8: Group 35 threw', String(e&&e.message||e)); }
+    finally { D.weeks = savedWeeks; }
   }
 
   const failed = out.checks.filter(c=>!c.ok).length;
