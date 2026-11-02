@@ -339,7 +339,7 @@ select option{background:var(--s2);}
   <div class="card">
     <div class="ct">// Week</div>
     <div class="fg">
-      <div class="field"><label>Week Ending</label><input type="date" id="wDate"></div>
+      <div class="field"><label>Week Ending</label><input type="date" id="wDate" onchange="safeCall('renderWeekBlockNote', renderWeekBlockNote)"><div id="wBlockNote" class="note" style="display:none;margin-top:4px"></div></div>
       <div class="field"><label>Calorie Target</label><input type="number" id="calTgt" placeholder="2300" oninput="syncCalorieTargets('week');updLoss();updVelocity()"></div>
     </div>
     <div class="fg">
@@ -1409,6 +1409,26 @@ function weekTriggers(w, cfg){
   res.backFired = res.backYSets > SU_TRIGGERS.backY_week;
   res.count = (res.backFired?1:0) + res.sessionFires.length;
   return res;
+}
+// v22.13: display-only block label for a week (registry name, or null when the
+// week is unassigned or its blockId is not in the registry).
+function weekBlockName(w){
+  if(!w || w.blockId==null) return null;
+  const b = getBlockById(w.blockId);
+  return b ? (b.name || b.id) : null;
+}
+function blockChipHtml(w){
+  const n = weekBlockName(w); if(!n) return '';
+  return '<span style="display:inline-block;background:rgba(232,255,71,.08);color:var(--a);border:1px solid var(--b);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:.5px;margin-left:5px" title="Training block">'+escHtml(String(n))+'</span>';
+}
+// Log tab: which block the week in the form belongs to (or will join on save).
+function renderWeekBlockNote(){
+  const el = document.getElementById('wBlockNote'); if(!el) return;
+  const d = v('wDate'); const w = d ? D.weeks.find(x=>x.date===d) : null;
+  let t = '';
+  if(w){ const n = weekBlockName(w); t = n ? 'Block: '+n : ''; }
+  else if(d){ const ob = getOpenBlock(); t = ob ? 'New week — joins block "'+(ob.name||ob.id)+'" on save' : ''; }
+  el.textContent = t; el.style.display = t ? 'block' : 'none';
 }
 function getBlocks(){ return Array.isArray(D.blocks) ? D.blocks : (D.blocks = []); }
 function getOpenBlock(){ return getBlocks().filter(b=>!b.closed).slice(-1)[0] || null; }
@@ -4332,6 +4352,7 @@ window.onload = ()=>{
   // session data) no longer skips every step after it.
   safeCall('mergeStoredSessions', mergeStoredSessions);
   sv('wDate', localISODate());   // v22.9: local date, not UTC
+  safeCall('renderWeekBlockNote', renderWeekBlockNote);   // v22.13
   sv('phaseRef', D.mode || 'cut');
   if(D.targetWeight) sv('targetWt', D.targetWeight);
   safeCall('buildPrimaryMuscleMap', buildPrimaryMuscleMap);
@@ -6727,7 +6748,7 @@ function renderHistory(){
       +(wSu&&wSu.pricedSessions<wSu.sessions?' ('+wSu.pricedSessions+'/'+wSu.sessions+' sessions priced)':'')+'</span>';
     return `<div class="hi" onclick="loadWeek('${w.date}')">
       <div>
-        <div style="font-size:12px;margin-bottom:2px">${fmtD(w.date)}${isRefeed?'<span class="refeed-badge">REFEED</span>':''}${isDeload?'<span style="display:inline-block;background:rgba(71,184,255,.12);color:var(--a2);border:1px solid var(--a2);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:1px;margin-left:5px">DELOAD</span>':''}${modeBadge}${w._historical?'<span style="font-size:9px;color:var(--mu);margin-left:6px">hist</span>':''}</div>
+        <div style="font-size:12px;margin-bottom:2px">${fmtD(w.date)}${isRefeed?'<span class="refeed-badge">REFEED</span>':''}${isDeload?'<span style="display:inline-block;background:rgba(71,184,255,.12);color:var(--a2);border:1px solid var(--a2);border-radius:20px;font-size:9px;padding:1px 7px;font-family:Syne,sans-serif;font-weight:700;letter-spacing:1px;margin-left:5px">DELOAD</span>':''}${modeBadge}${blockChipHtml(w)}${w._historical?'<span style="font-size:9px;color:var(--mu);margin-left:6px">hist</span>':''}</div>
         <div style="font-size:10px;color:var(--mu)">${(w.lifts||[]).filter(l=>l.weight).length} lifts${extraTags.map(t=>' <span style="font-size:8px;color:var(--mu)">#'+escHtml(String(t))+'</span>').join('')} &middot; ${w.photo?'📷 ':''}${w.notes?'📝 ':''}${suHtml}${wSes.length?weekTriggerBadges(w):''}</div>
       </div>
       <div class="hact">
@@ -8848,6 +8869,7 @@ function loadWeek(date, opts={}){
   showSec('log',document.querySelector('.nt'));
   document.querySelector('.nt').classList.add('active');
   lastLoadedWeekSnapshot = getCurrentFormSnapshot();
+  safeCall('renderWeekBlockNote', renderWeekBlockNote);   // v22.13
   toast('Loaded '+fmtD(date));
 }
 
@@ -10711,6 +10733,34 @@ function __selfTestRun() {
       add(/No sessions/.test(document.getElementById('sesLog').textContent), 'v22.12: session log empty state on fresh install');
     } finally { D.weeks = savedWeeks; HEVY_DATA.sessions = []; safeCall('mergeStoredSessions', mergeStoredSessions); }
   } catch(e){ add(false, 'v22.12: Group 39 threw', String(e&&e.message||e)); }
+
+  // ── Group 40 (v22.13): block names in History (display only)
+  {
+    const savedWeeks = D.weeks, savedBlocks = D.blocks, savedDate = v('wDate');
+    try{
+      D.blocks = [{id:'b3', name:'Block 3', phaseRef:'cut', note:'', closed:true}, {id:'br', name:'Bridge', phaseRef:'maint', note:'', closed:false}];
+      D.weeks = [migrateWeek({date:'2026-07-18', mode:'cut', blockId:'b3', tags:['deload'], deload:true, weight:178}),
+                 migrateWeek({date:'2026-10-31', mode:'maint', blockId:'br', weight:171}),
+                 migrateWeek({date:'2025-01-04', weight:190}),
+                 migrateWeek({date:'2026-10-24', mode:'maint', blockId:'gone', weight:171})];
+      const before = JSON.stringify(D.weeks)+JSON.stringify(D.blocks);
+      renderHistory();
+      const rows = [...document.querySelectorAll('#histList .hi')].map(r=>r.textContent);
+      const row = d=>rows.find(t=>t.includes(fmtD(d)))||'';
+      add(/DELOAD/.test(row('2026-07-18')) && /Block 3/.test(row('2026-07-18')), 'v22.13: block chip beside the deload chip');
+      add(/MAINT/.test(row('2026-10-31')) && /Bridge/.test(row('2026-10-31')), 'v22.13: block chip beside the phase chip');
+      add(!/Block 3|Bridge/.test(row('2025-01-04')), 'v22.13: unassigned week shows no block chip');
+      add(!/gone/.test(row('2026-10-24')) && weekBlockName(D.weeks[3])===null, 'v22.13: blockId missing from the registry shows nothing');
+      add(JSON.stringify(D.weeks)+JSON.stringify(D.blocks)===before, 'v22.13: display only — weeks and registry untouched');
+      D.blocks.push({id:'x', name:'<b>x</b>', phaseRef:'cut', note:'', closed:true}); D.weeks[2].blockId='x'; renderHistory();
+      add(!document.querySelector('#histList .hi b') && /<b>x<\/b>/.test(document.getElementById('histList').textContent), 'v22.13: block name escaped');
+      sv('wDate','2026-07-18'); renderWeekBlockNote();
+      add(document.getElementById('wBlockNote').textContent==='Block: Block 3', 'v22.13: Log tab shows the loaded week\'s block');
+      sv('wDate','2026-11-07'); renderWeekBlockNote();
+      add(/joins block "Bridge" on save/.test(document.getElementById('wBlockNote').textContent), 'v22.13: Log tab shows the open block a new week will join');
+    } catch(e){ add(false, 'v22.13: Group 40 threw', String(e&&e.message||e)); }
+    finally { D.weeks = savedWeeks; D.blocks = savedBlocks; sv('wDate', savedDate); safeCall('renderWeekBlockNote', renderWeekBlockNote); safeCall('renderHistory', renderHistory); }
+  }
 
   const failed = out.checks.filter(c=>!c.ok).length;
   const passed = out.checks.length - failed;
