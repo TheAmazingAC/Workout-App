@@ -643,6 +643,7 @@ select option{background:var(--s2);}
     <button class="stab" onclick="showTrainView('orm',this)">Est. 1RM</button>
     <button class="stab" onclick="showTrainView('retention',this)">Strength Retention</button>
     <button class="stab" onclick="showTrainView('sessions',this)">Session Log</button>
+    <button class="stab" onclick="showTrainView('blocks',this)">Blocks</button>
   </div>
 
   <!-- Lifts view -->
@@ -708,6 +709,15 @@ select option{background:var(--s2);}
         </select>
       </div>
       <div id="sesLog"></div>
+    </div>
+  </div>
+
+  <!-- v22.3: Blocks view -->
+  <div id="tv-blocks" style="display:none">
+    <div class="card">
+      <div class="ct">// Blocks — stress units</div>
+      <p class="note">Week membership is set here (blockId on each week). SU is priced live from the current ratings; weeks without stored set counts show as uncovered.</p>
+      <div id="blocksPanel"></div>
     </div>
   </div>
 </div>
@@ -1188,7 +1198,10 @@ function sanitizeBlocks(raw){
       id: b.id,
       name: typeof b.name==='string' ? b.name : '',
       phaseRef: typeof b.phaseRef==='string' ? b.phaseRef : null,
-      note: typeof b.note==='string' ? b.note : ''
+      note: typeof b.note==='string' ? b.note : '',
+      // v22.3: closed flag. At most one block is open; starting a block closes
+      // the others and a newly saved week with no blockId joins the open one.
+      closed: b.closed===true
     });
   });
   return out;
@@ -1290,6 +1303,158 @@ function computeWeekSU(w, cfg){
 function suLegShare(r){
   return (r && r.su>0) ? r.lower/r.su*100 : null;
 }
+// ══════════════════════════════════════════
+// v22.3: joint-exposure triggers + blocks
+// ══════════════════════════════════════════
+// Review triggers (adopted soft limits — review prompts, never blocks).
+// Exempt drills are recorded in exposure but EXCLUDED from trigger counts
+// (Alex, 2026-11-02). Comparison is strictly greater-than the limit.
+const SU_TRIGGERS = {backY_week:4, footY_session:2, elbowY_session:1};
+// Itemized joint exposure for one session (null when the session has no sc).
+function sessionJointExposure(ses, cfg){
+  if(!ses || !ses.sc || typeof ses.sc!=='object' || Array.isArray(ses.sc)) return null;
+  const entries = (cfg && cfg.entries) || (typeof D!=='undefined' && D.stressConfig && D.stressConfig.entries) || {};
+  const out = {backY:{}, foot:{}, elbowY:{}, exempt:{}};
+  Object.entries(ses.sc).forEach(([name,n])=>{
+    const c = Number(n); if(!Number.isInteger(c) || c<=0) return;
+    const key = canonicalizeRename(name); const e = entries[key]; if(!e) return;
+    if(e.exempt) out.exempt[key] = true;
+    if(e.back==='Y') out.backY[key] = (out.backY[key]||0) + c;
+    if(e.foot==='y' || e.foot==='Y') out.foot[key] = (out.foot[key]||0) + c;
+    if(e.elbow==='Y') out.elbowY[key] = (out.elbowY[key]||0) + c;
+  });
+  return out;
+}
+// Trigger evaluation for one week: back per week; foot/elbow per session.
+function weekTriggers(w, cfg){
+  const res = {backYSets:0, backFired:false, sessionFires:[], count:0};
+  weekStoredSessions(w).forEach(s=>{
+    const ex = sessionJointExposure(s, cfg); if(!ex) return;
+    const counted = k=>!ex.exempt[k];
+    res.backYSets += Object.entries(ex.backY).filter(([k])=>counted(k)).reduce((a,[,c])=>a+c,0);
+    const footN = Object.keys(ex.foot).filter(counted).length;
+    const elbowN = Object.keys(ex.elbowY).filter(counted).length;
+    if(footN > SU_TRIGGERS.footY_session) res.sessionFires.push({d:s.d, t:s.t, area:'foot', n:footN});
+    if(elbowN > SU_TRIGGERS.elbowY_session) res.sessionFires.push({d:s.d, t:s.t, area:'elbow', n:elbowN});
+  });
+  res.backFired = res.backYSets > SU_TRIGGERS.backY_week;
+  res.count = (res.backFired?1:0) + res.sessionFires.length;
+  return res;
+}
+function getBlocks(){ return Array.isArray(D.blocks) ? D.blocks : (D.blocks = []); }
+function getOpenBlock(){ return getBlocks().filter(b=>!b.closed).slice(-1)[0] || null; }
+function getBlockById(id){ return getBlocks().find(b=>b.id===id) || null; }
+function weekPhaseOf(w){ return (w && (w.phaseRef || w.mode)) || null; }
+// Phase-crossing guard: true when it is fine to put week w into block b.
+// Different phase → explicit confirm() (the existing dialog pattern).
+function confirmPhaseCross(w, b, confirmFn){
+  const ph = weekPhaseOf(w);
+  if(!b || !b.phaseRef || !ph || ph===b.phaseRef) return true;
+  const ask = confirmFn || (msg=>confirm(msg));
+  return !!ask('Week '+w.date+' is in phase "'+ph+'" but block "'+(b.name||b.id)+'" is "'+b.phaseRef+'". Assign it anyway?');
+}
+// Start a block at fromDate: closes every other block, assigns existing weeks
+// dated ≥ fromDate (each phase-crossing week needs confirmation; declined
+// weeks keep their current assignment). Future saved weeks join it.
+function startNewBlock(name, note, fromDate, confirmFn){
+  const weeks = D.weeks.filter(w=>w.date && (!fromDate || w.date>=fromDate));
+  const first = weeks[0];
+  const b = {id:'blk_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),
+    name: String(name||'').trim() || ('Block '+(getBlocks().length+1)),
+    phaseRef: weekPhaseOf(first) || D.mode || 'cut', note: String(note||''), closed:false};
+  getBlocks().forEach(x=>{ x.closed = true; });
+  D.blocks.push(b);
+  let assigned = 0, declined = 0;
+  weeks.forEach(w=>{ if(confirmPhaseCross(w, b, confirmFn)){ w.blockId = b.id; assigned++; } else declined++; });
+  return {block:b, assigned, declined};
+}
+function endOpenBlock(){ const b = getOpenBlock(); if(b) b.closed = true; return b; }
+// Per-week reassignment (blockId null = unassigned).
+function assignWeekToBlock(date, blockId, confirmFn){
+  const w = D.weeks.find(x=>x.date===date); if(!w) return false;
+  if(!blockId){ delete w.blockId; return true; }
+  const b = getBlockById(blockId); if(!b) return false;
+  if(!confirmPhaseCross(w, b, confirmFn)) return false;
+  w.blockId = b.id; return true;
+}
+// Block rollup — derived only from member weeks (blockId).
+function computeBlockRollup(blockId, cfg){
+  const weeks = D.weeks.filter(w=>w.blockId===blockId).sort((a,b)=>a.date.localeCompare(b.date));
+  const r = {weeks:weeks.length, pricedWeeks:0, su:0, lower:0, upper:0, core:0, other:0, unratedSets:0,
+    avg:null, max:null, legShare:null, phases:[], start:weeks[0]?weeks[0].date:null, end:weeks.length?weeks[weeks.length-1].date:null,
+    yellow:{back:{}, foot:{}, elbow:{}}, triggers:0};
+  const ph = new Set();
+  weeks.forEach(w=>{
+    const p = weekPhaseOf(w); if(p) ph.add(p);
+    const wr = computeWeekSU(w, cfg);
+    if(wr){
+      r.pricedWeeks++; r.su+=wr.su; r.lower+=wr.lower; r.upper+=wr.upper; r.core+=wr.core; r.other+=wr.other; r.unratedSets+=wr.unratedSets;
+      if(!r.max || wr.su>r.max.su) r.max = {date:w.date, su:wr.su};
+    }
+    weekStoredSessions(w).forEach(s=>{
+      const ex = sessionJointExposure(s, cfg); if(!ex) return;
+      Object.entries(ex.backY).forEach(([k,c])=>r.yellow.back[k]=(r.yellow.back[k]||0)+c);
+      Object.entries(ex.foot).forEach(([k,c])=>r.yellow.foot[k]=(r.yellow.foot[k]||0)+c);
+      Object.entries(ex.elbowY).forEach(([k,c])=>r.yellow.elbow[k]=(r.yellow.elbow[k]||0)+c);
+    });
+    r.triggers += weekTriggers(w, cfg).count;
+  });
+  r.phases = [...ph];
+  if(r.pricedWeeks) r.avg = r.su/r.pricedWeeks;
+  r.legShare = r.su>0 ? r.lower/r.su*100 : null;
+  return r;
+}
+// ── Blocks card (Training → Blocks)
+function renderBlocks(){
+  const el = document.getElementById('blocksPanel'); if(!el) return;
+  const blocks = getBlocks();
+  const open = getOpenBlock();
+  const sel = document.getElementById('blockSel');
+  const selId = (sel && sel.value && getBlockById(sel.value)) ? sel.value : (open ? open.id : (blocks.slice(-1)[0]||{}).id);
+  const opt = (id,label,cur)=>`<option value="${escHtml(String(id))}"${id===cur?' selected':''}>${escHtml(String(label))}</option>`;
+  let h = `<div class="field" style="margin-bottom:10px"><label>Block</label><select id="blockSel" onchange="renderBlocks()">`
+    + (blocks.length ? [...blocks].reverse().map(b=>opt(b.id, (b.name||b.id)+(b.closed?'':' (open)'), selId)).join('') : '<option value="">— no blocks yet —</option>')
+    + `</select></div>`;
+  if(selId){
+    const r = computeBlockRollup(selId);
+    const b = getBlockById(selId);
+    const it = o=>Object.keys(o).length ? Object.entries(o).map(([k,c])=>escHtml(k)+' ×'+c).join(', ') : 'none';
+    h += `<div style="font-size:11px;line-height:1.7">
+      <div><b>${escHtml(b.name||b.id)}</b> · phase ${escHtml(String(b.phaseRef||'—'))}${r.phases.length>1?' · <span style="color:var(--w)">spans '+escHtml(r.phases.join(' → '))+'</span>':''}${b.note?' · '+escHtml(b.note):''}</div>
+      <div>Weeks: ${r.weeks}${r.start?' ('+escHtml(fmtDShort(r.start))+' → '+escHtml(fmtDShort(r.end))+')':''} · SU coverage ${r.pricedWeeks}/${r.weeks}</div>
+      <div>Total ${r.su.toFixed(1)} SU · avg ${r.avg!=null?r.avg.toFixed(1):'—'} SU/wk · max ${r.max?r.max.su.toFixed(1)+' ('+escHtml(fmtDShort(r.max.date))+')':'—'}</div>
+      <div>Lower ${r.lower.toFixed(1)} · upper ${r.upper.toFixed(1)} · core ${r.core.toFixed(1)} · legs ${r.legShare!=null?r.legShare.toFixed(0)+'%':'—'}${r.unratedSets?' · <span style="color:var(--w)">+ ? ('+r.unratedSets+' unrated sets)</span>':''}</div>
+      <div>Yellow back (sets): ${it(r.yellow.back)}</div>
+      <div>Yellow foot (sets): ${it(r.yellow.foot)}</div>
+      <div>Yellow elbow (sets): ${it(r.yellow.elbow)}</div>
+      <div>Review triggers: ${r.triggers}</div>
+    </div>`;
+  }
+  h += `<div style="margin-top:12px;border-top:1px solid var(--b);padding-top:10px">
+    <div class="field"><label>New block name</label><input id="blkName" type="text" placeholder="e.g. Leg block 1"></div>
+    <div class="field"><label>Note</label><input id="blkNote" type="text"></div>
+    <div class="field"><label>Starts with week</label><select id="blkFrom">${[...D.weeks].reverse().slice(0,26).map(w=>opt(w.date, fmtDShort(w.date), (D.weeks.slice(-1)[0]||{}).date)).join('')}</select></div>
+    <button class="btn" onclick="uiStartBlock()">Start new block</button>
+    ${open?'<button class="btn" style="margin-left:6px" onclick="uiEndBlock()">End block</button>':''}
+  </div>`;
+  h += `<div style="margin-top:12px;border-top:1px solid var(--b);padding-top:10px;font-size:11px"><div style="margin-bottom:6px;color:var(--mu)">Week membership (last 26 weeks)</div>`
+    + [...D.weeks].reverse().slice(0,26).map(w=>`<div style="display:flex;justify-content:space-between;align-items:center;margin:3px 0">
+        <span>${escHtml(fmtDShort(w.date))} <span style="color:var(--mu)">${escHtml(String(weekPhaseOf(w)||''))}</span></span>
+        <select onchange="uiAssignWeek('${escHtml(w.date)}', this.value)">${opt('', '— none —', w.blockId||'')}${blocks.map(b=>opt(b.id, b.name||b.id, w.blockId||'')).join('')}</select>
+      </div>`).join('') + `</div>`;
+  el.innerHTML = h;
+}
+function uiStartBlock(){
+  const res = startNewBlock(v('blkName'), v('blkNote'), v('blkFrom'));
+  if(save()) toast('Block started: '+res.assigned+' week(s) assigned'+(res.declined?' ('+res.declined+' left as-is)':''));
+  renderBlocks();
+}
+function uiEndBlock(){ const b = endOpenBlock(); if(b && save()) toast('Block ended: '+(b.name||b.id)); renderBlocks(); }
+function uiAssignWeek(date, blockId){
+  if(assignWeekToBlock(date, blockId||null)){ if(save()) toast('Week updated'); }
+  renderBlocks();
+}
+
 // "9.5 SU", "9.5 SU + ? (2 unrated sets)", or "SU —" when unpriced.
 function fmtSU(r){
   if(!r) return 'SU —';
@@ -4047,7 +4212,12 @@ function saveWeek(){
     // (v22.3) changes it.
     if(D.weeks[idx].blockId!=null) entry.blockId = D.weeks[idx].blockId;
     D.weeks[idx]=entry;
-  } else D.weeks.push(entry);
+  } else {
+    // v22.3: a new week joins the open block (phase-crossing needs confirm).
+    const ob = getOpenBlock();
+    if(ob && confirmPhaseCross(entry, ob)) entry.blockId = ob.id;
+    D.weeks.push(entry);
+  }
   D.weeks.sort((a,b)=>a.date.localeCompare(b.date));
   const saved = save();
   // v21: the week is already persisted here; an analytics-merge failure must
@@ -5232,12 +5402,13 @@ function buildExSelectors(){
 function renderTraining(){buildExSelectors();}
 
 function showTrainView(view, btn){
-  ['lifts','orm','retention','sessions'].forEach(v=>{const el=document.getElementById('tv-'+v);if(el)el.style.display='none';});
+  ['lifts','orm','retention','sessions','blocks'].forEach(v=>{const el=document.getElementById('tv-'+v);if(el)el.style.display='none';});
   document.getElementById('tv-'+view).style.display='block';
   document.querySelectorAll('#sec-training .stab').forEach(t=>t.classList.remove('active'));
   if(btn)btn.classList.add('active');
   if(view==='sessions')renderSessions();
   if(view==='retention')renderRetention();
+  if(view==='blocks')safeCall('renderBlocks', renderBlocks);
 }
 
 // Get all top-set data for an exercise across HEVY sessions + weekly manual logs
@@ -9340,6 +9511,40 @@ function __selfTestRun() {
         'v22.2: a newly staged import still replaces the sessions; blockId kept');
     } catch(e){ add(false, 'v22.2: Group 29 threw', String(e&&e.message||e)); }
     finally { D.weeks = savedWeeks; window._importedSessions = savedStaged; sv('wDate', savedDate); }
+  }
+
+  // ── Group 30 (v22.3): blocks + triggers
+  {
+    const savedWeeks = D.weeks, savedBlocks = D.blocks;
+    try{
+      const cfg = freshStressConfig();
+      const mk = (date, mode, sc)=>({...cloneDefaultWeek(), date, mode, phaseRef:mode, hevySessions: sc ? [{d:date, t:'S '+date, ts:{}, sc}] : null});
+      D.blocks = [];
+      D.weeks = [mk('2026-11-07','maint',{'Romanian Deadlift (Barbell)':2,'Back Extension (Weighted Hyperextension)':1,'Belted Squat':2}),
+                 mk('2026-11-14','maint',{'Romanian Deadlift (Barbell)':2,'Back Extension (Weighted Hyperextension)':2,'Hack Squat (Machine)':2,'Standing Calf Raise (Hyper Pro)':2,'Seated Calf Raise':1,'Standing Calf Raise (Machine)':1}),
+                 mk('2026-11-21','maint',null),
+                 mk('2026-12-05','bulk',{'Chin Up (Weighted)':2,'Skullcrusher (Dumbbell)':1,'Towel Scrunches (Plantar Fascia)':1})];
+      const yes = ()=>true, no = ()=>false;
+      const r1 = startNewBlock('B1','', '2026-11-07', no);
+      add(r1.assigned===3 && r1.declined===1 && !D.weeks[3].blockId, 'v22.3: start block assigns same-phase weeks; declined phase-cross left unassigned');
+      add(getOpenBlock()===r1.block && r1.block.phaseRef==='maint', 'v22.3: new block is open with phase of its first week');
+      add(assignWeekToBlock('2026-12-05', r1.block.id, yes) && D.weeks[3].blockId===r1.block.id, 'v22.3: confirmed phase-crossing reassignment');
+      const ro = computeBlockRollup(r1.block.id, cfg);
+      add(ro.weeks===4 && ro.pricedWeeks===3 && ro.phases.length===2, 'v22.3: rollup weeks 4, coverage 3/4, spans 2 phases');
+      add(ro.su===(6+2+4)+(6+4+6+2+1+1)+(5+1.5) && ro.max.date==='2026-11-14', 'v22.3: rollup total SU + max week (got '+ro.su+')');
+      add(ro.yellow.back['Romanian Deadlift (Barbell)']===4 && ro.yellow.back['Back Extension (Weighted Hyperextension)']===3, 'v22.3: yellow back itemized by exercise');
+      const t2 = weekTriggers(D.weeks[1], cfg);
+      add(t2.backYSets===4 && !t2.backFired && t2.sessionFires.length===1 && t2.sessionFires[0].area==='foot', 'v22.3: 4 back-Y sets does not fire (>4 rule); 3 yellow-foot exercises fires');
+      const t4 = weekTriggers(D.weeks[3], cfg);
+      add(t4.sessionFires.length===1 && t4.sessionFires[0].area==='elbow', 'v22.3: 2 elbow-Y exercises fires; exempt foot drill excluded from trigger');
+      add(ro.triggers===2, 'v22.3: rollup trigger count 2 (got '+ro.triggers+')');
+      const r2 = startNewBlock('B2','', '2026-12-05', yes);
+      add(r1.block.closed===true && getOpenBlock()===r2.block && D.weeks[3].blockId===r2.block.id, 'v22.3: starting a block closes the others');
+      add(assignWeekToBlock('2026-11-21', null) && D.weeks[2].blockId===undefined, 'v22.3: week can be unassigned');
+      add(endOpenBlock()===r2.block && getOpenBlock()===null, 'v22.3: End block closes the open block');
+      add(sanitizeBlocks([{id:'x',closed:true}])[0].closed===true && sanitizeBlocks([{id:'y'}])[0].closed===false, 'v22.3: closed flag sanitized');
+    } catch(e){ add(false, 'v22.3: Group 30 threw', String(e&&e.message||e)); }
+    finally { D.weeks = savedWeeks; D.blocks = savedBlocks; }
   }
 
   const failed = out.checks.filter(c=>!c.ok).length;
