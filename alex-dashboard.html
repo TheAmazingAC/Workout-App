@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Alex · Training Dashboard</title>
+<!-- v22.15-candidate rev 2 — built from v22.14 (sha256 433678b04741aa1ee37f2feb61af7aeac3dc921340c8dd6e287cfa5b8031150d). QA candidate, NOT installed.
+  Changes (each marked "v22.15 (X)" in the code):
+  A  Decision ladder: a blank weight stays null (was read as 0 lb → fake 24.9%/wk rate, false "adjust ±100 kcal", false "Within cap").
+  B  importData restores the backup's global mode + transition (was never touched → fresh storage fell back to CUT).
+  C  Top set = highest VOLUME (weight x reps) among non-warmup sets; ties: heavier weight, higher RPE, earliest set; bodyweight-only: most reps, higher RPE, earliest. Replaces max-e1RM. Same function feeds session top sets and the weekly priority lifts. Stored history is NOT recomputed.
+  D  Injury weeks (WE 2025-03-15, 2025-03-22, or any week tagged 'injury') are skipped when building load-class baselines. Display/baseline treatment only: no stored data is changed.
+  E  Next-week cost: e1RM is compared with each exercise's recent trend (median of up to 4 non-deload-like, non-injury weeks), and a next week below 0.5x its baseline is treated like a deload.
+  Unchanged: data model, storage key, export format (dashboard_version stays the schema id), every other screen. -->
+<meta name="app-version" content="v22.15-candidate-rev2">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
 <style>
@@ -1480,6 +1489,13 @@ function assignWeekToBlock(date, blockId, confirmFn){
 // year to the previous maintenance phase.
 const LOAD_BANDS_PROVISIONAL = {light:0.8, steady:1.1, stepUp:1.3};   // <0.8 light · 0.8–1.1 steady · 1.1–1.3 step-up · >1.3 spike
 const LOAD_BASELINE_WEEKS = 4;
+// v22.15 (D): weeks that must not feed baselines or cost references. A baseline/display
+// treatment only — nothing is retagged in stored data. Alex confirmed WE 2025-03-15 and
+// 2025-03-22 are INJURY weeks (elbow, hurt 2025-03-02), not deloads. A stored 'injury' tag
+// is honoured too, so future weeks can be excluded from the data side if he wants.
+const LOAD_EXCLUDED_WEEKS = {'2025-03-15':'injury', '2025-03-22':'injury'};
+function isLoadExcludedWeek(w){ return !!(w && (LOAD_EXCLUDED_WEEKS[w.date] || (Array.isArray(w.tags) && w.tags.includes('injury')))); }
+const DELOAD_LIKE_RATIO = 0.5;   // v22.15 (E): an untagged week below 0.5× its baseline is treated like a deload by the cost measure
 const COST_MIN_N = 6;                                                  // bands with fewer weeks are greyed out
 const LOAD_CLASS_LABEL = {light:'light', steady:'steady', stepUp:'step-up', spike:'spike', deload:'deload'};
 function isDeloadWeek(w){ return !!(w && (w.deload===true || (Array.isArray(w.tags) && w.tags.includes('deload')))); }
@@ -1511,7 +1527,7 @@ function computeLoadClasses(weeks, cfg, today){
     const base = [];
     for(let j=i-1; j>=0 && base.length<LOAD_BASELINE_WEEKS; j--){
       const p = ws[j];
-      if(p.date>tday || isDeloadWeek(p)) continue;           // v22.14c: block boundaries no longer restart the baseline
+      if(p.date>tday || isDeloadWeek(p) || isLoadExcludedWeek(p)) continue;           // v22.14c: block boundaries no longer restart the baseline; v22.15 (D): injury weeks skipped
       const pr = su.get(p.date); if(!pr) continue;
       if(weekModeOf(p)!==o.phase) break;                     // phase-run boundary
       base.push(p);
@@ -1555,20 +1571,35 @@ function computeNextWeekCost(weeks, cfg, today){
   const byDate = new Map(ws.map(w=>[w.date, w]));
   const plus7 = d=>{ const x = new Date(d+'T12:00:00Z'); x.setUTCDate(x.getUTCDate()+7); return x.toISOString().split('T')[0]; };
   const rows = [];
+  // v22.15 (E): a next week is "deload-like" when tagged, or when its load ratio is < DELOAD_LIKE_RATIO.
+  const deloadLike = x=>{ if(isDeloadWeek(x)) return true; const ox = lc.get(x.date); return !!(ox && ox.ratio!=null && ox.ratio<DELOAD_LIKE_RATIO); };
   ws.forEach((w,i)=>{
     const o = lc.get(w.date);
     if(!o || !o.cls || o.cls==='deload') return;
     const row = {date:w.date, phase:o.phase, blockId:o.blockId, cls:o.cls, ratio:o.ratio, excluded:null,
       e1rmPct:null, e1rmN:0, sessionsDelta:null, rhrDelta:null, sleepDelta:null};
     const n = byDate.get(plus7(w.date));
-    if(!n) row.excluded = 'no next week';
+    if(isLoadExcludedWeek(w)) row.excluded = 'labelled week excluded (injury)';
+    else if(!n) row.excluded = 'no next week';
     else if(n.date>tday) row.excluded = 'next week in progress';
     else if(weekModeOf(n)!==o.phase) row.excluded = 'next week in another phase';
+    else if(isLoadExcludedWeek(n)) row.excluded = 'next week excluded (injury)';
     else if(isDeloadWeek(n)) row.excluded = 'next week is a deload';
+    else if(deloadLike(n)) row.excluded = 'next week deload-like (untagged)';
     if(!row.excluded){
-      const a = weekTopE1rm(w), b = weekTopE1rm(n);
-      const ks = Object.keys(a).filter(k=>k in b);
-      if(ks.length){ row.e1rmPct = ks.reduce((t,k)=>t+(b[k]/a[k]-1)*100,0)/ks.length; row.e1rmN = ks.length; }
+      // v22.15 (E): e1RM change is measured against a TREND reference, not against the labelled
+      // week itself: per exercise, the median top e1RM over up to LOAD_BASELINE_WEEKS recent weeks
+      // of this phase ending with the labelled week, skipping deload-like and excluded weeks.
+      // (v22.14 compared next week with the labelled week, so a light week read as +30…+76%.)
+      const refs = [];
+      for(let j=i; j>=0 && refs.length<LOAD_BASELINE_WEEKS; j--){
+        const p = ws[j]; if(p.date>tday) continue; if(weekModeOf(p)!==o.phase) break;
+        if(deloadLike(p) || isLoadExcludedWeek(p)) continue;
+        const t = weekTopE1rm(p); if(Object.keys(t).length) refs.push(t);
+      }
+      const b = weekTopE1rm(n), pcts = [];
+      Object.keys(b).forEach(k=>{ const vals = refs.map(r=>r[k]).filter(x=>x>0); if(vals.length>=2) pcts.push((b[k]/medianOf(vals)-1)*100); });
+      if(pcts.length){ row.e1rmPct = pcts.reduce((t,x)=>t+x,0)/pcts.length; row.e1rmN = pcts.length; }
       const usual = o.baseline.map(d=>weekStoredSessions(byDate.get(d)).length);
       if(usual.length) row.sessionsDelta = weekStoredSessions(n).length - usual.reduce((t,x)=>t+x,0)/usual.length;
       const rh = ws.slice(Math.max(0,i-3), i+1).map(x=>_numOrNull(x.rhr)).filter(x=>x!=null);
@@ -1605,11 +1636,11 @@ function renderCostTable(){
   const f = (x,d,suf)=>x==null ? '—' : (x>0?'+':'')+x.toFixed(d)+(suf||'');
   const used = c.rows.filter(r=>!r.excluded).length, excl = c.rows.length - used;
   let h = '<div style="font-size:10px;color:var(--mu);margin-bottom:6px">Next-week outcomes by load class, within each phase (never pooled). '
-    +used+' week pairs used, '+excl+' excluded (no next week / next week deload, other phase, or in progress). Bands with fewer than '+COST_MIN_N+' weeks are greyed. Thresholds are provisional.</div>';
+    +used+' week pairs used, '+excl+' excluded (no next week, next week deload-like or injury, other phase, or in progress). Bands with fewer than '+COST_MIN_N+' weeks are greyed. e1RM is compared with each exercise\'s recent trend (deload-like and injury weeks excluded). Thresholds are provisional.</div>';
   if(!phases.length){ el.innerHTML = h+'<div class="note">No labelled weeks yet — each block needs '+LOAD_BASELINE_WEEKS+' eligible weeks before labels start.</div>'; return; }
   phases.forEach(ph=>{
     h += '<div style="font-size:11px;margin-top:8px"><b>'+escHtml(String(ph).toUpperCase())+'</b></div>'
-      + '<table class="tbl" style="font-size:10px"><thead><tr><th>Class</th><th>n</th><th>e1RM Δ</th><th>Sessions Δ</th><th>RHR Δ</th><th>Sleep Δ</th></tr></thead><tbody>'
+      + '<table class="tbl" style="font-size:10px"><thead><tr><th>Class</th><th>n</th><th>e1RM vs trend</th><th>Sessions Δ</th><th>RHR Δ</th><th>Sleep Δ</th></tr></thead><tbody>'
       + order.map(k=>{
           const g = c.summary[ph+'|'+k];
           if(!g) return '<tr style="opacity:.4"><td>'+LOAD_CLASS_LABEL[k]+'</td><td>0</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>';
@@ -5362,9 +5393,10 @@ function parseHevyDate(str){
   return '';
 }
 
-// A8: top set = best PERFORMANCE, not highest RPE. Pick max e1RM (Epley),
-// tiebreak heaviest weight then most reps; report that set's own RPE.
-// (Highest-RPE-first systematically picks fatigued second sets.)
+// v22.15 rev 2 (C): top set = the non-warmup set with the highest VOLUME (weight x reps).
+// Alex's definition: felt effort does not override it. Ties: heavier weight, then higher RPE,
+// then the earliest set (pool order). Bodyweight case (every weight 0/blank): most reps, then
+// higher RPE, then earliest. Replaces the A8 max-e1RM rule. epley1rm() is still used for e1RM values.
 function epley1rm(w, r){
   w = parseFloat(w)||0; r = parseInt(r)||0;
   return (w>0&&r>0) ? w*(1+r/30) : 0;
@@ -5389,15 +5421,19 @@ function getTopSetForExercise(sets, exName, mode){
   const canonEx = useRename ? canonicalizeRename(exName) : canonicalize(exName);
   const matching = sets.filter(r=>(useRename ? canonicalizeRename(r.exercise_title) : canonicalize(r.exercise_title))===canonEx&&r.set_type!=='warmup');
   if(!matching.length) return null;
-  const score = r => {
-    const w = parseFloat(r.weight_lbs)||0, reps = parseInt(r.reps)||0;
-    return [epley1rm(w,reps), w, reps];
+  // v22.15 rev 2 (C): shared by buildSessionTopSets (session top sets), the weekly priority-lift
+  // picker (confirmHevyImport) and the import-preview line. Strict ">" keeps the EARLIEST set on a full tie.
+  const wOf = r => parseFloat(r.weight_lbs)||0, repsOf = r => parseInt(r.reps)||0, rpeOf = r => parseFloat(r.rpe)||0;
+  const bodyweightOnly = matching.every(r=>wOf(r)<=0);
+  const score = r => bodyweightOnly
+    ? [repsOf(r), rpeOf(r)]
+    : [wOf(r)*repsOf(r), wOf(r), rpeOf(r)];
+  const better = (a, b) => {                      // true when a strictly beats b
+    const x = score(a), y = score(b);
+    for(let i=0;i<x.length;i++){ if(x[i]!==y[i]) return x[i]>y[i]; }
+    return false;
   };
-  return matching.reduce((best,r)=>{
-    const s = score(r), b = score(best);
-    return (s[0]>b[0] || (s[0]===b[0]&&s[1]>b[1]) ||
-            (s[0]===b[0]&&s[1]===b[1]&&s[2]>b[2])) ? r : best;
-  });
+  return matching.reduce((best,r)=> better(r,best) ? r : best);
 }
 
 // R3/R4: build per-exercise top sets for one session, stored under keys that
@@ -7006,6 +7042,40 @@ function mergeBackupWeeks(currentWeeks, importedWeeks){
   return {weeks, added, updated, skipped};
 }
 
+// v22.15 (B): restore the global mode + transition on import. v22.14 merged weeks and
+// settings but never touched D.mode/D.transition, so an import into fresh/empty storage
+// (a new install, cleared storage, a new browser) left the app on the default CUT while
+// the weeks said MAINT. Rules:
+//  • a backup OLDER than the live data never changes the live mode;
+//  • file mode + transition are restored as-is when they agree with the backup's latest
+//    week, or when a transition is recorded (a deliberate switch);
+//  • if the file's mode contradicts its latest week and records no transition, the latest
+//    week's mode wins (this is the corrupted-file case) and the transition resets to none;
+//  • a file with no valid mode falls back to the latest week's mode.
+function restoreModeFromBackup(parsed, importedWeeks, liveLatestDate){
+  const MODES = ['cut','maint','bulk'];
+  const TRANS = ['none','cut\u2192maint','maint\u2192bulk','bulk\u2192cut'];
+  const dated = (importedWeeks||[]).filter(w=>w && w.date).sort((a,b)=>a.date.localeCompare(b.date));
+  if(!dated.length) return null;
+  const latest = dated[dated.length-1];
+  if(liveLatestDate && latest.date < liveLatestDate) return null;
+  const weekMode = MODES.includes(latest.mode) ? latest.mode : null;
+  const fileMode = MODES.includes(parsed && parsed.mode) ? parsed.mode : null;
+  const fileTrans = TRANS.includes(parsed && parsed.transition) ? parsed.transition : 'none';
+  const before = D.mode;
+  let mode, trans, dismissed, source;
+  if(fileMode && (!weekMode || fileMode===weekMode || fileTrans!=='none')){
+    mode = fileMode; trans = fileTrans; dismissed = !!(parsed && parsed.transitionDismissed); source = 'backup';
+  } else if(weekMode){
+    mode = weekMode; trans = 'none'; dismissed = false;
+    source = fileMode ? 'latest week (the file said '+fileMode.toUpperCase()+')' : 'latest week (the file has no mode)';
+  } else return null;
+  D.mode = mode; D.transition = trans; D.transitionDismissed = dismissed;
+  const label = {cut:'CUT',maint:'MAINT',bulk:'SURPLUS'}[mode];
+  return {mode, source, changed: before!==mode,
+    note: (before!==mode || source!=='backup') ? 'Mode '+label+' (from '+source+')' : '' };
+}
+
 function importData(e){
   const file = e.target.files[0]; if(!file) return;
   const reader = new FileReader();
@@ -7033,6 +7103,7 @@ function importData(e){
       // sort threw. Same merge rules, same order, same counts.
       const merged = mergeBackupWeeks(D.weeks, imported.weeks);
       const added = merged.added, updated = merged.updated, skipped = merged.skipped;
+      const liveLatestBefore = D.weeks.map(w=>w&&w.date).filter(Boolean).sort().slice(-1)[0] || null;   // v22.15 (B)
       D.weeks = merged.weeks;
       // Also restore deficit settings if present
       if(imported.defHeight) D.defHeight = imported.defHeight;
@@ -7074,7 +7145,9 @@ function importData(e){
       // and block registry (merged by id, imported wins). Reads the raw file,
       // never migrateState's seed fallback.
       applySuBackupRestore(D, parsed);
+      const modeRes = restoreModeFromBackup(parsed, imported.weeks, liveLatestBefore);   // v22.15 (B)
       const saved = save();
+      if(modeRes) safeCall('applyModeUI', applyModeUI);
       // v22.12 rider: refresh the merged session list + volume map so Analytics
       // and the session log reflect the imported weeks without a reload.
       safeCall('mergeStoredSessions', mergeStoredSessions);
@@ -7083,7 +7156,7 @@ function importData(e){
       // "Could not parse file" for an import that had succeeded.
       safeCall('renderHistory', renderHistory);
       if(saved){
-        const msg = `✓ Import complete: ${added} new weeks added, ${updated} updated${skipped?' ('+skipped+' skipped)':''}`;
+        const msg = `✓ Import complete: ${added} new weeks added, ${updated} updated${skipped?' ('+skipped+' skipped)':''}${modeRes&&modeRes.note?' · '+modeRes.note:''}`;
         showBackupStatus(msg, 'var(--g)');
         toast(`Imported ${added + updated} weeks ✓`);
       }
@@ -8794,7 +8867,7 @@ function renderDecisionLadder(){
   const recOk = !rs.watchActive;
 
   // Velocity + stall use precise engine (v17 R2: pass mode — velocity is mode-local)
-  const cv = calcCutVelocity(bw||0, ctx.priorWeeks, mode);
+  const cv = calcCutVelocity(bw!=null?bw:null, ctx.priorWeeks, mode);   // v22.15 (A): a blank weight stays null — never 0 lb (was bw||0 → 24.88%/wk + false 'adjust ±100 kcal')
   const st = calcStallStatus(cv, latest.waist, ctx.weeksThroughAnchor, {anchorDate: ctx.anchorDate, mode:mode});
   // v17 R2: surplus rung 5 keys off the exit-plan cap only (no legacy bands)
   const capLadder = mode==='bulk' ? checkSurplusCap(cv.rollingRate) : null;
